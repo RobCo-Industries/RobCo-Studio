@@ -12,7 +12,7 @@ publish.workspace = true
 studio-sys.workspace = true
 studio-disk.workspace = true
 serde_json = "1"
-# Reads robco.toml. It reports error spans and refuses duplicate keys.
+# Reads robco.toml and robco.lock. It reports error spans and refuses duplicate keys.
 toml = { version = "1.2.3", default-features = false, features = ["std", "parse", "serde"] }
 
 # Wraps the Job Object calls, which need `unsafe`, forbidden in this crate.

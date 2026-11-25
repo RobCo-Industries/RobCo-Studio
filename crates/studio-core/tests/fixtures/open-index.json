@@ -1,0 +1,5 @@
+[
+  {"name": "pipos", "version": "1.3.0", "abi": "1.3", "requires": [{"name": "gfx", "abi": "1.3"}], "formats": {}},
+  {"name": "pipos", "version": "1.4.0", "abi": "1.4", "requires": [{"name": "gfx", "abi": "1.4"}], "formats": {}},
+  {"name": "gfx", "version": "1.3.0", "abi": "1.3", "requires": [], "formats": {}}
+]

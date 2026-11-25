@@ -408,6 +408,27 @@ fn plan_flags_format() {
 }
 
 #[test]
+fn plan_flags_format_detail() {
+    // Only a larger format asks for a newer tool: it is the one case a
+    // newer tool can read.
+    assert_eq!(
+        flags_err("{\"format\": 2}").detail(),
+        "2 is newer than this tool reads, 1: install a newer tool"
+    );
+    for text in [
+        "{}",
+        "{\"format\": 0}",
+        "{\"format\": -1}",
+        "{\"format\": 1.5}",
+        "{\"format\": \"1\"}",
+        "{\"format\": null}",
+        "{\"format\": {}}",
+    ] {
+        assert!(!flags_err(text).detail().contains("newer"), "{text}");
+    }
+}
+
+#[test]
 fn plan_flags_format_before_fields() {
     // A later format with fields this tool does not know reports format.
     assert_eq!(flags_err("{\"format\": 2, \"cflags\": 3}").code(), "format");

@@ -125,7 +125,7 @@ pub fn parse_flags(bytes: &[u8]) -> Result<Flags, FlagsError> {
             }
             Some(n) if n > FORMAT => {
                 return Err(FlagsError::Format(format!(
-                    "{n} is newer than this tool reads, {FORMAT}"
+                    "{n} is newer than this tool reads, {FORMAT}: install a newer tool"
                 )));
             }
             Some(n) => n,
