@@ -83,9 +83,15 @@ def main():
     extra = []
     if a.prefix_map:
         # gcc sees cwd as typed by the OS; map both spellings on Windows.
-        extra = ["-ffile-prefix-map=%s=." % cwd]
-        if os.name == "nt":
-            extra.append("-ffile-prefix-map=%s=." % cwd.replace("\\", "/"))
+        # The compiler's own include dir also lands in the debug info.
+        tool = os.path.dirname(os.path.abspath(a.gcc_bin))
+        pairs = [(cwd, "."), (tool, "/toolchain")]
+        extra = []
+        for src, dst in pairs:
+            extra.append("-ffile-prefix-map=%s=%s" % (src, dst))
+            if os.name == "nt":
+                extra.append("-ffile-prefix-map=%s=%s"
+                             % (src.replace("\\", "/"), dst))
     cflags = BASE + extra
     libflags = LIBFLAGS + extra
     lib = os.path.join(out, "libpip")
