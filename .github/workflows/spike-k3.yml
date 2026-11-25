@@ -40,15 +40,11 @@ jobs:
           - name: macos-cc
             os: macos-latest
             cc: ""
+          # The GNU-style clang driver: the cc crate would pick MSVC, which
+          # rejects __attribute__. clang-cl builds too but drops -std=gnu11.
           - name: windows-clang
             os: windows-latest
             cc: clang
-          - name: windows-clang-cl
-            os: windows-latest
-            cc: clang-cl
-          - name: windows-msvc
-            os: windows-latest
-            cc: ""
     name: build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     steps:
