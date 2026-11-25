@@ -393,3 +393,102 @@ fn second_look_must_see_the_same_disk() {
     let d = decide(&l, r"\\.\PhysicalDrive4", 32 * MIB, &p).unwrap();
     assert!(!a.same_as(&d));
 }
+
+#[test]
+fn second_look_must_see_the_same_sector_size() {
+    let l = windows::parse(&fixture("windows-laptop.json"));
+    let p = Policy::default();
+    let a = decide(&l, r"\\.\PhysicalDrive4", 64 * MIB, &p).unwrap();
+    // Same path, same size, another sector size.
+    let mut l2 = l.clone();
+    let d = l2.disks.iter_mut().find(|d| d.path.ends_with('4')).unwrap();
+    d.block_size = Some(if a.block_size() == 512 { 4096 } else { 512 });
+    let c = decide(&l2, r"\\.\PhysicalDrive4", 64 * MIB, &p).unwrap();
+    assert!(!a.same_as(&c));
+}
+
+/// One recorded Windows disk with the given BusType number and text.
+fn windows_bus(num: Option<u64>, text: &str) -> DiskList {
+    let n = num.map_or("null".to_string(), |n| n.to_string());
+    windows::parse(&format!(
+        r#"{{"SystemDrive": "C:",
+ "Disks": [{{"Number": 0, "FriendlyName": "System", "Size": 512000000000, "BusType": 17, "BusTypeText": "NVMe", "IsBoot": true, "IsSystem": true, "IsOffline": false, "LogicalSectorSize": 512}},
+           {{"Number": 3, "FriendlyName": "Test", "Size": 1073741824, "BusType": {n}, "BusTypeText": "{text}", "IsBoot": false, "IsSystem": false, "IsOffline": false, "LogicalSectorSize": 512}}],
+ "Partitions": [{{"DiskNumber": 0, "DriveLetter": "C", "IsBoot": true, "IsSystem": false, "AccessPaths": ["C:\\"]}}],
+ "Drives": [{{"Index": 0, "MediaType": "Fixed hard disk media"}}, {{"Index": 3, "MediaType": "Fixed hard disk media"}}]}}"#
+    ))
+}
+
+#[test]
+fn windows_virtual_bus_is_virtual() {
+    for (num, text) in [
+        (Some(14), "Virtual"),
+        (Some(14), ""),
+        (None, "Virtual"),
+        (Some(15), "File Backed Virtual"),
+    ] {
+        let l = windows_bus(num, text);
+        assert!(l.complete(), "{:?}", l.problems);
+        approves(&l, r"\\.\PhysicalDrive3", &virt());
+        assert_eq!(
+            refusals(&l, r"\\.\PhysicalDrive3", &Policy::default()),
+            vec![Refusal::VirtualNotAllowed],
+            "{num:?} {text}"
+        );
+    }
+}
+
+#[test]
+fn windows_unknown_and_reserved_bus_is_refused_as_unknown() {
+    for (num, text) in [
+        (Some(0), "Unknown"),
+        (Some(18), ""),
+        (Some(18), "SCM"),
+        (Some(99), "Something New"),
+        (None, "Something New"),
+        (None, ""),
+        // Number and text disagree.
+        (Some(7), "Virtual"),
+    ] {
+        let l = windows_bus(num, text);
+        let r = refusals(&l, r"\\.\PhysicalDrive3", &virt());
+        assert!(
+            r.iter().any(|x| matches!(x, Refusal::BusUnknown(_))),
+            "{num:?} {text}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn windows_documented_fixed_buses_are_internal() {
+    let fixed = [
+        (1, "SCSI"),
+        (2, "ATAPI"),
+        (3, "ATA"),
+        (4, "1394"),
+        (5, "SSA"),
+        (6, "Fibre Channel"),
+        (8, "RAID"),
+        (9, "iSCSI"),
+        (10, "SAS"),
+        (11, "SATA"),
+        (16, "Storage Spaces"),
+        (17, "NVMe"),
+    ];
+    for (num, text) in fixed {
+        let l = windows_bus(Some(num), text);
+        assert!(
+            refusals(&l, r"\\.\PhysicalDrive3", &virt()).contains(&Refusal::FixedInternal),
+            "{num} {text}"
+        );
+    }
+}
+
+#[test]
+fn a_sector_size_past_u32_is_not_truncated() {
+    // 2^32 + 512 would read as 512 if cut to 32 bits.
+    let mut v: serde_json::Value = serde_json::from_str(&fixture("windows-to-go.json")).unwrap();
+    v["Disks"]["LogicalSectorSize"] = 4_294_967_808u64.into();
+    let l = windows::parse(&v.to_string());
+    assert_eq!(l.disks[0].block_size, None);
+}
