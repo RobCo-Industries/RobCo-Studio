@@ -5,8 +5,6 @@ name: qemu
 # Artifacts stay on the run: this workflow publishes nothing.
 
 on:
-  push:
-    branches: [s1-qemu-linux]
   pull_request:
     paths:
       - tools/qemu/**
