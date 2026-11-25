@@ -1,0 +1,23 @@
+{"root": {"DeviceIdentifier": "disk3s1s1", "ParentWholeDisk": "disk3", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}], "MountPoint": "/"},
+ "list": {
+  "WholeDisks": ["disk0", "disk1", "disk2", "disk3", "disk4", "disk5", "disk6", "disk7"],
+  "AllDisksAndPartitions": [
+   {"DeviceIdentifier": "disk0", "Size": 1000555581440, "Partitions": [{"DeviceIdentifier": "disk0s1"}, {"DeviceIdentifier": "disk0s2"}, {"DeviceIdentifier": "disk0s3"}]},
+   {"DeviceIdentifier": "disk1", "APFSPhysicalStores": [{"DeviceIdentifier": "disk0s1"}], "APFSVolumes": [{"DeviceIdentifier": "disk1s1", "MountPoint": "/System/Volumes/iSCPreboot"}, {"DeviceIdentifier": "disk1s2", "MountPoint": "/System/Volumes/xarts"}]},
+   {"DeviceIdentifier": "disk2", "APFSPhysicalStores": [{"DeviceIdentifier": "disk0s3"}], "APFSVolumes": [{"DeviceIdentifier": "disk2s1"}]},
+   {"DeviceIdentifier": "disk3", "APFSPhysicalStores": [{"DeviceIdentifier": "disk0s2"}], "APFSVolumes": [{"DeviceIdentifier": "disk3s1s1", "MountPoint": "/"}, {"DeviceIdentifier": "disk3s5", "MountPoint": "/System/Volumes/Data"}, {"DeviceIdentifier": "disk3s6", "MountPoint": "/System/Volumes/VM"}]},
+   {"DeviceIdentifier": "disk4", "Size": 31914983424, "Partitions": [{"DeviceIdentifier": "disk4s1", "MountPoint": "/Volumes/CARD"}]},
+   {"DeviceIdentifier": "disk5", "Size": 67108864},
+   {"DeviceIdentifier": "disk6", "Size": 15931539456, "Partitions": [{"DeviceIdentifier": "disk6s1"}]},
+   {"DeviceIdentifier": "disk7", "Size": 31914983424}
+  ]},
+ "info": {
+  "disk0": {"DeviceNode": "/dev/disk0", "TotalSize": 1000555581440, "Internal": true, "Removable": false, "RemovableMedia": false, "BusProtocol": "Apple Fabric", "MediaName": "APPLE SSD", "DeviceBlockSize": 4096},
+  "disk1": {"DeviceNode": "/dev/disk1", "TotalSize": 524288000, "Internal": true, "Removable": false, "RemovableMedia": false, "BusProtocol": "Apple Fabric", "IORegistryEntryName": "AppleAPFSMedia", "DeviceBlockSize": 4096},
+  "disk2": {"DeviceNode": "/dev/disk2", "TotalSize": 5368664064, "Internal": true, "Removable": false, "RemovableMedia": false, "BusProtocol": "Apple Fabric", "IORegistryEntryName": "AppleAPFSMedia", "DeviceBlockSize": 4096},
+  "disk3": {"DeviceNode": "/dev/disk3", "TotalSize": 994662584320, "Internal": true, "Removable": false, "RemovableMedia": false, "BusProtocol": "Apple Fabric", "IORegistryEntryName": "AppleAPFSMedia", "DeviceBlockSize": 4096},
+  "disk4": {"DeviceNode": "/dev/disk4", "TotalSize": 31914983424, "Internal": false, "Removable": true, "RemovableMedia": true, "BusProtocol": "USB", "MediaName": "Generic Card Reader", "DeviceBlockSize": 512},
+  "disk5": {"DeviceNode": "/dev/disk5", "TotalSize": 67108864, "Internal": false, "Removable": true, "RemovableMedia": true, "BusProtocol": "Disk Image", "MediaName": "Disk Image", "DeviceBlockSize": 512},
+  "disk6": {"DeviceNode": "/dev/disk6", "TotalSize": 15931539456, "Internal": true, "Removable": true, "RemovableMedia": true, "BusProtocol": "Secure Digital", "MediaName": "SD Card", "DeviceBlockSize": 512},
+  "disk7": {"DeviceNode": "/dev/disk7", "TotalSize": 31914983424, "Internal": false, "Removable": true, "RemovableMedia": true, "BusProtocol": "Thunderbolt", "MediaName": "Dock Reader", "DeviceBlockSize": 512}
+ }}

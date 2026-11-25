@@ -1,0 +1,19 @@
+{"blockdevices": [
+  {"name": "/dev/loop0", "type": "loop", "size": 67108864, "rm": false, "hotplug": false, "tran": null, "ro": false, "mountpoints": [null], "vendor": null, "model": null, "log-sec": 512},
+  {"name": "/dev/loop1", "type": "loop", "size": 58363904, "rm": false, "hotplug": false, "tran": null, "ro": true, "mountpoints": ["/snap/core22/1"], "vendor": null, "model": null, "log-sec": 512},
+  {"name": "/dev/sda", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "ro": false, "mountpoints": [null], "vendor": "Generic ", "model": "SD Card Reader", "log-sec": 512,
+   "children": [{"name": "/dev/sda1", "type": "part", "size": 31910789120, "rm": true, "hotplug": true, "tran": null, "ro": false, "mountpoints": ["/media/USER/CARD"]}]},
+  {"name": "/dev/sdb", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "ro": false, "mountpoints": [null], "vendor": "Generic ", "model": "SD Card Reader", "log-sec": 512,
+   "children": [{"name": "/dev/sdb1", "type": "part", "size": 31910789120, "mountpoints": [null]}]},
+  {"name": "/dev/sdc", "type": "disk", "size": 1000204886016, "rm": false, "hotplug": true, "tran": "usb", "ro": false, "mountpoints": [null], "vendor": "Example", "model": "USB SSD", "log-sec": 512},
+  {"name": "/dev/mmcblk0", "type": "disk", "size": 15931539456, "rm": false, "hotplug": false, "tran": "mmc", "ro": false, "mountpoints": [null], "vendor": null, "model": null, "log-sec": 512},
+  {"name": "/dev/sr0", "type": "rom", "size": 1073741312, "rm": true, "hotplug": true, "tran": "sata", "mountpoints": [null]},
+  {"name": "/dev/nvme0n1", "type": "disk", "size": 512110190592, "rm": false, "hotplug": false, "tran": "nvme", "ro": false, "mountpoints": [null], "vendor": null, "model": "Example NVMe SSD", "log-sec": 512,
+   "children": [
+     {"name": "/dev/nvme0n1p1", "type": "part", "size": 536870912, "mountpoints": ["/boot/efi"]},
+     {"name": "/dev/nvme0n1p2", "type": "part", "size": 511571206144, "mountpoints": [null],
+      "children": [{"name": "/dev/mapper/crypt", "type": "crypt", "mountpoints": [null],
+        "children": [
+          {"name": "/dev/mapper/vg-root", "type": "lvm", "mountpoints": ["/"]},
+          {"name": "/dev/mapper/vg-swap", "type": "lvm", "mountpoints": ["[SWAP]"]}]}]}]}
+]}

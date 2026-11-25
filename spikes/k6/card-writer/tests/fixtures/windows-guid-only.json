@@ -1,0 +1,19 @@
+{"SystemDrive": "C:",
+ "Disks": [
+  {"Number": 0, "FriendlyName": "Example NVMe SSD", "Size": 512110190592, "BusType": 17, "BusTypeText": "NVMe", "IsBoot": true, "IsSystem": true, "IsOffline": false, "LogicalSectorSize": 512},
+  {"Number": 1, "FriendlyName": "Generic SD Card Reader", "Size": 31914983424, "BusType": 7, "BusTypeText": "USB", "IsBoot": false, "IsSystem": false, "IsOffline": false, "LogicalSectorSize": 512},
+  {"Number": 2, "FriendlyName": "Generic SD Card Reader", "Size": 31914983424, "BusType": 7, "BusTypeText": "USB", "IsBoot": false, "IsSystem": false, "IsOffline": false, "LogicalSectorSize": 512},
+  {"Number": 3, "FriendlyName": "Generic SD Card Reader", "Size": 31914983424, "BusType": 7, "BusTypeText": "USB", "IsBoot": false, "IsSystem": false, "IsOffline": false, "LogicalSectorSize": 512}
+ ],
+ "Partitions": [
+  {"DiskNumber": 0, "DriveLetter": "C", "IsBoot": true, "IsSystem": true, "GptType": "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}", "MbrType": null, "AccessPaths": ["C:\\", "\\\\?\\Volume{00000000-0000-0000-0000-000000000010}\\"]},
+  {"DiskNumber": 1, "DriveLetter": "\u0000", "IsBoot": false, "IsSystem": false, "GptType": "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}", "MbrType": null, "AccessPaths": ["\\\\?\\Volume{00000000-0000-0000-0000-000000000011}\\"]},
+  {"DiskNumber": 2, "DriveLetter": "\u0000", "IsBoot": false, "IsSystem": false, "GptType": "", "MbrType": 12, "AccessPaths": ["\\\\?\\Volume{00000000-0000-0000-0000-000000000012}\\"]},
+  {"DiskNumber": 3, "DriveLetter": "\u0000", "IsBoot": false, "IsSystem": false, "GptType": "", "MbrType": 12, "AccessPaths": []}
+ ],
+ "Drives": [
+  {"Index": 0, "MediaType": "Fixed hard disk media"},
+  {"Index": 1, "MediaType": "Removable Media"},
+  {"Index": 2, "MediaType": "Removable Media"},
+  {"Index": 3, "MediaType": "Removable Media"}
+ ]}

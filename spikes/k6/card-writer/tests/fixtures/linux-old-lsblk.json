@@ -1,0 +1,12 @@
+{"blockdevices": [
+  {"name": "/dev/sda", "type": "disk", "size": "250059350016", "rm": "0", "hotplug": "0", "tran": "sata", "mountpoint": null, "log-sec": "512",
+   "children": [{"name": "/dev/sda1", "type": "part", "mountpoint": "/"}]},
+  {"name": "/dev/sdb", "type": "disk", "size": "31914983424", "rm": "1", "hotplug": "1", "tran": "usb", "mountpoint": null, "vendor": "Generic", "model": "Reader", "log-sec": "512"},
+  {"name": "/dev/sdc", "type": "disk", "size": "31914983424", "rm": "1", "tran": null, "mountpoint": null, "log-sec": "512"},
+  {"name": "/dev/sdd", "type": "disk", "size": "31914983424", "tran": "usb", "mountpoint": null, "log-sec": "512"},
+  {"name": "/dev/sde", "type": "disk", "rm": "1", "hotplug": "1", "tran": "usb", "mountpoint": null, "log-sec": "512"},
+  {"name": "/dev/sdf", "type": "disk", "size": "31914983424", "rm": "1", "hotplug": "1", "tran": "usb", "mountpoint": null, "log-sec": "512"},
+  {"name": "/dev/sdf", "type": "disk", "size": "31914983424", "rm": "1", "hotplug": "1", "tran": "usb", "mountpoint": null, "log-sec": "512"},
+  {"name": "/dev/sdg", "type": "disk", "size": "31914983424", "rm": "1", "hotplug": "1", "tran": "usb", "mountpoint": null, "log-sec": "512",
+   "children": [{"name": "/dev/sdg1", "type": "part", "mountpoint": "[SWAP]"}]}
+]}
