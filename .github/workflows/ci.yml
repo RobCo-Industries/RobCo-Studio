@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, s1-ci-jobs]
   pull_request:
 
 permissions:
@@ -77,7 +77,10 @@ jobs:
   file-licences:
     runs-on: ubuntu-latest
     steps:
+      # The submodule is checked out so that the check sees it and skips it.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Every file carries an SPDX licence
         uses: fsfe/reuse-action@v5
         with:
@@ -87,8 +90,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Toolchain file, manifests and the RobCo-Core submodule agree
         run: python3 scripts/check-pins.py
+      - name: No workflow file repeats a key
+        run: python3 scripts/check-workflows.py
 
   release:
     strategy:
@@ -179,22 +186,6 @@ jobs:
           name: robco-${{ runner.os }}-${{ runner.arch }}
           path: ${{ env.BIN }}
           if-no-files-found: error
-
-  pins:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: RobCo-Core is pinned to a commit on its main branch
-        run: |
-          pin=$(git rev-parse HEAD:external/robco-core)
-          head=$(git -C external/robco-core rev-parse HEAD)
-          echo "RobCo-Core pinned at $pin"
-          [ "$pin" = "$head" ] || { echo "::error::checked out $head, pinned $pin"; exit 1; }
-          git -C external/robco-core fetch --quiet origin main
-          git -C external/robco-core merge-base --is-ancestor "$pin" FETCH_HEAD \
-            || { echo "::error::$pin is not on RobCo-Core main"; exit 1; }
 
   sys-card:
     runs-on: ubuntu-latest
