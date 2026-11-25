@@ -67,6 +67,16 @@ while IFS=$'\t' read -r pkg ver; do
       [ -f "$keg/INSTALL_RECEIPT.json" ] || { echo "$keg, the keg packed, is gone" >&2; exit 1; }
       cp "$keg/INSTALL_RECEIPT.json" "$d/INSTALL_RECEIPT.json"
       brew info --json=v2 --formula "$pkg" >"$d/brew-info.json"
+      # brew cat and brew fetch read the current formula, not the one the
+      # keg was built from. Its full version, revision included, must be
+      # the keg's, or the recipe and patches shipped are not the packed ones.
+      fver=$(python3 -c '
+import json, sys
+f = json.load(open(sys.argv[1]))["formulae"][0]
+v = f["versions"]["stable"]
+print(v + ("_%d" % f["revision"] if f.get("revision") else ""))' "$d/brew-info.json") \
+        || { echo "brew info gave no version for $pkg" >&2; exit 1; }
+      [ "$fver" = "$ver" ] || { echo "the formula of $pkg is $fver now, but the keg packed is $ver" >&2; exit 1; }
       brew cat --formula "$pkg" >"$d/$pkg.rb"
       [ -s "$d/$pkg.rb" ] || { echo "brew cat gave no formula for $pkg" >&2; exit 1; }
       brew fetch --build-from-source --formula "$pkg" >"$d/brew-fetch.txt" 2>&1

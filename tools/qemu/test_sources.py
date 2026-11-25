@@ -143,7 +143,7 @@ cp "{served}/$f" "$2"
         self.assertIn("holds no PKGBUILD", r.stderr)
 
     # macOS: a fake brew with one keg and a cache.
-    def homebrew(self, tarball="glib-2.86.0.tar.xz"):
+    def homebrew(self, tarball="glib-2.86.0.tar.xz", revision=1):
         cellar = self.root / "Cellar"
         keg = cellar / "glib/2.86.0_1"
         keg.mkdir(parents=True)
@@ -157,7 +157,7 @@ cp "{served}/$f" "$2"
 case "$1" in
   --cellar) echo "{cellar}" ;;
   --cache) echo "{cache}/{tarball}" ;;
-  info) echo '{{}}' ;;
+  info) echo '{{"formulae": [{{"versions": {{"stable": "2.86.0"}}, "revision": {revision}}}]}}' ;;
   cat) echo 'class Glib < Formula; end' ;;
   fetch) echo "Already downloaded: {cache}/{tarball}"; echo "Downloaded to: {patch}" ;;
 esac
@@ -176,6 +176,18 @@ esac
         r = self.run_sources("macos")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("is not version 2.86.0_1", r.stderr)
+
+    def test_macos_formula_revision_moved(self):
+        self.homebrew(revision=2)
+        r = self.run_sources("macos")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("the formula of glib is 2.86.0_2 now, but the keg packed is 2.86.0_1", r.stderr)
+
+    def test_macos_formula_without_revision(self):
+        self.homebrew(revision=0)
+        r = self.run_sources("macos")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("is 2.86.0 now, but the keg packed is 2.86.0_1", r.stderr)
 
 
 if __name__ == "__main__":
