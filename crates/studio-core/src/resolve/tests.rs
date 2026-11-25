@@ -702,6 +702,61 @@ fn resolve_sdk_json_format_first() {
     }
 }
 
+fn sdk_detail(text: &str) -> String {
+    sdk_json::parse(text.as_bytes()).unwrap_err().to_string()
+}
+
+#[test]
+fn resolve_sdk_json_format_advice() {
+    // A larger `format` asks for a newer tool; a malformed one does not.
+    let text = SDK.replacen("\"format\": 1", "\"format\": 2", 1);
+    assert!(sdk_detail(&text).contains("install a newer tool"));
+    for f in ["0", "-1", "\"1\"", "1.5", "null", "{}"] {
+        let text = SDK.replacen("\"format\": 1", &format!("\"format\": {f}"), 1);
+        assert_eq!(sdk_code(&text), "package: format", "{f}");
+        let d = sdk_detail(&text);
+        assert!(d.contains("not a positive integer"), "{f}: {d}");
+        assert!(!d.contains("newer"), "{f}: {d}");
+    }
+}
+
+#[test]
+fn resolve_sdk_json_formats_advice() {
+    // A larger value or an unknown name asks for a newer tool.
+    for f in ["\"flags\": 2", "\"sound\": 1"] {
+        let text = SDK.replacen("\"flags\": 1", f, 1);
+        assert_eq!(sdk_code(&text), "package: format", "{f}");
+        assert!(sdk_detail(&text).contains("install a newer tool"), "{f}");
+    }
+    // A value that is not a positive integer is malformed: it keeps the
+    // code, names the format and gives no advice about a newer tool.
+    for v in ["\"1\"", "1.5", "0", "-1", "null", "{}"] {
+        let text = SDK.replacen("\"flags\": 1", &format!("\"flags\": {v}"), 1);
+        assert_eq!(sdk_code(&text), "package: format", "{v}");
+        let d = sdk_detail(&text);
+        assert!(d.contains("formats.flags"), "{v}: {d}");
+        assert!(d.contains("not a positive integer"), "{v}: {d}");
+        assert!(!d.contains("newer"), "{v}: {d}");
+    }
+}
+
+#[test]
+fn resolve_index_format_advice() {
+    let text = INDEX.replacen("\"format\": 1", "\"format\": 2", 1);
+    assert!(
+        parse_index(&text)
+            .unwrap_err()
+            .to_string()
+            .contains("install a newer tool")
+    );
+    for f in ["0", "-1", "\"1\"", "1.5", "null", "{}"] {
+        let text = INDEX.replacen("\"format\": 1", &format!("\"format\": {f}"), 1);
+        let d = parse_index(&text).unwrap_err().to_string();
+        assert!(d.contains("not a positive integer"), "{f}: {d}");
+        assert!(!d.contains("newer"), "{f}: {d}");
+    }
+}
+
 #[test]
 fn resolve_sdk_json_fields() {
     let cases = [

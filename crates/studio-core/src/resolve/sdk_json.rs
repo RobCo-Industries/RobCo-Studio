@@ -152,19 +152,24 @@ fn commit(o: &Map<String, Value>, at: &str) -> Result<String, Error> {
 }
 
 /// Step 3 for `formats`: a format this tool does not know, by its name or
-/// by its value, fails with `package: format` and names it. A `formats`
-/// that is missing or not an object is left to the field checks.
+/// by its value, fails with `package: format` and names it. A value that
+/// is not a positive integer is malformed, so its message gives no advice
+/// about a newer tool. A `formats` that is missing or not an object is
+/// left to the field checks.
 fn check_formats(v: Option<&Value>) -> Result<(), Error> {
     let Some(formats) = v.and_then(Value::as_object) else {
         return Ok(());
     };
     for (name, value) in formats {
-        let known = value
-            .as_i64()
-            .is_some_and(|n| KNOWN_FORMATS.contains(&(name.as_str(), n)));
+        let Some(n) = value.as_u64().filter(|n| *n >= 1) else {
+            return Err(Error::PackageFormat(format!(
+                "sdk.json: formats.{name} = {value} is not a positive integer"
+            )));
+        };
+        let known = i64::try_from(n).is_ok_and(|n| KNOWN_FORMATS.contains(&(name.as_str(), n)));
         if !known {
             return Err(Error::PackageFormat(format!(
-                "sdk.json uses {name} {value}, which this tool does not know: install a newer tool"
+                "sdk.json uses {name} {n}, which this tool does not know: install a newer tool"
             )));
         }
     }
