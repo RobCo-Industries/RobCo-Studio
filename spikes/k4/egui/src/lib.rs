@@ -25,6 +25,10 @@ pub struct State {
     pub frame: u64,
     pub log: Vec<String>,
     pub jump_to_end: bool,
+    /// Row to scroll the log to on the next draw, set before the log is drawn.
+    pub scroll_to_row: Option<usize>,
+    /// Rows the log drew on the last frame, `first..end`.
+    pub visible_rows: std::ops::Range<usize>,
     sprite_tex: Option<egui::TextureHandle>,
     sprite_dirty: bool,
     screen_tex: Option<egui::TextureHandle>,
@@ -44,6 +48,8 @@ impl Default for State {
                 .map(|i| format!("{i:06} build: compiled unit {i} of {LOG_LINES}"))
                 .collect(),
             jump_to_end: false,
+            scroll_to_row: None,
+            visible_rows: 0..0,
             sprite_tex: None,
             sprite_dirty: true,
             screen_tex: None,
@@ -186,15 +192,24 @@ impl State {
             self.jump_to_end = true;
         }
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+        let pitch = row_h + ui.spacing().item_spacing.y;
         let mut area = egui::ScrollArea::vertical().auto_shrink(false);
         if self.jump_to_end {
-            area = area.vertical_scroll_offset(row_h * self.log.len() as f32);
+            // Past the end: egui clamps it and `show_rows` draws the last rows.
+            self.scroll_to_row = Some(self.log.len());
             self.jump_to_end = false;
         }
-        area.show_rows(ui, row_h, self.log.len(), |ui, range| {
-            for i in range {
-                ui.monospace(&self.log[i]);
-            }
-        });
+        if let Some(row) = self.scroll_to_row.take() {
+            area = area.vertical_scroll_offset(pitch * row as f32);
+        }
+        let log = &self.log;
+        self.visible_rows = area
+            .show_rows(ui, row_h, log.len(), |ui, range| {
+                for i in range.clone() {
+                    ui.monospace(&log[i]);
+                }
+                range
+            })
+            .inner;
     }
 }

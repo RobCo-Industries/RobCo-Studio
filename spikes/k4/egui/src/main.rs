@@ -11,11 +11,25 @@ struct App {
     state: State,
     frames: Option<Arc<AtomicU64>>,
     sim: Arc<AtomicU64>,
-    scroll_dir: f32,
+    /// Log benchmark: how often the first visible row changed, and whether the last line showed.
+    row_changes: Arc<AtomicU64>,
+    saw_end: Arc<AtomicU64>,
+    last_first_row: usize,
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let (Some(frames), Tab::Log) = (&self.frames, self.state.tab) {
+            // Set the scroll position before the log is drawn. A cycle of 200 frames
+            // steps down through the log 500 rows at a time, then jumps to the end,
+            // then back to the top.
+            let n = frames.load(Ordering::Relaxed) as usize % 200;
+            match n {
+                198 => self.state.jump_to_end = true,
+                199 => self.state.scroll_to_row = Some(0),
+                _ => self.state.scroll_to_row = Some(n * 500),
+            }
+        }
         egui::CentralPanel::default().show(ui, |ui| self.state.ui(ui));
         if let Some(frames) = &self.frames {
             frames.fetch_add(1, Ordering::Relaxed);
@@ -28,10 +42,14 @@ impl eframe::App for App {
                     ui.ctx().request_repaint();
                 }
                 Tab::Log => {
-                    self.scroll_dir = -self.scroll_dir;
-                    ui.ctx().input_mut(|i| {
-                        i.smooth_scroll_delta = egui::vec2(0.0, 4000.0 * self.scroll_dir)
-                    });
+                    let rows = self.state.visible_rows.clone();
+                    if rows.start != self.last_first_row {
+                        self.row_changes.fetch_add(1, Ordering::Relaxed);
+                        self.last_first_row = rows.start;
+                    }
+                    if rows.end == k4_egui::LOG_LINES {
+                        self.saw_end.fetch_add(1, Ordering::Relaxed);
+                    }
                     ui.ctx().request_repaint();
                 }
                 Tab::Screen => {}
@@ -55,6 +73,8 @@ fn cpu_seconds() -> f64 {
 fn main() -> eframe::Result {
     let mut state = State::default();
     let sim = Arc::new(AtomicU64::new(0));
+    let row_changes = Arc::new(AtomicU64::new(0));
+    let saw_end = Arc::new(AtomicU64::new(0));
     let frames = std::env::var("K4_BENCH").ok().map(|t| {
         state.tab = match t.as_str() {
             "screen" => Tab::Screen,
@@ -63,6 +83,7 @@ fn main() -> eframe::Result {
         };
         let frames = Arc::new(AtomicU64::new(0));
         let (f, s, tab) = (frames.clone(), sim.clone(), state.tab);
+        let (rc, se) = (row_changes.clone(), saw_end.clone());
         std::thread::spawn(move || {
             let start = Instant::now();
             std::thread::sleep(Duration::from_secs(10));
@@ -75,6 +96,14 @@ fn main() -> eframe::Result {
                 s.load(Ordering::Relaxed) as f64 / el,
                 100.0 * cpu / el
             );
+            if tab == Tab::Log {
+                let (rc, se) = (rc.load(Ordering::Relaxed), se.load(Ordering::Relaxed));
+                println!("egui log first_row_changes={rc} frames_at_end={se}");
+                if rc == 0 || se == 0 {
+                    eprintln!("FAIL: the log did not scroll, the benchmark measured a still log");
+                    std::process::exit(1);
+                }
+            }
             std::process::exit(0);
         });
         frames
@@ -91,7 +120,9 @@ fn main() -> eframe::Result {
                 state,
                 frames,
                 sim,
-                scroll_dir: 1.0,
+                row_changes,
+                saw_end,
+                last_first_row: 0,
             }))
         }),
     )
