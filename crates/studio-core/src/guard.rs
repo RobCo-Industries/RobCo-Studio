@@ -172,7 +172,7 @@ pub fn spawn(command: &Command, stdout: Stdio, stderr: Stdio) -> Result<Guarded,
     }
     #[cfg(windows)]
     {
-        let _ = windows::ensure_job;
+        windows::ensure_job()?;
         let mut target = Command::new(command.get_program());
         target.args(command.get_args());
         copy_setup(&mut target, command);
