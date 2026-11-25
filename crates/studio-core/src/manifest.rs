@@ -582,7 +582,7 @@ pub fn parse_abi(text: &str) -> Result<Abi, ManifestError> {
 
 /// Checks the spelling of a manifest path. `pattern` allows `*` in the
 /// last component. It does not look at the file system.
-fn check_path(key: &str, path: &str, pattern: bool) -> Result<(), ManifestError> {
+pub(crate) fn check_path(key: &str, path: &str, pattern: bool) -> Result<(), ManifestError> {
     let fail = |reason: &str| {
         Err(ManifestError::Path {
             key: key.to_string(),
@@ -598,6 +598,9 @@ fn check_path(key: &str, path: &str, pattern: bool) -> Result<(), ManifestError>
     }
     if path.contains('\\') {
         return fail("uses \\, the separator is /");
+    }
+    if path.contains('\0') {
+        return fail("holds a NUL");
     }
     let parts: Vec<&str> = path.split('/').collect();
     for (i, part) in parts.iter().enumerate() {
