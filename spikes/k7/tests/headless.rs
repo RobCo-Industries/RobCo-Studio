@@ -153,3 +153,16 @@ fn tab_key_inserts_a_tab() {
     h.run();
     assert_eq!(h.state().text, "a\t\n");
 }
+
+#[test]
+fn theme_switch_recolours() {
+    let mut h = harness("int a;\n".into());
+    h.run();
+    let before = h.state().highlight_runs;
+    h.ctx.set_visuals(egui::Visuals::light());
+    h.run();
+    assert!(
+        h.state().highlight_runs > before,
+        "layout job rebuilt for the new theme"
+    );
+}

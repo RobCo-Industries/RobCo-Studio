@@ -11,12 +11,40 @@ use std::path::PathBuf;
 
 pub const TEXT_ID: &str = "k7-text";
 
+/// What a pending confirmation would do once the user agrees.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Replace {
+    Open(PathBuf),
+    Close,
+}
+
+/// The answer to "the buffer has unsaved edits".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Choice {
+    /// Save the edits, then go on. If the save fails, nothing else happens.
+    Save,
+    /// Drop the edits and go on.
+    Discard,
+    /// Do nothing.
+    Cancel,
+}
+
 pub struct Editor {
     pub text: String,
     /// The text as last opened or saved, to compute the dirty mark.
     saved: String,
     pub crlf: bool,
+    /// The path field. It is what Open reads, not where Save writes.
     pub path: String,
+    /// The file the buffer came from, where Save writes. Empty for a new buffer.
+    pub doc_path: String,
+    /// Set when an action would lose unsaved edits; the view asks about it.
+    pub confirm: Option<Replace>,
+    /// Set once the user agreed to close with unsaved edits.
+    pub close_allowed: bool,
+    /// Bumped on each load. The text widget and scroll area ids carry it, so
+    /// egui's undo history, cursor and scroll position start fresh per document.
+    pub doc_gen: u64,
     pub message: String,
     pub query: String,
     pub goto: String,
@@ -34,7 +62,7 @@ pub struct Editor {
     /// How many times the layouter ran the tokenizer, and how many times it was called.
     pub highlight_runs: u64,
     pub layouter_calls: u64,
-    hl_cache: Option<(String, LayoutJob)>,
+    hl_cache: Option<(HlKey, LayoutJob)>,
     /// Last frame's galley, and its top relative to the scrolled content.
     last_galley: Option<(std::sync::Arc<egui::Galley>, f32)>,
     sel_focus_asked: bool,
@@ -47,6 +75,10 @@ impl Editor {
             text,
             crlf: false,
             path: String::new(),
+            doc_path: String::new(),
+            confirm: None,
+            close_allowed: false,
+            doc_gen: 0,
             message: String::new(),
             query: String::new(),
             goto: String::new(),
@@ -68,8 +100,52 @@ impl Editor {
         self.text != self.saved
     }
 
+    /// Open `path`, or ask first if that would drop unsaved edits.
     pub fn open(&mut self, path: impl Into<PathBuf>) {
         let path = path.into();
+        if self.is_dirty() {
+            self.confirm = Some(Replace::Open(path));
+            self.message = "Unsaved edits. Save, discard or cancel?".into();
+            return;
+        }
+        self.load(path);
+    }
+
+    /// The window was asked to close. Returns true if it may close now.
+    pub fn close_requested(&mut self) -> bool {
+        if self.close_allowed || !self.is_dirty() {
+            return true;
+        }
+        self.confirm = Some(Replace::Close);
+        self.message = "Unsaved edits. Save, discard or cancel?".into();
+        false
+    }
+
+    /// Answer the pending confirmation.
+    pub fn resolve(&mut self, choice: Choice) {
+        let Some(what) = self.confirm.take() else {
+            return;
+        };
+        match choice {
+            Choice::Cancel => {
+                self.message.clear();
+                return;
+            }
+            Choice::Save => {
+                self.save();
+                if self.is_dirty() {
+                    return;
+                }
+            }
+            Choice::Discard => {}
+        }
+        match what {
+            Replace::Open(p) => self.load(p),
+            Replace::Close => self.close_allowed = true,
+        }
+    }
+
+    fn load(&mut self, path: PathBuf) {
         match std::fs::read(&path) {
             Err(e) => self.message = format!("Not opened: {e}."),
             Ok(bytes) => match file::decode(&bytes) {
@@ -79,6 +155,14 @@ impl Editor {
                     self.saved = text;
                     self.crlf = crlf;
                     self.path = path.display().to_string();
+                    self.doc_path = self.path.clone();
+                    // State that belongs to the old document.
+                    self.doc_gen += 1;
+                    self.cursor = None;
+                    self.pending_sel = None;
+                    self.sel_focus_asked = false;
+                    self.scroll_to_line = None;
+                    self.last_galley = None;
                     self.message = format!("Opened, {}.", if crlf { "CRLF" } else { "LF" });
                 }
             },
@@ -86,10 +170,14 @@ impl Editor {
     }
 
     pub fn save(&mut self) {
+        if self.doc_path.is_empty() {
+            self.doc_path = self.path.clone();
+        }
         let bytes = file::encode(&self.text, self.crlf);
-        match std::fs::write(&self.path, bytes) {
+        match std::fs::write(&self.doc_path, bytes) {
             Ok(()) => {
                 self.saved = self.text.clone();
+                self.path = self.doc_path.clone();
                 self.message = "Saved.".into();
             }
             Err(e) => self.message = format!("Not saved: {e}."),
@@ -169,14 +257,16 @@ impl Editor {
     }
 
     fn highlight(&mut self, ui: &egui::Ui, text: &str) -> LayoutJob {
-        if let Some((t, job)) = &self.hl_cache
-            && t == text
+        let font = TextStyle::Monospace.resolve(ui.style());
+        let dark = ui.visuals().dark_mode;
+        if let Some((k, job)) = &self.hl_cache
+            && k.text == text
+            && k.dark == dark
+            && k.font == font
         {
             return job.clone();
         }
         self.highlight_runs += 1;
-        let font = TextStyle::Monospace.resolve(ui.style());
-        let dark = ui.visuals().dark_mode;
         let mut job = LayoutJob::default();
         for (r, k) in c_lex::spans(text) {
             job.append(
@@ -186,11 +276,19 @@ impl Editor {
             );
         }
         job.keep_trailing_whitespace = true;
-        self.hl_cache = Some((text.to_owned(), job.clone()));
+        let key = HlKey {
+            text: text.to_owned(),
+            dark,
+            font,
+        };
+        self.hl_cache = Some((key, job.clone()));
         job
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        if ui.input(|i| i.viewport().close_requested()) && !self.close_requested() {
+            ui.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         ui.horizontal(|ui| {
             let l = ui.label("File").id;
             ui.add(egui::TextEdit::singleline(&mut self.path).desired_width(220.0))
@@ -227,12 +325,28 @@ impl Editor {
         if !self.message.is_empty() {
             ui.label(&self.message);
         }
+        if self.confirm.is_some() {
+            ui.horizontal(|ui| {
+                for (name, c) in [
+                    ("Save first", Choice::Save),
+                    ("Discard edits", Choice::Discard),
+                    ("Cancel", Choice::Cancel),
+                ] {
+                    if ui.button(name).clicked() {
+                        self.resolve(c);
+                    }
+                }
+            });
+        }
+        if self.close_allowed {
+            ui.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         let l = ui.label("C source").id;
         self.editor(ui, l);
     }
 
     fn editor(&mut self, ui: &mut egui::Ui, label: egui::Id) {
-        let id = egui::Id::unique(TEXT_ID);
+        let id = egui::Id::unique((TEXT_ID, self.doc_gen));
         let font: FontId = TextStyle::Monospace.resolve(ui.style());
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
         let lines = self.text.split('\n').count();
@@ -262,7 +376,7 @@ impl Editor {
         };
 
         let mut area = egui::ScrollArea::both()
-            .id_salt("k7-scroll")
+            .id_salt(("k7-scroll", self.doc_gen))
             .auto_shrink(false);
         if let Some(line) = self.scroll_to_line.take() {
             // The row's own position in last frame's galley, so no rounding drifts.
@@ -344,6 +458,13 @@ impl Editor {
         });
         self.text = text;
     }
+}
+
+/// What the cached layout job depends on.
+struct HlKey {
+    text: String,
+    dark: bool,
+    font: FontId,
 }
 
 fn digits(n: usize) -> usize {
