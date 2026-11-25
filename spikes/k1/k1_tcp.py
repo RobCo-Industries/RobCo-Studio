@@ -7,17 +7,30 @@ body and every expectation stays the one in RobCo-Core.
 
 Load it with `pytest -p k1_tcp`, with this folder and RobCo-Core's
 `tests` folder on PYTHONPATH.
+
+From RobCo-Core c6b6482 the harness starts QEMU through a /bin/sh
+watcher and launcher in a process group, writes a pidfile, and sweeps
+stale QEMU processes at session start with ps and os.getuid(). This
+plugin replaces start() as before, so neither shell runs and no pidfile
+is written. The sweep finds no pidfile, or fails on os.getuid() and
+logs one line: it kills nothing on Windows.
 """
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
 import time
 
-from harness import boot as hboot
-from harness import qemu as hqemu
+# harness/qemu.py names SIGHUP at import, for its watcher. Windows has
+# no SIGHUP. The watcher never runs here, so any value does.
+if not hasattr(signal, "SIGHUP"):
+    signal.SIGHUP = signal.SIGTERM
+
+from harness import boot as hboot  # noqa: E402
+from harness import qemu as hqemu  # noqa: E402
 
 HOST = "127.0.0.1"
 

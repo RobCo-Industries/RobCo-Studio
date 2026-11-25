@@ -20,7 +20,7 @@ flowchart TB
 
 ### studio-sys
 
-A library that will compile a fixed list of RobCo-Core's C files and expose them through hand-written declarations and safe wrappers: image sealing and checks, CRC-32, INI and FAT through FatFs. No C is linked yet. A spike decides how it gets in. It depends on no other crate of the workspace. `unsafe` is allowed here, because calling C needs it.
+A library that compiles a fixed list of RobCo-Core's C files from the submodule at `external/robco-core` and exposes them through hand-written declarations and safe wrappers: image checks, CRC-32, INI and FAT card images through FatFs. Image sealing comes later. See [crates/studio-sys/README.md](../crates/studio-sys/README.md). It depends on no other crate of the workspace. `unsafe` is allowed here, because calling C needs it.
 
 ### studio-disk
 

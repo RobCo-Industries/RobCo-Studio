@@ -3,9 +3,11 @@
 ## What to install
 
 - [rustup](https://rustup.rs). The file `rust-toolchain.toml` pins the compiler, and rustup fetches it on the first `cargo` command.
-- git.
+- git. RobCo-Core is a submodule at `external/robco-core`: clone with `--recurse-submodules`, or run `git submodule update --init`.
+- A C compiler, for `studio-sys`: the Xcode command line tools on macOS, `build-essential` on Ubuntu, or the Visual Studio build tools with their clang component, "C++ Clang Compiler for Windows", on Windows. On Windows the build script finds the GNU-style `clang` itself. You set nothing by hand.
+- Python 3, for one test of `studio-sys` that seals an image with RobCo-Core's `tools/rimg.py`.
 
-That is all for now. When the sys crate links RobCo-Core's C, you will also need a C compiler: the Xcode command line tools on macOS, `build-essential` on Ubuntu, or the Visual Studio build tools with their clang component on Windows. When the window gets a toolkit, Ubuntu will need its development packages.
+When the window gets a toolkit, Ubuntu will need its development packages.
 
 To run the licence check on your machine, install [cargo-deny](https://github.com/EmbarkStudios/cargo-deny). CI runs it on every pull request.
 
