@@ -14,6 +14,14 @@ studio-disk.workspace = true
 serde_json = "1"
 # Reads robco.toml and robco.lock. It reports error spans and refuses duplicate keys.
 toml = { version = "1.2.3", default-features = false, features = ["std", "parse", "serde"] }
+# SHA-256 of downloads, of package files and of .robco-archive. MIT or Apache-2.0.
+sha2 = "0.10.9"
+# Reads package archives and zip tool archives. Stored and deflate only. MIT.
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2"] }
+# Inflates zip entries and gzip tool archives, in pure Rust through miniz_oxide. MIT or Apache-2.0.
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+# Reads tar tool archives. MIT or Apache-2.0.
+tar = { version = "0.4.46", default-features = false }
 
 # Wraps the Job Object calls, which need `unsafe`, forbidden in this crate.
 [target.'cfg(windows)'.dependencies]

@@ -7,14 +7,17 @@
 //! `robco` command and the window both call it, and every feature lands
 //! here with a test before the window shows it. Today it holds the version
 //! [`guard`], which starts a child process that dies with Studio, and
-//! [`manifest`], which reads `robco.toml`, and [`plan`], which lists the
-//! commands of a build. It must never depend on a window or toolkit crate, nor on the
-//! two programs. It holds no `unsafe` code.
+//! [`manifest`], which reads `robco.toml`, [`plan`], which lists the
+//! commands of a build, [`resolve`], which picks packages and tools, and
+//! [`install`], which downloads, checks and installs them into the cache.
+//! It must never depend on a window or toolkit crate, nor on the two
+//! programs. It holds no `unsafe` code.
 #![forbid(unsafe_code)]
 
 pub mod boot;
 pub mod codes;
 pub mod guard;
+pub mod install;
 pub mod manifest;
 pub mod plan;
 pub mod resolve;
