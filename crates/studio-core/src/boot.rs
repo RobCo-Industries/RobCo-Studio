@@ -5,7 +5,7 @@
 //! `boot.json` holds the boot arguments of each board as data. The format is
 //! the "boot.json" section of `docs/spec/TESTING.md` in RobCo-Core, with
 //! "Order of checks" of `docs/spec/STUDIO_CLI.md`, read at commit
-//! `223e8cd`. This
+//! `e004c73`. This
 //! module reads the file and builds the program and its arguments for a
 //! board, a mode, three paths and the TCP ports. It starts no process.
 //!

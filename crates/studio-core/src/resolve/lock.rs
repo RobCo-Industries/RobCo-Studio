@@ -5,7 +5,7 @@
 //! Implements RobCo-Core `docs/spec/STUDIO_PROJECT.md`, "robco.lock" and
 //! its sections "Keys", "Reading the lock", "How the tool writes the lock",
 //! "What the lock pins" and "A stale lock", as read at RobCo-Core commit
-//! `223e8cd`.
+//! `e004c73`.
 //!
 //! The writer follows "How the tool writes the lock" exactly, so the same
 //! resolution gives the same bytes on every system. It writes a temporary

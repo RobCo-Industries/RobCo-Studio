@@ -5,7 +5,7 @@
 //! Implements RobCo-Core `docs/spec/SDK_PACKAGE.md`, "sdk.json", "Which
 //! package carries which field", "Reading sdk.json", "What must equal the
 //! index entry", "Tools a package names" and "Firmware pins", as read at
-//! RobCo-Core commit `223e8cd`. This module reads text and checks fields.
+//! RobCo-Core commit `e004c73`. This module reads text and checks fields.
 //! Checking files and hashes on disk is the installer's.
 
 use std::collections::BTreeMap;

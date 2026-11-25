@@ -3,7 +3,7 @@
 //! Reads the SDK index.
 //!
 //! Implements RobCo-Core `docs/spec/SDK_PACKAGE.md`, "The index" and
-//! "Reading the index", as read at RobCo-Core commit `223e8cd`. Fetching a
+//! "Reading the index", as read at RobCo-Core commit `e004c73`. Fetching a
 //! URL is the caller's. This module reads bytes, and [`read_file`] reads a
 //! local index.
 

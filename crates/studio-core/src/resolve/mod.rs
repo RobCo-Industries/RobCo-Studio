@@ -6,7 +6,7 @@
 //! "Reading the index", "A closed index", "sdk.json", "Tools a package
 //! names", "What must equal the index entry", "Version and ABI rules",
 //! "Resolving requires" and "Hashes", and `docs/spec/STUDIO_PROJECT.md`,
-//! section "robco.lock", as read at RobCo-Core commit `223e8cd`.
+//! section "robco.lock", as read at RobCo-Core commit `e004c73`.
 //!
 //! - [`index`] reads the index.
 //! - [`sdk_json`] reads a package's `sdk.json`.

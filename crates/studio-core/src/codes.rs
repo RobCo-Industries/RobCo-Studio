@@ -3,7 +3,7 @@
 //! Error codes and the exit code of each.
 //!
 //! Implements RobCo-Core `docs/spec/STUDIO_CLI.md`, "Exit codes" and
-//! "Error codes", as read at RobCo-Core commit `223e8cd`. Every error of
+//! "Error codes", as read at RobCo-Core commit `e004c73`. Every error of
 //! [`crate::manifest`], [`crate::resolve`] and [`crate::boot`] gives its
 //! code through [`ErrorCode`], and [`exit_code`] maps a code to the number
 //! the command ends with.
