@@ -145,6 +145,22 @@ jobs:
           grep -v '^+' nolgpl.log
           test "$code" -eq 1
           grep -F "FAIL: no full LGPL-2.1 text in licenses/ for libglib-2.0.so.0 (glib)" nolgpl.log
+      # The check must not trust the record: on the real package, a record
+      # that leaves out a licence and a library nobody listed both fail.
+      - name: Licence check fails on a short record and an unknown library (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          rm -rf broken && mkdir broken && cp -r out/qemu broken/qemu
+          sed -i 's/licence texts: GPL-2.0 BSD-2-Clause$/licence texts: GPL-2.0/' broken/qemu/licenses/packed-libraries.txt
+          cp broken/qemu/lib/libz.so.1 broken/qemu/lib/libnew.so.3
+          set +e
+          bash tools/qemu/notices.sh --check linux broken > short.log 2>&1
+          code=$?
+          set -e
+          grep -v '^+' short.log
+          test "$code" -eq 1
+          grep -F "FAIL: the record names licence texts 'GPL-2.0' for libfdt.so.1 (libfdt), but GPL-2.0 BSD-2-Clause apply" short.log
+          grep -F "FAIL: libnew.so.3 is a packed library this script does not know" short.log
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-${{ matrix.name }}

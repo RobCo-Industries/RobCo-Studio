@@ -118,23 +118,47 @@ origin() {
     | awk -v f="$1" '$1 == f && $2 == "=>" {print $3; exit}'
 }
 
-# Step 6: every packed library has a record line, and its licence texts,
-# as the record names them, are in full in licenses/: in a file named after
-# the library or in a shared text-* file.
+# Step 6. The list of libraries comes from the files really in the package,
+# and which licences apply comes from texts() above, not from the record:
+# the record is checked against both. Each packed library has exactly one
+# record line, its licence ids equal texts(), licenses/ holds the full text
+# of each and the library's own licence or notice file. A record line for a
+# file not in the package fails, and so does a file this script does not
+# know: a new dependency stops the packing until someone states its licence.
 check() {
-  local bad=0 f c t
+  local bad=0 f c t want own files lines n
   for f in qemu-COPYING qemu-LICENSE packed-libraries.txt; do
     [ -s "$lic/$f" ] || { echo "FAIL: licenses/$f is missing"; bad=1; }
   done
   has_text GPL-2.0 "$lic/qemu-COPYING" || { echo "FAIL: licenses/qemu-COPYING is not the full GPL-2.0 text"; bad=1; }
   [ -s "$dist/NOTICE" ] || { echo "FAIL: NOTICE is missing"; bad=1; }
-  for f in $(packed); do
-    c=$(component "$f")
-    t=$(awk -F' [|] ' -v f="$f" '$1 == f && $7 ~ /^licence texts: / {sub(/^licence texts: /, "", $7); print $7; exit}' "$record")
-    [ -n "$t" ] || { echo "FAIL: $f has no record line naming its licence texts"; bad=1; continue; }
-    for id in $t; do
+  files=$(packed) || { echo "FAIL: no library folder in the package"; return 1; }
+  lines=""
+  [ -f "$record" ] && lines=$(awk -F' [|] ' '$7 ~ /^licence texts: / {sub(/^licence texts: /, "", $7); print $1 "\t" $7}' "$record")
+  for f in $files; do
+    c=$(component "$f" 2>/dev/null) || { echo "FAIL: $f is a packed library this script does not know; state its licence in notices.sh"; bad=1; continue; }
+    n=$(printf '%s\n' "$lines" | awk -F'\t' -v f="$f" '$1 == f' | wc -l | tr -d ' ')
+    [ "$n" -le 1 ] || { echo "FAIL: $f ($c) has $n record lines naming licence texts, not one"; bad=1; }
+    t=$(printf '%s\n' "$lines" | awk -F'\t' -v f="$f" '$1 == f {print $2; exit}')
+    [ -n "$t" ] || { echo "FAIL: $f ($c) has no record line naming its licence texts"; bad=1; }
+    want=$(texts "$c")
+    [ "$(echo $t)" = "$want" ] || { echo "FAIL: the record names licence texts '$t' for $f ($c), but $want apply"; bad=1; }
+    for id in $want; do
       has_text "$id" "$lic/$c"-* "$lic"/text-* || { echo "FAIL: no full $id text in licenses/ for $f ($c)"; bad=1; }
     done
+    own=0
+    for g in "$lic/$c"-*; do
+      case $g in *-INSTALL_RECEIPT.json | *-pacman-Qi.txt) continue ;; esac
+      [ -s "$g" ] && own=1
+    done
+    [ "$own" = 1 ] || { echo "FAIL: no licence or notice file of its own in licenses/ for $f ($c)"; bad=1; }
+  done
+  for f in $(printf '%s\n' "$lines" | cut -f1); do
+    case "
+$files
+" in *"
+$f
+"*) ;; *) echo "FAIL: the record names $f, which is not in the package"; bad=1 ;; esac
   done
   return "$bad"
 }
