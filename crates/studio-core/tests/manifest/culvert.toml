@@ -1,0 +1,17 @@
+format = 1
+
+[project]
+name = "CULVERT"
+title = "Culvert"
+version = "1.0.0"
+kind = "holotape"
+subtype = "game"
+icon = "icon.pbm"
+
+[target]
+platform = "pipos"
+abi = "1.4"
+
+[build]
+backend = "robco"
+sources = ["main.c", "game.c", "logic.c", "draw.c"]
