@@ -1,10 +1,18 @@
 name: qemu
 
-# Build QEMU for the three hosts with tools/qemu, pack it, and run
-# RobCo-Core's canary suite against each package on a fresh runner.
-# Artifacts stay on the run: this workflow publishes nothing.
+# Build QEMU for the three hosts with tools/qemu, pack it, fetch the
+# sources of the packed libraries, and run RobCo-Core's canary suite
+# against each package on a fresh runner. The release job gathers the
+# release files and their list as a workflow artifact on every run.
+#
+# Only the publish job publishes, and only for a pushed tag of the form
+# qemu-<QEMU version>-r<n>, such as qemu-10.1.2-r1. A pull request, a
+# manual start or a branch is a dry run: the same files, as an artifact.
 
 on:
+  push:
+    tags:
+      - "qemu-*"
   pull_request:
     paths:
       - tools/qemu/**
@@ -64,6 +72,9 @@ jobs:
           - { os: windows-latest, name: windows }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      # On a release tag the NOTICE names the release page. Empty otherwise.
+      QEMU_RELEASE_URL: ${{ startsWith(github.ref, 'refs/tags/qemu-') && format('{0}/{1}/releases/tag/{2}', github.server_url, github.repository, github.ref_name) || '' }}
     steps:
       - uses: actions/checkout@v4
       # build.sh pins the QEMU tarball's SHA-256, so its hash keys both the
@@ -79,6 +90,9 @@ jobs:
       - name: Build tools (Linux)
         if: matrix.name == 'linux'
         run: |
+          # sources.sh fetches the source packages through deb-src lines.
+          sed -n 's/^deb /deb-src /p' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/deb-src.list
+          test -s /etc/apt/sources.list.d/deb-src.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential ninja-build \
             pkg-config python3-venv libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev patchelf
@@ -92,7 +106,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            make tar xz curl diffutils bison flex git
+            make tar xz zstd curl diffutils bison flex git
             mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-glib2
             mingw-w64-ucrt-x86_64-pixman mingw-w64-ucrt-x86_64-dtc
             mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf
@@ -161,6 +175,34 @@ jobs:
           test "$code" -eq 1
           grep -F "FAIL: the record names licence texts 'GPL-2.0' for libfdt.so.1 (libfdt), but GPL-2.0 BSD-2-Clause apply" short.log
           grep -F "FAIL: libnew.so.3 is a packed library this script does not know" short.log
+      # In the same job as the packing: a packager may stop serving an old
+      # version, so the release keeps the sources fetched now.
+      - name: Fetch the sources of the packed libraries
+        if: matrix.name != 'windows'
+        run: bash tools/qemu/sources.sh ${{ matrix.name }} out
+      - name: Fetch the sources of the packed libraries (MSYS2)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: bash tools/qemu/sources.sh windows out
+      # No packed file may hold a path, user or host name of this machine,
+      # nor the folder QEMU was built in. The scan is first shown to fail
+      # on a copy that holds one.
+      - name: No path or name of the build machine in the package
+        run: |
+          py=python3; [ "${{ matrix.name }}" = windows ] && py=python
+          work=$(sed -n 's/^work: //p' out/build/build.txt)
+          test -n "$work"
+          forbid=(--forbid "$work" --forbid "$HOME" --forbid "$GITHUB_WORKSPACE" --forbid "$RUNNER_TEMP" --forbid "$(hostname)")
+          rm -rf scanned && cp -r out/qemu scanned
+          echo "$HOME" >> scanned/NOTICE
+          set +e
+          $py tools/qemu/release.py scan scanned "${forbid[@]}" > scan.log 2>&1
+          code=$?
+          set -e
+          cat scan.log
+          test "$code" -eq 1
+          grep -F "FAIL: NOTICE holds" scan.log
+          $py tools/qemu/release.py scan out/qemu "${forbid[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-${{ matrix.name }}
@@ -170,6 +212,18 @@ jobs:
         with:
           name: report-${{ matrix.name }}
           path: out/report.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sources-${{ matrix.name }}
+          path: out/sources
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.name == 'linux'
+        with:
+          name: qemu-source
+          path: out/build/qemu-*.tar.xz
+          if-no-files-found: error
 
   canary:
     needs: [checker, build]
@@ -280,3 +334,67 @@ jobs:
         with:
           name: canary-${{ matrix.name }}
           path: canary*.xml
+
+  # Every run: gather the release files and their list, check them, and
+  # keep them as an artifact. Only builds that passed the canary go in.
+  release:
+    needs: [build, canary]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Every artifact of the run, each in in/<name>/. release.py reads
+      # the ones it names and ignores the canary reports.
+      - uses: actions/download-artifact@v4
+        with:
+          path: in
+      - name: Gather the release
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/qemu-') && github.ref_name || '' }}
+        run: |
+          args=(--in in --out dist --repo .)
+          if [ -n "$TAG" ]; then
+            args+=(--tag "$TAG" --base-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG")
+          fi
+          python3 tools/qemu/release.py gather "${args[@]}"
+      - name: Check the list against the files
+        run: |
+          python3 tools/qemu/release.py verify dist
+          cd dist && sha256sum -c qemu-*-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-release
+          path: dist
+          if-no-files-found: error
+
+  # Publishes only for a pushed tag that starts with qemu-. The release
+  # job has already refused a tag of any other form than
+  # qemu-<version>-r<n>. Never on a branch, a pull request or a manual start.
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/qemu-')
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-release
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          v=$(echo "$TAG" | sed -n 's/^qemu-\([0-9.]*\)-r[0-9]*$/\1/p')
+          test -n "$v"
+          {
+            echo "QEMU $v for Arm, built by RobCo Studio, under the GNU GPL version 2."
+            echo
+            echo "Beside the three archives: QEMU's source archive, the build recipe, the notices"
+            echo "and the sources of the libraries packed with each, and qemu-$v-files.json and"
+            echo "qemu-$v-SHA256SUMS with the size and SHA-256 of every file. See docs/THIRD_PARTY.md."
+          } > notes.md
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "QEMU $v ($TAG)" --notes-file notes.md
