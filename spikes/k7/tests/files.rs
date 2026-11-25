@@ -31,8 +31,8 @@ fn open_input_save(name: &str, bytes: &[u8], ev: Option<egui::Event>) -> (Vec<u8
     assert!(!h.state().is_dirty());
     assert!(h.query_by_label("saved").is_some());
     if let Some(ev) = ev {
-        let end = h.state().text.chars().count();
-        h.state_mut().pending_sel = Some((end, end));
+        let end = h.state().doc.text.chars().count();
+        h.state_mut().doc.pending_sel = Some((end, end));
         h.run();
         h.event(ev);
         h.run();
@@ -54,7 +54,7 @@ fn lf_round_trip_exact() {
     let src = b"int main(void)\n{\n\treturn 0;\n}\n";
     let (out, ed) = open_edit_save("lf.c", src, "");
     assert_eq!(out, src);
-    assert!(!ed.crlf);
+    assert!(!ed.doc.crlf);
 }
 
 #[test]
@@ -62,8 +62,8 @@ fn crlf_round_trip_exact() {
     let src = b"int main(void)\r\n{\r\n\treturn 0;\r\n}\r\n";
     let (out, ed) = open_edit_save("crlf.c", src, "");
     assert_eq!(out, src);
-    assert!(ed.crlf);
-    assert!(!ed.text.contains('\r'));
+    assert!(ed.doc.crlf);
+    assert!(!ed.doc.text.contains('\r'));
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn invalid_utf8_refused() {
     let p = temp("bad.c", b"int a; /* \xff\xfe */\n");
     let mut ed = Editor::new("kept\n".into());
     ed.open(&p);
-    assert_eq!(ed.text, "kept\n", "text not replaced");
+    assert_eq!(ed.doc.text, "kept\n", "text not replaced");
     assert!(ed.message.contains("not valid UTF-8"), "{}", ed.message);
     assert!(ed.message.contains("offset 10"), "{}", ed.message);
     // Nothing was written back.
@@ -98,7 +98,7 @@ fn mixed_line_endings_refused() {
     let p = temp("mixed.c", b"a\r\nb\n");
     let mut ed = Editor::new("kept\n".into());
     ed.open(&p);
-    assert_eq!(ed.text, "kept\n");
+    assert_eq!(ed.doc.text, "kept\n");
     assert!(ed.message.contains("mixes line endings"), "{}", ed.message);
     std::fs::remove_file(&p).unwrap();
 }
@@ -116,8 +116,8 @@ fn dirty_then_open(a: &std::path::Path, b: &std::path::Path) -> Harness<'static,
     let mut h = ui_harness(ed);
     h.get_by_label("Open").click();
     h.run();
-    let end = h.state().text.chars().count();
-    h.state_mut().pending_sel = Some((end, end));
+    let end = h.state().doc.text.chars().count();
+    h.state_mut().doc.pending_sel = Some((end, end));
     h.run();
     h.event(egui::Event::Text("typed".into()));
     h.run();
@@ -134,14 +134,14 @@ fn open_over_edits_asks_and_cancel_keeps_them() {
     let b = temp("ask-b.c", b"bbb\n");
     let mut h = dirty_then_open(&a, &b);
     assert_eq!(
-        h.state().text,
+        h.state().doc.text,
         "aaa\ntyped",
         "not replaced before an answer"
     );
     h.get_by_label("Cancel").click();
     h.run();
-    assert_eq!(h.state().text, "aaa\ntyped");
-    assert!(h.state().confirm.is_none());
+    assert_eq!(h.state().doc.text, "aaa\ntyped");
+    assert!(h.state().question.is_none());
     // Save still goes to A, not to the path typed in the field.
     h.get_by_label("Save").click();
     h.run();
@@ -157,7 +157,7 @@ fn open_over_edits_save_first() {
     h.get_by_label("Save first").click();
     h.run();
     assert_eq!(std::fs::read(&a).unwrap(), b"aaa\ntyped");
-    assert_eq!(h.state().text, "bbb\n");
+    assert_eq!(h.state().doc.text, "bbb\n");
     assert!(!h.state().is_dirty());
 }
 
@@ -168,13 +168,17 @@ fn undo_after_discard_and_open_keeps_new_file() {
     let mut h = dirty_then_open(&a, &b);
     h.get_by_label("Discard edits").click();
     h.run();
-    assert_eq!(h.state().text, "bbb\n");
+    assert_eq!(h.state().doc.text, "bbb\n");
     assert_eq!(std::fs::read(&a).unwrap(), b"aaa\n", "A untouched");
-    h.state_mut().pending_sel = Some((0, 0));
+    h.state_mut().doc.pending_sel = Some((0, 0));
     h.run();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
-    assert_eq!(h.state().text, "bbb\n", "undo did not bring back A's text");
+    assert_eq!(
+        h.state().doc.text,
+        "bbb\n",
+        "undo did not bring back A's text"
+    );
     assert!(!h.state().is_dirty());
 }
 
@@ -182,7 +186,7 @@ fn undo_after_discard_and_open_keeps_new_file() {
 fn close_with_edits_is_cancelled_until_discard() {
     use egui::{ViewportCommand, ViewportEvent, ViewportId};
     let mut h = ui_harness(Editor::new("x\n".into()));
-    h.state_mut().pending_sel = Some((0, 0));
+    h.state_mut().doc.pending_sel = Some((0, 0));
     h.run();
     h.event(egui::Event::Text("y".into()));
     h.run();
@@ -205,7 +209,13 @@ fn close_with_edits_is_cancelled_until_discard() {
         "{:?}",
         cmds(&h)
     );
-    assert_eq!(h.state().confirm, Some(k7_editor::Replace::Close));
+    assert!(matches!(
+        h.state().question,
+        Some(k7_editor::Question::Unsaved {
+            then: k7_editor::Replace::Close,
+            ..
+        })
+    ));
     h.get_by_label("Discard edits").click();
     h.step();
     h.step();
@@ -217,7 +227,7 @@ fn lone_cr_refused() {
     let p = temp("cr.c", b"a\rb\n");
     let mut ed = Editor::new("kept\n".into());
     ed.open(&p);
-    assert_eq!(ed.text, "kept\n");
+    assert_eq!(ed.doc.text, "kept\n");
     assert!(ed.message.contains("CR without LF"), "{}", ed.message);
     std::fs::remove_file(&p).unwrap();
 }
@@ -227,7 +237,7 @@ fn paste_crlf_into_crlf_document() {
     let paste = egui::Event::Paste("x;\r\ny;\r\n".into());
     let (out, ed) = open_input_save("paste-crlf.c", b"a;\r\n", Some(paste));
     assert_eq!(out, b"a;\r\nx;\r\ny;\r\n");
-    assert!(!ed.text.contains('\r'));
+    assert!(!ed.doc.text.contains('\r'));
 }
 
 #[test]
@@ -240,7 +250,7 @@ fn paste_crlf_and_cr_into_lf_document() {
 /// A new buffer with typed text, asked to open `b`.
 fn untitled_then_open(b: &std::path::Path) -> Harness<'static, Editor> {
     let mut h = ui_harness(Editor::new(String::new()));
-    h.state_mut().pending_sel = Some((0, 0));
+    h.state_mut().doc.pending_sel = Some((0, 0));
     h.run();
     h.event(egui::Event::Text("typed".into()));
     h.run();
@@ -255,17 +265,18 @@ fn untitled_then_open(b: &std::path::Path) -> Harness<'static, Editor> {
 fn untitled_save_first_never_writes_the_file_being_opened() {
     let b = temp("untitled-b.c", b"bbb\n");
     let mut h = untitled_then_open(&b);
-    assert!(h.state().confirm.is_some());
+    assert!(h.state().question.is_some());
     assert!(
         h.query_by_label("Save first").is_none(),
         "no file to save to"
     );
     // The model refuses it too, and keeps the question and the edits.
-    h.state_mut().resolve(k7_editor::Choice::Save);
+    let id = h.state().doc.id;
+    h.state_mut().answer(id, k7_editor::Answer::Save);
     h.run();
     assert_eq!(std::fs::read(&b).unwrap(), b"bbb\n");
-    assert_eq!(h.state().text, "typed");
-    assert!(h.state().confirm.is_some());
+    assert_eq!(h.state().doc.text, "typed");
+    assert!(h.state().question.is_some());
     // Plain Save has no file either.
     h.get_by_label("Save").click();
     h.run();
@@ -277,7 +288,7 @@ fn untitled_save_first_never_writes_the_file_being_opened() {
 fn save_as_asks_before_overwrite() {
     let b = temp("saveas-b.c", b"bbb\n");
     let mut h = ui_harness(Editor::new(String::new()));
-    h.state_mut().pending_sel = Some((0, 0));
+    h.state_mut().doc.pending_sel = Some((0, 0));
     h.run();
     h.event(egui::Event::Text("typed".into()));
     h.run();
@@ -295,5 +306,5 @@ fn save_as_asks_before_overwrite() {
     h.run();
     assert_eq!(std::fs::read(&b).unwrap(), b"typed");
     assert!(!h.state().is_dirty());
-    assert_eq!(h.state().doc_path.as_deref(), Some(b.as_path()));
+    assert_eq!(h.state().doc.path.as_deref(), Some(b.as_path()));
 }

@@ -11,108 +11,180 @@ use std::path::PathBuf;
 
 pub const TEXT_ID: &str = "k7-text";
 
-/// What a pending confirmation would do once the user agrees.
+/// What an "unsaved edits" question would do once the user agrees.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Replace {
     Open(PathBuf),
     Close,
 }
 
-/// The answer to "the buffer has unsaved edits".
+/// The one question the editor can have pending. Each variant carries all its
+/// answer needs: the target, and the id of the document it was asked about.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Question {
+    /// The buffer has unsaved edits and `then` would drop them.
+    Unsaved { doc: u64, then: Replace },
+    /// Save as would replace the existing file `path`.
+    Overwrite { doc: u64, path: PathBuf },
+}
+
+impl Question {
+    pub fn doc(&self) -> u64 {
+        match self {
+            Question::Unsaved { doc, .. } | Question::Overwrite { doc, .. } => *doc,
+        }
+    }
+}
+
+/// An answer. Save, Discard and Cancel answer `Unsaved`; Overwrite and Keep
+/// answer `Overwrite`. An answer to the other kind of question is ignored.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Choice {
+pub enum Answer {
     /// Save the edits, then go on. If the save fails, nothing else happens.
     Save,
     /// Drop the edits and go on.
     Discard,
     /// Do nothing.
     Cancel,
+    /// Write over the existing file.
+    Overwrite,
+    /// Leave the existing file alone.
+    Keep,
 }
 
-pub struct Editor {
+/// Everything that belongs to one document. A load replaces it whole, so no
+/// state of the old document can reach the new one.
+pub struct Doc {
+    /// One more than the document before it. The text widget and scroll area
+    /// ids carry it, so egui's undo history, cursor and scroll start fresh, and
+    /// a question names the document it was asked about by it.
+    pub id: u64,
     pub text: String,
     /// The text as last opened or saved, to compute the dirty mark.
     saved: String,
     pub crlf: bool,
-    /// The "File" field. Open reads it and nothing else does.
-    pub path: String,
     /// The document's own file, the only place Save writes. None for a new buffer.
-    pub doc_path: Option<PathBuf>,
-    /// The "Save as" field: a destination given for that purpose only.
-    pub save_as_path: String,
-    /// Save as would replace this existing file; the view asks first.
-    pub overwrite: Option<PathBuf>,
-    /// Set when an action would lose unsaved edits; the view asks about it.
-    pub confirm: Option<Replace>,
-    /// Set once the user agreed to close with unsaved edits.
-    pub close_allowed: bool,
-    /// Bumped on each load. The text widget and scroll area ids carry it, so
-    /// egui's undo history, cursor and scroll position start fresh per document.
-    pub doc_gen: u64,
-    pub message: String,
-    pub query: String,
-    pub goto: String,
+    pub path: Option<PathBuf>,
+    pub cursor: Option<CCursorRange>,
     /// A selection, in characters, to apply before the next draw, then scroll to.
     pub pending_sel: Option<(usize, usize)>,
+    sel_focus_asked: bool,
     /// Benchmark and tests: put this line at the top of the view before drawing.
     pub scroll_to_line: Option<usize>,
+    /// Last frame's galley, and its top relative to the scrolled content.
+    last_galley: Option<(std::sync::Arc<egui::Galley>, f32)>,
+}
+
+impl Doc {
+    fn new(id: u64, text: String, crlf: bool, path: Option<PathBuf>) -> Self {
+        Self {
+            id,
+            saved: text.clone(),
+            text,
+            crlf,
+            path,
+            cursor: None,
+            pending_sel: None,
+            sel_focus_asked: false,
+            scroll_to_line: None,
+            last_galley: None,
+        }
+    }
+}
+
+/// The editor model. Its fields, sorted by what they belong to:
+///
+/// - The document: `doc`, a `Doc` replaced whole on load. Text, saved text,
+///   line ending, path, id, cursor, pending selection and scroll, last galley.
+/// - The user's input, kept across loads on purpose: `path` (the "File"
+///   field), `save_as_path`, `query`, `goto`.
+/// - The pending question: `question`, one value at most. While it is set the
+///   model is modal: Open, Save, Save as and a close request are refused, and
+///   typing is locked out. Search and go to line are allowed: they only set a
+///   selection, which waits until the question is answered. An answer must
+///   name the document the question was asked about, or it is dropped.
+/// - The view and the session: `message`, `close_allowed`, `check_lines`,
+///   `first_gutter_line`, `first_text_line`, `hl_cache` (keyed by its inputs,
+///   not by document), and the counters `highlight_runs` and `layouter_calls`.
+pub struct Editor {
+    pub doc: Doc,
+    /// The "File" field. Open reads it and nothing else does.
+    pub path: String,
+    /// The "Save as" field: a destination given for that purpose only.
+    pub save_as_path: String,
+    pub query: String,
+    pub goto: String,
+    pub question: Option<Question>,
+    pub message: String,
+    /// Set once the user agreed to close with unsaved edits.
+    pub close_allowed: bool,
     /// Line numbers, from 1, at the top of the view on the last frame:
     /// the one the gutter drew, and the one the text galley has there.
     pub first_gutter_line: usize,
     pub first_text_line: usize,
     /// Compute `first_text_line`. It scans the text, so it is off by default.
     pub check_lines: bool,
-    pub cursor: Option<CCursorRange>,
     /// How many times the layouter ran the tokenizer, and how many times it was called.
     pub highlight_runs: u64,
     pub layouter_calls: u64,
     hl_cache: Option<(HlKey, LayoutJob)>,
-    /// Last frame's galley, and its top relative to the scrolled content.
-    last_galley: Option<(std::sync::Arc<egui::Galley>, f32)>,
-    sel_focus_asked: bool,
 }
+
+const BUSY: &str = "Answer the question first.";
 
 impl Editor {
     pub fn new(text: String) -> Self {
         let text = file::to_lf(&text).into_owned();
         Self {
-            saved: text.clone(),
-            text,
-            crlf: false,
+            doc: Doc::new(0, text, false, None),
             path: String::new(),
-            doc_path: None,
             save_as_path: String::new(),
-            overwrite: None,
-            confirm: None,
-            close_allowed: false,
-            doc_gen: 0,
-            message: String::new(),
             query: String::new(),
             goto: String::new(),
-            pending_sel: None,
-            scroll_to_line: None,
+            question: None,
+            message: String::new(),
+            close_allowed: false,
             first_gutter_line: 1,
             first_text_line: 1,
             check_lines: false,
-            cursor: None,
             highlight_runs: 0,
             layouter_calls: 0,
             hl_cache: None,
-            last_galley: None,
-            sel_focus_asked: false,
         }
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.text != self.saved
+        self.doc.text != self.doc.saved
+    }
+
+    /// Refuse an action while a question is pending. Returns true if refused.
+    fn busy(&mut self) -> bool {
+        if self.question.is_some() {
+            self.message = BUSY.into();
+        }
+        self.question.is_some()
+    }
+
+    fn ask(&mut self, q: Question) {
+        self.message = match &q {
+            Question::Unsaved { .. } => "Unsaved edits. Save, discard or cancel?".into(),
+            Question::Overwrite { path, .. } => format!("{} exists. Overwrite it?", path.display()),
+        };
+        self.question = Some(q);
     }
 
     /// Open `path`, or ask first if that would drop unsaved edits.
     pub fn open(&mut self, path: impl Into<PathBuf>) {
+        if self.busy() {
+            return;
+        }
         let path = path.into();
         if self.is_dirty() {
-            self.confirm = Some(Replace::Open(path));
-            self.message = "Unsaved edits. Save, discard or cancel?".into();
+            let doc = self.doc.id;
+            self.ask(Question::Unsaved {
+                doc,
+                then: Replace::Open(path),
+            });
             return;
         }
         self.load(path);
@@ -120,40 +192,59 @@ impl Editor {
 
     /// The window was asked to close. Returns true if it may close now.
     pub fn close_requested(&mut self) -> bool {
-        if self.close_allowed || !self.is_dirty() {
+        if self.close_allowed {
             return true;
         }
-        self.confirm = Some(Replace::Close);
-        self.message = "Unsaved edits. Save, discard or cancel?".into();
+        if self.busy() {
+            return false;
+        }
+        if !self.is_dirty() {
+            return true;
+        }
+        let doc = self.doc.id;
+        self.ask(Question::Unsaved {
+            doc,
+            then: Replace::Close,
+        });
         false
     }
 
-    /// Answer the pending confirmation.
-    pub fn resolve(&mut self, choice: Choice) {
-        let Some(what) = self.confirm.take() else {
+    /// Answer the pending question about document `doc`. An answer about
+    /// another document, or of the wrong kind, is dropped and changes nothing.
+    pub fn answer(&mut self, doc: u64, a: Answer) {
+        let Some(q) = self.question.take() else {
             return;
         };
-        match choice {
-            Choice::Cancel => {
-                self.message.clear();
-                return;
-            }
-            Choice::Save => {
-                if self.doc_path.is_none() {
-                    // Never offered in the view; keep the edits and the question.
-                    self.confirm = Some(what);
-                    return;
-                }
-                self.save();
-                if self.is_dirty() {
-                    return;
-                }
-            }
-            Choice::Discard => {}
+        if q.doc() != self.doc.id {
+            // Cannot happen: a load clears the question. Write nothing.
+            self.message.clear();
+            return;
         }
-        match what {
-            Replace::Open(p) => self.load(p),
-            Replace::Close => self.close_allowed = true,
+        if doc != q.doc() {
+            self.question = Some(q);
+            return;
+        }
+        match (q, a) {
+            (Question::Unsaved { .. }, Answer::Cancel)
+            | (Question::Overwrite { .. }, Answer::Keep) => self.message.clear(),
+            (Question::Overwrite { path, .. }, Answer::Overwrite) => self.write_to(path),
+            (q @ Question::Unsaved { .. }, Answer::Save) if self.doc.path.is_none() => {
+                // Never offered in the view; keep the edits and the question.
+                self.question = Some(q);
+            }
+            (Question::Unsaved { then, .. }, Answer::Save | Answer::Discard) => {
+                if a == Answer::Save {
+                    self.save_doc();
+                    if self.is_dirty() {
+                        return;
+                    }
+                }
+                match then {
+                    Replace::Open(p) => self.load(p),
+                    Replace::Close => self.close_allowed = true,
+                }
+            }
+            (q, _) => self.question = Some(q),
         }
     }
 
@@ -163,18 +254,12 @@ impl Editor {
             Ok(bytes) => match file::decode(&bytes) {
                 Err(e) => self.message = e.to_string(),
                 Ok((text, crlf)) => {
-                    self.text = text.clone();
-                    self.saved = text;
-                    self.crlf = crlf;
                     self.path = path.display().to_string();
-                    self.doc_path = Some(path);
-                    // State that belongs to the old document.
-                    self.doc_gen += 1;
-                    self.cursor = None;
-                    self.pending_sel = None;
-                    self.sel_focus_asked = false;
-                    self.scroll_to_line = None;
-                    self.last_galley = None;
+                    // The one place a document's state is reset: all of it, whole.
+                    self.doc = Doc::new(self.doc.id + 1, text, crlf, Some(path));
+                    // A question is about the old document. Answer paths take it
+                    // first, and open refuses while one is set; this is a third lock.
+                    self.question = None;
                     self.message = format!("Opened, {}.", if crlf { "CRLF" } else { "LF" });
                 }
             },
@@ -183,7 +268,13 @@ impl Editor {
 
     /// Write the buffer to the document's own file. A new buffer has none.
     pub fn save(&mut self) {
-        match self.doc_path.clone() {
+        if !self.busy() {
+            self.save_doc();
+        }
+    }
+
+    fn save_doc(&mut self) {
+        match self.doc.path.clone() {
             Some(p) => self.write_to(p),
             None => self.message = "Not saved: a new buffer needs Save as.".into(),
         }
@@ -191,31 +282,26 @@ impl Editor {
 
     /// Write to `path`, which becomes the document's file. Ask first if it exists.
     pub fn save_as(&mut self, path: impl Into<PathBuf>) {
+        if self.busy() {
+            return;
+        }
         let path = path.into();
         if path.as_os_str().is_empty() {
             self.message = "Not saved: give a file for Save as.".into();
-        } else if path.exists() && self.doc_path.as_ref() != Some(&path) {
-            self.message = format!("{} exists. Overwrite it?", path.display());
-            self.overwrite = Some(path);
+        } else if path.exists() && self.doc.path.as_ref() != Some(&path) {
+            let doc = self.doc.id;
+            self.ask(Question::Overwrite { doc, path });
         } else {
             self.write_to(path);
         }
     }
 
-    /// Answer "overwrite the existing file?".
-    pub fn resolve_overwrite(&mut self, yes: bool) {
-        match self.overwrite.take() {
-            Some(p) if yes => self.write_to(p),
-            _ => self.message.clear(),
-        }
-    }
-
     fn write_to(&mut self, path: PathBuf) {
-        let bytes = file::encode(&self.text, self.crlf);
+        let bytes = file::encode(&self.doc.text, self.doc.crlf);
         match std::fs::write(&path, bytes) {
             Ok(()) => {
-                self.saved = self.text.clone();
-                self.doc_path = Some(path);
+                self.doc.saved = self.doc.text.clone();
+                self.doc.path = Some(path);
                 self.message = "Saved.".into();
             }
             Err(e) => self.message = format!("Not saved: {e}."),
@@ -223,14 +309,15 @@ impl Editor {
     }
 
     fn char_of_byte(&self, byte: usize) -> usize {
-        self.text[..byte].chars().count()
+        self.doc.text[..byte].chars().count()
     }
 
     fn byte_of_char(&self, ch: usize) -> usize {
-        self.text
+        self.doc
+            .text
             .char_indices()
             .nth(ch)
-            .map_or(self.text.len(), |(b, _)| b)
+            .map_or(self.doc.text.len(), |(b, _)| b)
     }
 
     /// Select the next match after the cursor, wrapping at the end.
@@ -238,13 +325,13 @@ impl Editor {
         if self.query.is_empty() {
             return;
         }
-        let from = self.cursor.map_or(0, |c| {
+        let from = self.doc.cursor.map_or(0, |c| {
             self.byte_of_char(c.primary.index.max(c.secondary.index).0)
         });
-        let hit = self.text[from..]
+        let hit = self.doc.text[from..]
             .find(&self.query)
             .map(|i| i + from)
-            .or_else(|| self.text.find(&self.query));
+            .or_else(|| self.doc.text.find(&self.query));
         self.select_hit(hit);
     }
 
@@ -253,12 +340,12 @@ impl Editor {
         if self.query.is_empty() {
             return;
         }
-        let to = self.cursor.map_or(self.text.len(), |c| {
+        let to = self.doc.cursor.map_or(self.doc.text.len(), |c| {
             self.byte_of_char(c.primary.index.min(c.secondary.index).0)
         });
-        let hit = self.text[..to]
+        let hit = self.doc.text[..to]
             .rfind(&self.query)
-            .or_else(|| self.text.rfind(&self.query));
+            .or_else(|| self.doc.text.rfind(&self.query));
         self.select_hit(hit);
     }
 
@@ -267,7 +354,7 @@ impl Editor {
             Some(b) => {
                 let s = self.char_of_byte(b);
                 let n = self.query.chars().count();
-                self.pending_sel = Some((s, s + n));
+                self.doc.pending_sel = Some((s, s + n));
                 self.message.clear();
             }
             None => self.message = "Not found.".into(),
@@ -276,7 +363,7 @@ impl Editor {
 
     /// Put the cursor at the start of line `line`, counted from 1.
     pub fn goto_line(&mut self, line: usize) {
-        let total = self.text.split('\n').count();
+        let total = self.doc.text.split('\n').count();
         if line == 0 || line > total {
             self.message = format!("No line {line}: the file has {total}.");
             return;
@@ -284,13 +371,14 @@ impl Editor {
         let byte = if line == 1 {
             0
         } else {
-            self.text
+            self.doc
+                .text
                 .match_indices('\n')
                 .nth(line - 2)
                 .map_or(0, |(i, _)| i + 1)
         };
         let c = self.char_of_byte(byte);
-        self.pending_sel = Some((c, c));
+        self.doc.pending_sel = Some((c, c));
         self.message.clear();
     }
 
@@ -327,6 +415,46 @@ impl Editor {
         if ui.input(|i| i.viewport().close_requested()) && !self.close_requested() {
             ui.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
+        // While a question is pending, only its answers are enabled.
+        let free = self.question.is_none();
+        ui.add_enabled_ui(free, |ui| self.toolbar(ui));
+        if !self.message.is_empty() {
+            ui.label(&self.message);
+        }
+        if let Some(q) = &self.question {
+            let doc = q.doc();
+            let answers: &[(&str, Answer)] = match q {
+                Question::Overwrite { .. } => &[
+                    ("Overwrite", Answer::Overwrite),
+                    ("Keep the file", Answer::Keep),
+                ],
+                // A new buffer has no file to save to: Cancel, then Save as.
+                Question::Unsaved { .. } if self.doc.path.is_none() => &[
+                    ("Discard edits", Answer::Discard),
+                    ("Cancel", Answer::Cancel),
+                ],
+                Question::Unsaved { .. } => &[
+                    ("Save first", Answer::Save),
+                    ("Discard edits", Answer::Discard),
+                    ("Cancel", Answer::Cancel),
+                ],
+            };
+            ui.horizontal(|ui| {
+                for &(name, a) in answers {
+                    if ui.button(name).clicked() {
+                        self.answer(doc, a);
+                    }
+                }
+            });
+        }
+        if self.close_allowed {
+            ui.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        let l = ui.label("C source").id;
+        self.editor(ui, l);
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let l = ui.label("File").id;
             ui.add(egui::TextEdit::singleline(&mut self.path).desired_width(220.0))
@@ -369,62 +497,33 @@ impl Editor {
                 self.save_as(p);
             }
         });
-        if !self.message.is_empty() {
-            ui.label(&self.message);
-        }
-        if self.overwrite.is_some() {
-            ui.horizontal(|ui| {
-                if ui.button("Overwrite").clicked() {
-                    self.resolve_overwrite(true);
-                }
-                if ui.button("Keep the file").clicked() {
-                    self.resolve_overwrite(false);
-                }
-            });
-        }
-        if self.confirm.is_some() {
-            // A new buffer has no file to save to: Cancel, then Save as.
-            let can_save = self.doc_path.is_some();
-            ui.horizontal(|ui| {
-                for (name, c) in [
-                    ("Save first", Choice::Save),
-                    ("Discard edits", Choice::Discard),
-                    ("Cancel", Choice::Cancel),
-                ] {
-                    if (c != Choice::Save || can_save) && ui.button(name).clicked() {
-                        self.resolve(c);
-                    }
-                }
-            });
-        }
-        if self.close_allowed {
-            ui.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        let l = ui.label("C source").id;
-        self.editor(ui, l);
     }
 
     fn editor(&mut self, ui: &mut egui::Ui, label: egui::Id) {
-        let id = egui::Id::unique((TEXT_ID, self.doc_gen));
+        let id = egui::Id::unique((TEXT_ID, self.doc.id));
         let font: FontId = TextStyle::Monospace.resolve(ui.style());
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
-        let lines = self.text.split('\n').count();
+        let lines = self.doc.text.split('\n').count();
         let gutter_w = ui.fonts_mut(|f| f.glyph_width(&font, '0')) * (digits(lines) as f32 + 1.0);
 
         // egui 0.37 collapses a selection on a text field that does not have focus.
         // A button press moves focus too, one frame late. So focus is requested
         // first, and the selection is applied on a later frame that has focus.
         let focused = ui.memory(|m| m.has_focus(id));
-        let scroll_sel = match self.pending_sel {
-            Some(_) if !focused || !self.sel_focus_asked => {
-                self.sel_focus_asked = true;
+        // A pending question locks the buffer: no typing, and a selection
+        // asked for by search or go to line waits until it is answered.
+        let locked = self.question.is_some();
+        let scroll_sel = match self.doc.pending_sel {
+            _ if locked => None,
+            Some(_) if !focused || !self.doc.sel_focus_asked => {
+                self.doc.sel_focus_asked = true;
                 ui.memory_mut(|m| m.request_focus(id));
                 ui.ctx().request_repaint();
                 None
             }
             Some((a, b)) => {
-                self.pending_sel = None;
-                self.sel_focus_asked = false;
+                self.doc.pending_sel = None;
+                self.doc.sel_focus_asked = false;
                 let mut st = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
                 st.cursor
                     .set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
@@ -435,11 +534,11 @@ impl Editor {
         };
 
         let mut area = egui::ScrollArea::both()
-            .id_salt(("k7-scroll", self.doc_gen))
+            .id_salt(("k7-scroll", self.doc.id))
             .auto_shrink(false);
-        if let Some(line) = self.scroll_to_line.take() {
+        if let Some(line) = self.doc.scroll_to_line.take() {
             // The row's own position in last frame's galley, so no rounding drifts.
-            let y = match &self.last_galley {
+            let y = match &self.doc.last_galley {
                 Some((g, origin)) => origin + g.rows.get(line).map_or(0.0, |r| r.pos.y),
                 None => row_h * line as f32,
             };
@@ -474,7 +573,8 @@ impl Editor {
         }
 
         // Moved out so the layouter closure can borrow `self` mutably.
-        let mut text = std::mem::take(&mut self.text);
+        let mut text = std::mem::take(&mut self.doc.text);
+        let before = locked.then(|| text.clone());
         area.show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 let (gutter, _) =
@@ -489,14 +589,15 @@ impl Editor {
                     .id(id)
                     .code_editor()
                     .lock_focus(true)
+                    .interactive(!locked)
                     .desired_width(f32::INFINITY)
                     .desired_rows(1)
                     .frame(egui::Frame::NONE)
                     .layouter(&mut layouter)
                     .show(ui);
                 out.response.response.clone().labelled_by(label);
-                self.cursor = out.state.cursor.char_range();
-                self.last_galley = Some((out.galley.clone(), out.galley_pos.y - gutter.top()));
+                self.doc.cursor = out.state.cursor.char_range();
+                self.doc.last_galley = Some((out.galley.clone(), out.galley_pos.y - gutter.top()));
 
                 if let Some(c) = scroll_sel {
                     let r = out.galley.pos_from_cursor(CCursor::new(c));
@@ -546,7 +647,9 @@ impl Editor {
         if text.contains('\r') {
             text = file::to_lf(&text).into_owned();
         }
-        self.text = text;
+        // Second lock: whatever got past the widget while a question is pending
+        // is undone, so the answer acts on the text it was asked about.
+        self.doc.text = before.unwrap_or(text);
     }
 }
 

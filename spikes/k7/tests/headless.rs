@@ -11,7 +11,7 @@ fn harness(text: String) -> Harness<'static, Editor> {
 
 /// Put the cursor at character `c` of the main text and focus it.
 fn cursor_at(h: &mut Harness<'static, Editor>, c: usize) {
-    h.state_mut().pending_sel = Some((c, c));
+    h.state_mut().doc.pending_sel = Some((c, c));
     h.run();
 }
 
@@ -21,7 +21,7 @@ fn type_and_read_back() {
     cursor_at(&mut h, 6);
     h.event(Event::Text(" int b;".into()));
     h.run();
-    assert_eq!(h.state().text, "int a; int b;\n");
+    assert_eq!(h.state().doc.text, "int a; int b;\n");
     assert!(h.state().is_dirty());
 }
 
@@ -31,19 +31,19 @@ fn undo_and_redo() {
     cursor_at(&mut h, 3);
     h.event(Event::Text("XYZ".into()));
     h.run();
-    assert_eq!(h.state().text, "abcXYZ\n");
+    assert_eq!(h.state().doc.text, "abcXYZ\n");
     h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     h.run();
-    assert_eq!(h.state().text, "abc\n");
+    assert_eq!(h.state().doc.text, "abc\n");
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     h.run();
-    assert_eq!(h.state().text, "abcXYZ\n");
+    assert_eq!(h.state().doc.text, "abcXYZ\n");
 }
 
 #[test]
 fn copy_and_paste() {
     let mut h = harness("alpha beta\n".into());
-    h.state_mut().pending_sel = Some((0, 5));
+    h.state_mut().doc.pending_sel = Some((0, 5));
     h.run();
     h.event(Event::Copy);
     h.step();
@@ -57,7 +57,7 @@ fn copy_and_paste() {
     cursor_at(&mut h, 10);
     h.event(Event::Paste(" alpha".into()));
     h.run();
-    assert_eq!(h.state().text, "alpha beta alpha\n");
+    assert_eq!(h.state().doc.text, "alpha beta alpha\n");
 }
 
 #[test]
@@ -66,22 +66,25 @@ fn search_finds_and_moves() {
     h.state_mut().query = "two".into();
     h.get_by_label("Next").click();
     h.run();
-    let first = h.state().cursor.expect("a selection");
+    let first = h.state().doc.cursor.expect("a selection");
     assert_eq!(first.as_sorted_char_range().start.0, 4);
     h.get_by_label("Next").click();
     h.run();
-    assert_eq!(h.state().cursor.unwrap().as_sorted_char_range().start.0, 12);
+    assert_eq!(
+        h.state().doc.cursor.unwrap().as_sorted_char_range().start.0,
+        12
+    );
     h.get_by_label("Next").click();
     h.run();
     assert_eq!(
-        h.state().cursor.unwrap().as_sorted_char_range().start.0,
+        h.state().doc.cursor.unwrap().as_sorted_char_range().start.0,
         4,
         "wraps"
     );
     h.get_by_label("Previous").click();
     h.run();
     assert_eq!(
-        h.state().cursor.unwrap().as_sorted_char_range().start.0,
+        h.state().doc.cursor.unwrap().as_sorted_char_range().start.0,
         12,
         "wraps back"
     );
@@ -119,8 +122,8 @@ fn go_to_line() {
     h.get_by_label("Go").click();
     h.run();
     let s = h.state();
-    let c = s.cursor.unwrap().as_sorted_char_range().start.0;
-    let line = s.text.chars().take(c).filter(|&ch| ch == '\n').count() + 1;
+    let c = s.doc.cursor.unwrap().as_sorted_char_range().start.0;
+    let line = s.doc.text.chars().take(c).filter(|&ch| ch == '\n').count() + 1;
     assert_eq!(line, 2500);
     assert!(
         s.first_gutter_line < 2500 && s.first_gutter_line > 2450,
@@ -137,7 +140,7 @@ fn gutter_in_step_after_scroll() {
     assert_eq!(h.state().first_gutter_line, 1);
     assert_eq!(h.state().first_text_line, 1);
     for line in [1234usize, 4000, 77] {
-        h.state_mut().scroll_to_line = Some(line);
+        h.state_mut().doc.scroll_to_line = Some(line);
         h.step();
         let s = h.state();
         assert_eq!(s.first_gutter_line, line + 1, "after scroll to {line}");
@@ -151,7 +154,7 @@ fn tab_key_inserts_a_tab() {
     cursor_at(&mut h, 1);
     h.key_press(Key::Tab);
     h.run();
-    assert_eq!(h.state().text, "a\t\n");
+    assert_eq!(h.state().doc.text, "a\t\n");
 }
 
 #[test]

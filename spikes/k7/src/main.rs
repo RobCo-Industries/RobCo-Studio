@@ -64,15 +64,15 @@ impl eframe::App for App {
         if n == 0 {
             match bench {
                 Bench::TypeEnd => {
-                    let end = self.ed.text.chars().count();
-                    self.ed.pending_sel = Some((end, end));
+                    let end = self.ed.doc.text.chars().count();
+                    self.ed.doc.pending_sel = Some((end, end));
                 }
                 Bench::TypeMid => self.ed.goto_line(lines / 2),
                 Bench::Scroll => {}
             }
         }
         if bench == Bench::Scroll {
-            self.ed.scroll_to_line = Some((n as usize * 40) % lines);
+            self.ed.doc.scroll_to_line = Some((n as usize * 40) % lines);
         }
         let t = Instant::now();
         egui::CentralPanel::default().show(ui, |ui| self.ed.ui(ui));
@@ -85,11 +85,11 @@ impl eframe::App for App {
         if ui.ctx().input(|i| i.viewport().focused) == Some(true) {
             c.focused.fetch_add(1, Ordering::Relaxed);
         }
-        if self.ed.text.len() != self.last_len {
+        if self.ed.doc.text.len() != self.last_len {
             if n > 0 {
                 c.edits.fetch_add(1, Ordering::Relaxed);
             }
-            self.last_len = self.ed.text.len();
+            self.last_len = self.ed.doc.text.len();
         }
         if self.ed.first_gutter_line != self.last_line {
             c.line_changes.fetch_add(1, Ordering::Relaxed);
@@ -99,7 +99,13 @@ impl eframe::App for App {
             c.gutter_mismatch.fetch_add(1, Ordering::Relaxed);
         }
         if bench == Bench::TypeMid {
-            let line = self.ed.text.split('\n').nth(lines / 2 - 1).unwrap_or("");
+            let line = self
+                .ed
+                .doc
+                .text
+                .split('\n')
+                .nth(lines / 2 - 1)
+                .unwrap_or("");
             c.typed_mid
                 .store(line.starts_with("xx") as u64, Ordering::Relaxed);
         }
@@ -186,7 +192,7 @@ fn main() -> eframe::Result {
         (b, lines, c)
     });
     ed.check_lines = matches!(bench, Some((Bench::Scroll, _, _)));
-    let last_len = ed.text.len();
+    let last_len = ed.doc.text.len();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 760.0]),
         ..Default::default()
