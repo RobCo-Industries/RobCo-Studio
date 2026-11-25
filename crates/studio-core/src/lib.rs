@@ -13,9 +13,11 @@
 #![forbid(unsafe_code)]
 
 pub mod boot;
+pub mod codes;
 pub mod guard;
 pub mod manifest;
 pub mod plan;
+pub mod resolve;
 
 /// The version of Studio, from `workspace.package.version` in the root
 /// `Cargo.toml`. Every program prints this one value.

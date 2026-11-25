@@ -3,7 +3,9 @@
 //! The QEMU command line of a board, read from `boot.json`.
 //!
 //! `boot.json` holds the boot arguments of each board as data. The format is
-//! the "boot.json" section of `docs/spec/TESTING.md` in RobCo-Core. This
+//! the "boot.json" section of `docs/spec/TESTING.md` in RobCo-Core, with
+//! "Order of checks" of `docs/spec/STUDIO_CLI.md`, read at commit
+//! `e004c73`. This
 //! module reads the file and builds the program and its arguments for a
 //! board, a mode, three paths and the TCP ports. It starts no process.
 //!
@@ -125,6 +127,8 @@ pub enum BootError {
     PathNotUtf8(String),
     /// The file's `format` is below 1.
     OlderFormat(i64),
+    /// The file's `format` is missing or not an integer.
+    BadFormat,
     /// A board's `default_mode` names a mode the board does not list.
     /// Holds the field's path and the mode.
     UnknownDefaultMode {
@@ -166,6 +170,10 @@ impl fmt::Display for BootError {
                 "boot.json lists no mode `{mode}` for board `{board}`, so it cannot boot"
             ),
             Self::PathNotUtf8(p) => write!(f, "the path {p} is not valid UTF-8"),
+            Self::BadFormat => write!(
+                f,
+                "boot.json: format is missing or not a positive integer: Studio reads format {FORMAT}"
+            ),
             Self::OlderFormat(n) => write!(
                 f,
                 "boot.json has format {n}, which is not a valid format: Studio reads format {FORMAT}"
@@ -192,19 +200,45 @@ impl fmt::Display for BootError {
 
 impl std::error::Error for BootError {}
 
+impl crate::codes::ErrorCode for BootError {
+    /// Maps each error to its code, following "Order of checks" in
+    /// `STUDIO_CLI.md`: a file that does not parse or a bad field is
+    /// `package: manifest`, a bad `format` is `package: format`, and a board
+    /// the file does not list is `run: board`. A mode the file does not
+    /// list takes the code of a board it does not list. A path that is not
+    /// UTF-8 and a missing SD image have no code in the spec, so they take
+    /// `internal`.
+    fn error_code(&self) -> &'static str {
+        match self {
+            Self::Json(_)
+            | Self::Field(_)
+            | Self::UnknownDefaultMode { .. }
+            | Self::UnknownPlaceholder { .. }
+            | Self::PlaceholderInName(_) => "package: manifest",
+            Self::NewerFormat(_) | Self::OlderFormat(_) | Self::BadFormat => "package: format",
+            Self::UnknownBoard(_) | Self::UnknownMode { .. } => "run: board",
+            Self::PathNotUtf8(_) | Self::MissingCard { .. } => "internal",
+        }
+    }
+}
+
 /// Reads the text of a `boot.json`. Fields it does not know are ignored.
 pub fn parse(text: &str) -> Result<BootFile, BootError> {
     let root: Value = serde_json::from_str(text).map_err(|e| BootError::Json(e.to_string()))?;
+    if !root.is_object() {
+        return Err(BootError::Json("the top value is not an object".into()));
+    }
+    // Step 3 of "Order of checks": `format` before every other field.
     let format = root
         .get("format")
         .and_then(Value::as_number)
-        .ok_or_else(|| BootError::Field("format".into()))?;
+        .ok_or(BootError::BadFormat)?;
     match (format.as_u64(), format.as_i64()) {
         (Some(FORMAT), _) => {}
         (Some(n), _) if n > FORMAT => return Err(BootError::NewerFormat(n)),
         (_, Some(n)) => return Err(BootError::OlderFormat(n)),
         // A fraction or a number too large for an integer.
-        _ => return Err(BootError::Field("format".into())),
+        _ => return Err(BootError::BadFormat),
     }
     let common = strings(&root, "common", "common")?;
     let sd = strings(&root, "sd", "sd")?;
@@ -682,7 +716,6 @@ mod tests {
     #[test]
     fn a_missing_field_fails_with_its_path() {
         let cases = [
-            ("\"format\": 1,", "", "format"),
             ("\"common\":", "\"x_common\":", "common"),
             ("\"sd\":", "\"x_sd\":", "sd"),
             (
@@ -699,6 +732,26 @@ mod tests {
     }
 
     #[test]
+    fn only_a_larger_format_asks_for_a_newer_studio() {
+        use crate::codes::ErrorCode;
+        let text = FIXTURE.replacen("\"format\": 1", "\"format\": 2", 1);
+        assert!(
+            parse(&text)
+                .unwrap_err()
+                .to_string()
+                .contains("update Studio")
+        );
+        for f in ["0", "-1", "\"1\"", "1.5", "null", "{}"] {
+            let text = FIXTURE.replacen("\"format\": 1", &format!("\"format\": {f}"), 1);
+            let e = parse(&text).unwrap_err();
+            assert_eq!(e.error_code(), "package: format", "{f}");
+            assert!(!e.to_string().contains("update"), "{f}: {e}");
+        }
+        let e = parse(&FIXTURE.replacen("\"format\": 1,", "", 1)).unwrap_err();
+        assert!(!e.to_string().contains("update"), "{e}");
+    }
+
+    #[test]
     fn a_format_below_one_fails_with_a_message() {
         for (n, v) in [("0", 0), ("-3", -3)] {
             let text = FIXTURE.replacen("\"format\": 1", &format!("\"format\": {n}"), 1);
@@ -707,7 +760,7 @@ mod tests {
             assert!(e.to_string().contains(&format!("format {n}")));
         }
         let text = FIXTURE.replacen("\"format\": 1", "\"format\": 1.5", 1);
-        assert_eq!(parse(&text).unwrap_err(), BootError::Field("format".into()));
+        assert_eq!(parse(&text).unwrap_err(), BootError::BadFormat);
     }
 
     #[test]
@@ -816,7 +869,27 @@ mod tests {
     #[test]
     fn a_wrong_type_fails() {
         let text = FIXTURE.replacen("\"format\": 1", "\"format\": \"1\"", 1);
-        assert_eq!(parse(&text).unwrap_err(), BootError::Field("format".into()));
+        assert_eq!(parse(&text).unwrap_err(), BootError::BadFormat);
         assert!(matches!(parse("{").unwrap_err(), BootError::Json(_)));
+    }
+
+    /// "Order of checks": the file parses, with an object at the top, then
+    /// `format`, missing or not, before every other field.
+    #[test]
+    fn format_comes_first_with_its_code() {
+        use crate::codes::ErrorCode;
+        assert!(matches!(parse("[1]").unwrap_err(), BootError::Json(_)));
+        assert_eq!(parse("[1]").unwrap_err().error_code(), "package: manifest");
+        let text = FIXTURE.replacen("\"format\": 1,", "", 1);
+        assert_eq!(parse(&text).unwrap_err(), BootError::BadFormat);
+        let text =
+            FIXTURE
+                .replacen("\"format\": 1,", "", 1)
+                .replacen("\"common\":", "\"x_common\":", 1);
+        let e = parse(&text).unwrap_err();
+        assert_eq!(e.error_code(), "package: format");
+        assert_eq!(e.exit_code(), 4);
+        let e = parse(&FIXTURE.replacen("\"format\": 1", "\"format\": 2", 1)).unwrap_err();
+        assert_eq!(e.error_code(), "package: format");
     }
 }
