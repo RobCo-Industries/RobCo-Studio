@@ -12,6 +12,7 @@ publish.workspace = true
 studio-sys.workspace = true
 studio-disk.workspace = true
 serde_json = "1"
+toml = "1"
 
 # Wraps the Job Object calls, which need `unsafe`, forbidden in this crate.
 [target.'cfg(windows)'.dependencies]

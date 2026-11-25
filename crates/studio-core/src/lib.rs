@@ -12,6 +12,7 @@
 
 pub mod boot;
 pub mod guard;
+pub mod resolve;
 
 /// The version of Studio, from `workspace.package.version` in the root
 /// `Cargo.toml`. Every program prints this one value.
