@@ -52,7 +52,11 @@ secs=$(( $(date +%s) - start ))
 exe=""
 [ "$os" = windows ] && exe=.exe
 mkdir -p "$dist/bin" "$dist/lib"
-cp "build/qemu-system-arm$exe" "build/qemu-system-aarch64$exe" "$dist/bin/"
+# On macOS the build leaves "-unsigned" binaries. make install signs them
+# with the HVF entitlement. TCG needs none, so an ad hoc signature follows.
+sfx=""
+[ "$os" = macos ] && sfx=-unsigned
+for t in arm aarch64; do cp "build/qemu-system-$t$sfx$exe" "$dist/bin/qemu-system-$t$exe"; done
 cp "$work/qemu.tar.xz" "$out/qemu-${ver}.tar.xz"
 
 {
