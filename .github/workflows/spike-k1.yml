@@ -41,17 +41,25 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      # The build script pins the QEMU tarball's SHA-256, so its hash keys
+      # both the recipe and the source. A hit skips the tools and the build.
+      - name: Cached QEMU build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: qemu-${{ matrix.name }}-${{ hashFiles('spikes/k1/build-qemu.sh') }}
       - name: Build tools (Linux)
-        if: matrix.name == 'linux'
+        if: matrix.name == 'linux' && steps.cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential ninja-build \
             pkg-config python3-venv libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev
       - name: Build tools (macOS)
-        if: matrix.name == 'macos'
+        if: matrix.name == 'macos' && steps.cache.outputs.cache-hit != 'true'
         run: brew install glib pixman dtc ninja pkgconf dylibbundler
       - name: Build tools (Windows)
-        if: matrix.name == 'windows'
+        if: matrix.name == 'windows' && steps.cache.outputs.cache-hit != 'true'
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -64,10 +72,10 @@ jobs:
             mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-meson
             mingw-w64-ucrt-x86_64-python-pip
       - name: Build QEMU
-        if: matrix.name != 'windows'
+        if: matrix.name != 'windows' && steps.cache.outputs.cache-hit != 'true'
         run: bash spikes/k1/build-qemu.sh ${{ matrix.name }} out
       - name: Build QEMU (MSYS2)
-        if: matrix.name == 'windows'
+        if: matrix.name == 'windows' && steps.cache.outputs.cache-hit != 'true'
         shell: msys2 {0}
         # QEMU's offline wheel folder is a file:// URL pip cannot read on
         # Windows, so its test runner dependency comes from PyPI here.
@@ -134,16 +142,18 @@ jobs:
           arm-none-eabi-gcc --version | head -1
       - name: Python test tools
         run: python -m pip install -r robco-core/tests/requirements.txt
+      # First pass counts. Only the known race in RobCo-Core's
+      # test_v23_spi0_byte_rate[raspi3b] is retried, at most twice.
       - name: Canary, harness unchanged (Linux, macOS)
         if: matrix.name != 'windows'
-        run: python -m pytest robco-core/tests/canary -v -rA --junitxml=canary.xml
+        run: python spikes/k1/canary.py ${{ matrix.name }}
       - name: Canary, harness over TCP (Windows)
         if: matrix.name == 'windows'
         env:
           PYTHONPATH: ${{ github.workspace }}/spikes/k1;${{ github.workspace }}/robco-core/tests
-        run: python -m pytest -p k1_tcp robco-core/tests/canary -v -rA --junitxml=canary.xml
+        run: python spikes/k1/canary.py windows -p k1_tcp
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: canary-${{ matrix.name }}
-          path: canary.xml
+          path: canary*.xml
