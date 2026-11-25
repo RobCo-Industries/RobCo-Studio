@@ -89,6 +89,41 @@ Whoever builds a release follows this list. Each archive is one host's build. Ea
 5. Keep each release's sources up for as long as its binaries are up. GPL version 2's three-year term applies to the written offer, which this route does not use.
 6. Before publishing, check that each archive has its `licenses/` folder and `NOTICE`, and that for each library file packed, on Linux and macOS each file in `lib/`, on Windows each `.dll` in `bin/`, `licenses/packed-libraries.txt` names its licences and `licenses/` holds the full text of each. `tools/qemu/notices.sh --check` does this. It takes the list of libraries from the files in the package and the licences of each from its own table, and checks the record against both. A library it does not know fails the check.
 
+## How a QEMU release is made
+
+The [QEMU workflow](../.github/workflows/qemu.yml) builds, packs and tests QEMU on each system, then gathers the release. It publishes only for a pushed tag of the form `qemu-<QEMU version>-r<n>`, such as `qemu-10.1.2-r1`. The version must be the one packed, or the release job fails. `r<n>` counts rebuilds of the same QEMU version. A pull request that touches the workflow or `tools/qemu/`, and a manual start, run the same jobs as a dry run: the release files go up as the workflow artifact `qemu-release`, and nothing is published. Only the `publish` job may write to the repository.
+
+```mermaid
+flowchart LR
+  build["build, per system:<br/>build.sh, pack.sh, notices.sh,<br/>sources.sh, scan"] --> canary["canary, per system"]
+  build --> release["release:<br/>release.py gather, verify"]
+  canary --> release
+  release --> artifact["artifact qemu-release"]
+  release -->|"tag qemu-*-r* only"| publish["publish: gh release create"]
+```
+
+What the steps do:
+
+- [`sources.sh`](../tools/qemu/sources.sh) runs in the job that packs, right after the packing. It fetches the sources of every packed library at the exact version packed, and fails if one cannot be fetched or if the installed package is no longer that version. On Ubuntu it takes the source package with `apt-get source --download-only`: the `.dsc`, the upstream archive and the `debian` archive with the rules and patches. On macOS it keeps the formula file from `brew cat`, every download of `brew fetch --build-from-source`, the install receipt and `brew info --json=v2`. On Windows it fetches MSYS2's source package, named after the package base in pacman's database, and checks that it holds a `PKGBUILD`. Fetching later is not safe: Ubuntu's archive keeps only the newest version of each pocket, and the other packagers may prune.
+- `release.py scan` fails when a packed file holds the build folder's path, the home folder, the workspace, the runner's temporary folder or the host name. It is first shown to fail on a copy that holds the home folder.
+- `release.py gather` writes the release. `release.py verify` checks that the list names exactly the files, with their sizes and SHA-256, that `SHA256SUMS` agrees, and that each archive holds `bin/` with both programs, `NOTICE` and `licenses/` under its root.
+
+The files of a release, for QEMU 10.1.2:
+
+| File | What it holds |
+|---|---|
+| `qemu-10.1.2-linux-x64.tar.gz`, `qemu-10.1.2-macos-arm64.tar.gz`, `qemu-10.1.2-windows-x64.zip` | One package each, under the folder `qemu-10.1.2-<host>/`. That folder is the `root` of the index's archive object, and it holds `bin/`, `NOTICE` and `licenses/`. |
+| `qemu-10.1.2-<host>-notices.tar.gz` | The `NOTICE` and `licenses/` of that package, to read without unpacking it |
+| `qemu-10.1.2-<host>-library-sources.tar` | The sources of the libraries packed for that host, with `SOURCES.txt`, the list of each file and its SHA-256 |
+| `qemu-10.1.2.tar.xz` | QEMU's source archive, unchanged. The release job checks its SHA-256 against the one each `NOTICE` names. |
+| `qemu-10.1.2-recipe.tar.gz` | `tools/qemu/`, the workflow, this page, and the `configure` line of each host |
+| `qemu-10.1.2-files.json` | Every file above with its `url`, `size` and `sha256`, and under `archives` one object per host in the form of the index: `url`, `size`, `sha256`, `root` |
+| `qemu-10.1.2-SHA256SUMS` | The same hashes and the list's, for `sha256sum -c` |
+
+The archives are written with fixed times and owners, so the same packages give the same bytes. On a tag each `url` is the release's download address. In a dry run it is the file name, as in a local index.
+
+What only a real run proves: that the hosted runners' packagers still serve each source, that the scan passes on the real binaries, and that `gh release create` publishes the files. Nothing has been published yet. The first release waits for the owner's agreement.
+
 ## What the SDK manager shows before a download
 
 No licence read here requires Studio to show anything before the user downloads xPack's archive from xPack. Studio should still say plainly what is downloaded, from where, its size, and that it is GNU software under the GPL with other licences inside, with a link to the release page. **Owner decision**: whether to ask the user to agree, or only to inform.
@@ -104,7 +139,7 @@ For Studio's own QEMU archive, the `NOTICE` and `licenses/` folder go with the c
 - **Not read**: the contents of the xPack archive's `distro-info/licenses`. Reading them needs the archive itself, which was not downloaded for this page. So it stays unknown which licence texts xPack ships, and whether they add any duty.
 - **Not found**: any terms Arm sets on its toolchain sources. The Arm page redirects to a GitLab project that shows none.
 - **Not read**: the version of the LGPL on libiconv's own source. The page names the LGPL without a version.
-- **Choice for the release task**: packing libraries that Homebrew and MSYS2 built means carrying their sources, patches and recipes, two packagers' worth. Two options. Keep packing their libraries and ship all of that. Or build glib, intl, iconv and the others ourselves from pinned sources in Studio's own build script, so that one script and one set of source archives cover everything. This page does not pick.
+- **Chosen for the first release**: keep packing the libraries that Ubuntu, Homebrew and MSYS2 built, and ship each packager's source, patches and recipe, as fetched by `sources.sh`. Building them in Studio's own script from pinned sources stays open for later.
 - **Needs legal review**: that the packager's recipe and patches are part of a packed LGPL library's corresponding source, as the LGPL 2.1 text seems to say.
 - **Owner decision**: mirror xPack's archive or not. The first releases do not.
 - **Owner decision**: what the SDK manager asks of the user before a download: agree, or only inform.
