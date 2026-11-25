@@ -83,7 +83,8 @@ for f in $(packed); do
       real=$(readlink -f "$p")
       pkg=""
       for try in "$(dirname "$p")/$(basename "$real")" "$real" "/lib${real#/usr/lib}"; do
-        pkg=$(dpkg -S "$try" 2>/dev/null | head -1 | cut -d: -f1) && [ -n "$pkg" ] && break
+        pkg=$(dpkg -S "$try" 2>/dev/null | sed -n '1s/:.*//p' || true)
+        if [ -n "$pkg" ]; then break; fi
       done
       [ -n "$pkg" ] || { echo "no dpkg package owns $p" >&2; exit 1; }
       v=$(dpkg-query -W -f='${Version}' "$pkg")
@@ -94,7 +95,7 @@ for f in $(packed); do
       ;;
     macos)
       cellar=$(brew --cellar)
-      p=$(find "$cellar" -name "$f" -not -type d | head -1)
+      p=$(find "$cellar" -name "$f" -not -type d -print -quit)
       [ -n "$p" ] || { echo "no Homebrew keg holds $f" >&2; exit 1; }
       rel=${p#"$cellar"/}
       formula=${rel%%/*}
@@ -105,7 +106,7 @@ for f in $(packed); do
       echo "$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p" >>"$record"
       cp "$keg/INSTALL_RECEIPT.json" "$lic/$c-INSTALL_RECEIPT.json"
       for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT*; do
-        [ -f "$l" ] && cp "$l" "$lic/$c-$(basename "$l")"
+        if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; fi
       done
       ;;
     windows)
