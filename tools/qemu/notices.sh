@@ -7,6 +7,18 @@
 #        notices.sh --check <linux|macos|windows> <out-dir>
 # Reads <out-dir>/build/ to find where each packed library came from.
 # --check runs only the final check on a package already written.
+#
+# The record, licenses/packed-libraries.txt, has this format. Lines that
+# start with # are comments. Every other line describes one packed library,
+# and each packed library has exactly one line, in the order ls lists the
+# library folder. A line has seven fields joined by " | ": file, component,
+# packager, package, version, details, and "licence texts: " followed by
+# the licence ids, one space apart. No field holds " | ". The line ends
+# with the last id, no trailing space, and every line ends with a newline.
+# A file name never holds a space: the packers do not produce one, and a
+# name split at a space would be two unknown libraries, which fails the
+# check. The script writes each line once, after it has fetched every
+# licence text of that library, and never edits it.
 set -euxo pipefail
 
 check_only=0
@@ -104,6 +116,12 @@ has_text() {
   return 1
 }
 
+# Downloads URL $1 to file $2. The only network access besides brew fetch;
+# the unit tests put a fake curl first on PATH.
+fetch() {
+  curl -fsSLo "$2" "$1"
+}
+
 # The packed library files.
 packed() {
   case $os in
@@ -196,7 +214,7 @@ for f in $(packed); do
       [ -n "$pkg" ] || { echo "no dpkg package owns $p" >&2; exit 1; }
       v=$(dpkg-query -W -f='${Version}' "$pkg")
       src=$(dpkg-query -W -f='${source:Package} ${source:Version}' "$pkg")
-      echo "$f | $c | Ubuntu $(. /etc/os-release && echo "$VERSION_ID") | $pkg | $v | source package $src, from $p | licence texts: $(texts "$c")" >>"$record"
+      entry="$f | $c | Ubuntu $(. /etc/os-release && echo "$VERSION_ID") | $pkg | $v | source package $src, from $p"
       # The packager's copyright file. It may name a licence and point to
       # its text under /usr/share/common-licenses/, which is not packed:
       # copy each text it points to, once, as text-<name>.
@@ -235,7 +253,7 @@ for f in $(packed); do
       v=${rest%%/*}
       keg=$cellar/$formula/$v
       head=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("source") or {}).get("tap_git_head") or "unknown")' "$keg/INSTALL_RECEIPT.json")
-      echo "$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p | licence texts: $(texts "$c")" >>"$record"
+      entry="$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p"
       cp "$keg/INSTALL_RECEIPT.json" "$lic/$c-INSTALL_RECEIPT.json"
       found=0
       for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT*; do
@@ -274,14 +292,14 @@ for f in $(packed); do
           done < <(find "$t" -maxdepth 4 -type f \( -name 'COPYING*' -o -name 'LICENSE*' -o -name 'LICENCE*' \) | sort)
         done
         rm -rf "$t"
-        echo "$f | $c | Homebrew | $formula | $v | licence texts from the source archive $(basename "$tarball")" >>"$record"
+        entry="$entry; licence texts from the source archive $(basename "$tarball")"
       fi
       ;;
     windows)
       p=$(origin "$f")
       pkg=$(pacman -Qqo "$p")
       v=$(pacman -Q "$pkg" | cut -d' ' -f2)
-      echo "$f | $c | MSYS2 | $pkg | $v | from $p | licence texts: $(texts "$c")" >>"$record"
+      entry="$f | $c | MSYS2 | $pkg | $v | from $p"
       pacman -Qi "$pkg" >"$lic/$c-pacman-Qi.txt"
       for l in $(pacman -Qlq "$pkg" | grep '/share/licenses/.*[^/]$' || true); do
         cp "$l" "$lic/$c-$(basename "$l")"
@@ -296,7 +314,7 @@ for f in $(packed); do
       if [ -n "$need" ]; then
         srcpkg="mingw-w64-${pkg#mingw-w64-ucrt-x86_64-}-$v.src.tar.zst"
         t=$(mktemp -d)
-        curl -fsSLo "$t/$srcpkg" "https://repo.msys2.org/mingw/sources/$srcpkg"
+        fetch "https://repo.msys2.org/mingw/sources/$srcpkg" "$t/$srcpkg"
         tar xf "$t/$srcpkg" -C "$t"
         for a in "$t"/*/*.tar.*; do
           case $a in *.sig | *.asc) continue ;; esac
@@ -308,10 +326,12 @@ for f in $(packed); do
           done < <(find "$t" -maxdepth 5 -type f \( -name 'COPYING*' -o -name 'LICENSE*' -o -name 'LICENCE*' -o -name 'BSD-2-Clause' -o -name 'README.license' \) | sort)
         done
         rm -rf "$t"
-        echo "$f | $c | MSYS2 | $pkg | $v | licence texts from the source package $srcpkg" >>"$record"
+        entry="$entry; licence texts from the source package $srcpkg"
       fi
       ;;
   esac
+  # The library's one record line, written now that its texts are in place.
+  echo "$entry | licence texts: $(texts "$c")" >>"$record"
   case " $notice_libs " in *" $c "*) ;; *) notice_libs="$notice_libs $c" ;; esac
 done
 
