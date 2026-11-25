@@ -91,6 +91,12 @@ pub struct FileEntry {
     pub sha256: String,
 }
 
+/// The repository of the firmware pins.
+const FIRMWARE_REPO: &str = "raspberrypi/firmware";
+
+/// The firmware files a `pipos` package pins, each once, in any order.
+const FIRMWARE_FILES: [&str; 3] = ["bootcode.bin", "start.elf", "fixup.dat"];
+
 fn bad(at: &str, what: &str) -> Error {
     Error::PackageManifest(format!("sdk.json: {at} {what}"))
 }
@@ -231,6 +237,12 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
             let at = "firmware.";
             let f = obj(v, "firmware")?;
             let repo = string(f, at, "repo")?;
+            if repo != FIRMWARE_REPO {
+                return Err(bad(
+                    "firmware.repo",
+                    &format!("= {repo:?} is not {FIRMWARE_REPO:?}"),
+                ));
+            }
             let tag = string(f, at, "tag")?;
             let commit = commit(f, at)?;
             let base_url = string(f, at, "base_url")?;
@@ -238,7 +250,23 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
             for (i, v) in arr(f, at, "files")?.iter().enumerate() {
                 let at = format!("firmware.files[{i}].");
                 let e = obj(v, &at)?;
-                files.push((string(e, &at, "name")?, hash(e, &at, "sha256")?));
+                let file = string(e, &at, "name")?;
+                if !FIRMWARE_FILES.contains(&file.as_str()) {
+                    return Err(bad(
+                        &format!("{at}name = {file:?}"),
+                        "is not one of bootcode.bin, start.elf, fixup.dat",
+                    ));
+                }
+                if files.iter().any(|(n, _)| *n == file) {
+                    return Err(bad(&format!("{at}name = {file:?}"), "is listed twice"));
+                }
+                files.push((file, hash(e, &at, "sha256")?));
+            }
+            if let Some(missing) = FIRMWARE_FILES
+                .iter()
+                .find(|n| !files.iter().any(|(f, _)| f == *n))
+            {
+                return Err(bad("firmware.files", &format!("lacks {missing}")));
             }
             Some(Firmware {
                 repo,

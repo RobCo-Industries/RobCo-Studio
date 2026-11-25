@@ -715,6 +715,39 @@ fn resolve_sdk_json_fields() {
 }
 
 #[test]
+fn resolve_sdk_json_firmware_pins() {
+    let fw: Value = serde_json::from_str(SDK).unwrap();
+    let files = fw["firmware"]["files"].as_array().unwrap().clone();
+    let with = |list: Vec<Value>| {
+        let mut v = fw.clone();
+        v["firmware"]["files"] = Value::from(list);
+        sdk_json::parse(v.to_string().as_bytes())
+    };
+    // Any order parses.
+    let mut turned = files.clone();
+    turned.reverse();
+    assert!(with(turned).is_ok());
+    let msg = |r: Result<sdk_json::SdkJson, Error>| r.unwrap_err().to_string();
+    assert_eq!(code(with(vec![])), "package: manifest");
+    let lacks = msg(with(files[..2].to_vec()));
+    assert!(lacks.contains("fixup.dat"), "{lacks}");
+    let mut twice = files.clone();
+    twice.push(files[0].clone());
+    let e = msg(with(twice));
+    assert!(e.contains("bootcode.bin") && e.contains("twice"), "{e}");
+    let mut other = files.clone();
+    other[2]["name"] = Value::from("start4.elf");
+    let e = msg(with(other));
+    assert!(e.contains("start4.elf"), "{e}");
+    for e in [lacks, e] {
+        assert!(e.starts_with("package: manifest"), "{e}");
+    }
+    let mut v = fw.clone();
+    v["firmware"]["repo"] = Value::from("someone/firmware");
+    assert_eq!(sdk_code(&v.to_string()), "package: manifest");
+}
+
+#[test]
 fn resolve_sdk_json_must_equal_its_index_entry() {
     let i = parse_index(INDEX).unwrap();
     let s = sdk_json::parse(SDK.as_bytes()).unwrap();
