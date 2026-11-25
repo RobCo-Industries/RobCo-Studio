@@ -123,6 +123,30 @@ pub enum BootError {
     },
     /// A path is not valid UTF-8, so it cannot go into an argument.
     PathNotUtf8(String),
+    /// The file's `format` is below 1.
+    OlderFormat(i64),
+    /// A board's `default_mode` names a mode the board does not list.
+    /// Holds the field's path and the mode.
+    UnknownDefaultMode {
+        /// The path of the field, such as `boards.raspi0.default_mode`.
+        at: String,
+        /// The mode it names.
+        mode: String,
+    },
+    /// A string holds a `{` that does not start `{stub}`, `{image}` or `{sd}`.
+    UnknownPlaceholder {
+        /// The path of the string, such as `boards.raspi0.modes.svc[3]`.
+        at: String,
+        /// The text from the `{` to the next `}`, or to the end.
+        name: String,
+    },
+    /// A board's arguments use `{sd}` and no SD image was given.
+    MissingCard {
+        /// The board.
+        board: String,
+        /// The placeholder, `{sd}`.
+        placeholder: String,
+    },
 }
 
 impl fmt::Display for BootError {
@@ -140,6 +164,22 @@ impl fmt::Display for BootError {
                 "boot.json lists no mode `{mode}` for board `{board}`, so it cannot boot"
             ),
             Self::PathNotUtf8(p) => write!(f, "the path {p} is not valid UTF-8"),
+            Self::OlderFormat(n) => write!(
+                f,
+                "boot.json has format {n}, which is not a valid format: Studio reads format {FORMAT}"
+            ),
+            Self::UnknownDefaultMode { at, mode } => write!(
+                f,
+                "boot.json: `{at}` names mode `{mode}`, which the board does not list"
+            ),
+            Self::UnknownPlaceholder { at, name } => write!(
+                f,
+                "boot.json: `{at}` holds the unknown placeholder `{name}`; the known ones are {{stub}}, {{image}} and {{sd}}"
+            ),
+            Self::MissingCard { board, placeholder } => write!(
+                f,
+                "board `{board}` uses `{placeholder}` and no SD image was given, so it cannot boot"
+            ),
         }
     }
 }
@@ -151,10 +191,14 @@ pub fn parse(text: &str) -> Result<BootFile, BootError> {
     let root: Value = serde_json::from_str(text).map_err(|e| BootError::Json(e.to_string()))?;
     let format = root
         .get("format")
-        .and_then(Value::as_u64)
+        .and_then(Value::as_number)
         .ok_or_else(|| BootError::Field("format".into()))?;
-    if format > FORMAT {
-        return Err(BootError::NewerFormat(format));
+    match (format.as_u64(), format.as_i64()) {
+        (Some(FORMAT), _) => {}
+        (Some(n), _) if n > FORMAT => return Err(BootError::NewerFormat(n)),
+        (_, Some(n)) => return Err(BootError::OlderFormat(n)),
+        // A fraction or a number too large for an integer.
+        _ => return Err(BootError::Field("format".into())),
     }
     let common = strings(&root, "common", "common")?;
     let sd = strings(&root, "sd", "sd")?;
@@ -184,6 +228,15 @@ pub fn parse(text: &str) -> Result<BootFile, BootError> {
             let list = strings(&entry["modes"], mode, &format!("{at}.modes.{mode}"))?;
             modes.insert(mode.clone(), list);
         }
+        if !modes.contains_key(&default_mode) {
+            return Err(BootError::UnknownDefaultMode {
+                at: format!("{at}.default_mode"),
+                mode: default_mode,
+            });
+        }
+        for (mode, list) in &modes {
+            check_placeholders(list, &format!("{at}.modes.{mode}"))?;
+        }
         boards.insert(
             name.clone(),
             Board {
@@ -194,7 +247,38 @@ pub fn parse(text: &str) -> Result<BootFile, BootError> {
             },
         );
     }
+    check_placeholders(&common, "common")?;
+    check_placeholders(&sd, "sd")?;
     Ok(BootFile { common, sd, boards })
+}
+
+const PLACEHOLDERS: [&str; 3] = ["{stub}", "{image}", "{sd}"];
+
+/// The placeholder that starts `tail`, which starts with `{`, or the
+/// unknown text from the `{` to the next `}`, or to the end.
+fn placeholder_at(tail: &str) -> Result<&'static str, String> {
+    PLACEHOLDERS
+        .into_iter()
+        .find(|p| tail.starts_with(p))
+        .ok_or_else(|| match tail.find('}') {
+            Some(end) => tail[..=end].to_owned(),
+            None => tail.to_owned(),
+        })
+}
+
+fn check_placeholders(list: &[String], at: &str) -> Result<(), BootError> {
+    for (i, arg) in list.iter().enumerate() {
+        let mut rest = arg.as_str();
+        while let Some(start) = rest.find('{') {
+            let tail = &rest[start..];
+            let p = placeholder_at(tail).map_err(|name| BootError::UnknownPlaceholder {
+                at: format!("{at}[{i}]"),
+                name,
+            })?;
+            rest = &tail[p.len()..];
+        }
+    }
+    Ok(())
 }
 
 fn strings(parent: &Value, key: &str, at: &str) -> Result<Vec<String>, BootError> {
@@ -243,30 +327,31 @@ pub fn command(file: &BootFile, request: &BootRequest<'_>) -> Result<QemuCommand
     let card = request.card.map(path_text).transpose()?;
     // One pass over the string, so a path that holds a placeholder's text is
     // never replaced again.
-    let fill = |arg: &String| -> String {
+    let fill = |at: &str, arg: &String| -> Result<String, BootError> {
         let mut out = String::with_capacity(arg.len());
         let mut rest = arg.as_str();
         while let Some(i) = rest.find('{') {
             out.push_str(&rest[..i]);
             let tail = &rest[i..];
-            let (text, len) = if tail.starts_with("{stub}") {
-                (Some(stub.as_str()), 6)
-            } else if tail.starts_with("{image}") {
-                (Some(image.as_str()), 7)
-            } else if tail.starts_with("{sd}") {
-                (card.as_deref(), 4)
-            } else {
-                (None, 1)
+            let p = placeholder_at(tail).map_err(|name| BootError::UnknownPlaceholder {
+                at: at.to_owned(),
+                name,
+            })?;
+            let text = match p {
+                "{stub}" => stub.as_str(),
+                "{image}" => image.as_str(),
+                _ => card.as_deref().ok_or_else(|| BootError::MissingCard {
+                    board: request.board.to_owned(),
+                    placeholder: p.to_owned(),
+                })?,
             };
-            match text {
-                Some(t) => out.push_str(t),
-                None => out.push_str(&tail[..len]),
-            }
-            rest = &tail[len..];
+            out.push_str(text);
+            rest = &tail[p.len()..];
         }
         out.push_str(rest);
-        out
+        Ok(out)
     };
+    let mode_at = format!("boards.{}.modes.{mode}", request.board);
 
     let ports = request.ports;
     let mut args = vec!["-M".to_owned(), board.machine.clone()];
@@ -290,9 +375,13 @@ pub fn command(file: &BootFile, request: &BootRequest<'_>) -> Result<QemuCommand
         serial("ser1", port);
     }
     args.push("-S".into());
-    args.extend(mode_args.iter().map(fill));
+    for arg in mode_args {
+        args.push(fill(&mode_at, arg)?);
+    }
     if card.is_some() {
-        args.extend(file.sd.iter().map(fill));
+        for arg in &file.sd {
+            args.push(fill("sd", arg)?);
+        }
     }
     Ok(QemuCommand {
         program: board.qemu.clone(),
@@ -584,6 +673,70 @@ mod tests {
             assert_eq!(e, BootError::Field(path.into()));
             assert!(e.to_string().contains(path));
         }
+    }
+
+    #[test]
+    fn a_format_below_one_fails_with_a_message() {
+        for (n, v) in [("0", 0), ("-3", -3)] {
+            let text = FIXTURE.replacen("\"format\": 1", &format!("\"format\": {n}"), 1);
+            let e = parse(&text).unwrap_err();
+            assert_eq!(e, BootError::OlderFormat(v));
+            assert!(e.to_string().contains(&format!("format {n}")));
+        }
+        let text = FIXTURE.replacen("\"format\": 1", "\"format\": 1.5", 1);
+        assert_eq!(parse(&text).unwrap_err(), BootError::Field("format".into()));
+    }
+
+    #[test]
+    fn a_default_mode_the_board_lacks_fails_at_parse() {
+        let text = FIXTURE.replacen("\"default_mode\": \"svc\"", "\"default_mode\": \"hyp\"", 1);
+        let e = parse(&text).unwrap_err();
+        assert_eq!(
+            e,
+            BootError::UnknownDefaultMode {
+                at: "boards.raspi0.default_mode".into(),
+                mode: "hyp".into()
+            }
+        );
+        assert!(e.to_string().contains("boards.raspi0.default_mode"));
+    }
+
+    #[test]
+    fn an_unknown_placeholder_fails_at_parse() {
+        let text = FIXTURE.replacen("file={stub}", "file={kernel}", 1);
+        let e = parse(&text).unwrap_err();
+        assert_eq!(
+            e,
+            BootError::UnknownPlaceholder {
+                at: "boards.raspi0.modes.svc[1]".into(),
+                name: "{kernel}".into()
+            }
+        );
+        assert!(e.to_string().contains("{kernel}"));
+        let text = FIXTURE.replacen("file={sd}", "file={sd", 1);
+        assert!(matches!(
+            parse(&text).unwrap_err(),
+            BootError::UnknownPlaceholder { at, .. } if at == "sd[1]"
+        ));
+        let text = FIXTURE.replacen("\"none\",", "\"{x}\",", 1);
+        assert!(matches!(
+            parse(&text).unwrap_err(),
+            BootError::UnknownPlaceholder { at, .. } if at == "common[1]"
+        ));
+    }
+
+    #[test]
+    fn sd_in_a_mode_without_a_card_fails() {
+        let text = FIXTURE.replacen("file={image}", "file={sd}", 1);
+        let e = command(&parse(&text).unwrap(), &req("raspi0", Mode::Default)).unwrap_err();
+        assert_eq!(
+            e,
+            BootError::MissingCard {
+                board: "raspi0".into(),
+                placeholder: "{sd}".into()
+            }
+        );
+        assert!(e.to_string().contains("raspi0") && e.to_string().contains("{sd}"));
     }
 
     #[test]
