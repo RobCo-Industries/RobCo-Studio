@@ -140,6 +140,33 @@ fn sector_size_must_be_known_and_512_or_4096() {
 }
 
 #[test]
+fn linux_root_on_lvm_on_nvme_partition() {
+    // Root on LVM on a partition on NVMe: the whole disk must hold the system.
+    let l = linux::parse(&fixture("linux-lvm-nvme.json"));
+    assert!(l.complete() && l.system_located, "{:?}", l.problems);
+    let p = virt();
+    assert!(refusals(&l, "/dev/nvme0n1", &p).contains(&Refusal::HoldsRunningSystem));
+    assert_eq!(refusals(&l, "/dev/nvme0n1p2", &p), vec![Refusal::NotInList]);
+    approves(&l, "/dev/sda", &p);
+}
+
+#[test]
+fn linux_root_on_copy_on_write_snapshot() {
+    // Seen on a hosted runner: root is a device-mapper snapshot over a partition of
+    // one disk and the whole of a second disk. Both disks hold the running system.
+    let l = linux::parse(&fixture("linux-cow-root.json"));
+    assert!(l.complete() && l.system_located, "{:?}", l.problems);
+    let p = virt();
+    for d in ["/dev/nvme0n1", "/dev/nvme1n1"] {
+        assert!(
+            refusals(&l, d, &p).contains(&Refusal::HoldsRunningSystem),
+            "{d}"
+        );
+    }
+    assert_eq!(refusals(&l, "/dev/nvme0n1p1", &p), vec![Refusal::NotInList]);
+}
+
+#[test]
 fn linux_booted_from_usb() {
     let l = linux::parse(&fixture("linux-usb-boot.json"));
     let r = refusals(&l, "/dev/sda", &Policy::default());

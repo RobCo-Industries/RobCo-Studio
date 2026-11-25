@@ -1,0 +1,8 @@
+{"blockdevices": [
+  {"name": "/dev/nvme0n1", "type": "disk", "size": 256060514304, "rm": false, "hotplug": false, "tran": "nvme", "ro": false, "mountpoints": [null], "vendor": null, "model": "Example NVMe SSD", "log-sec": 512,
+   "children": [
+     {"name": "/dev/nvme0n1p1", "type": "part", "size": 1073741824, "mountpoints": ["/boot/efi"]},
+     {"name": "/dev/nvme0n1p2", "type": "part", "size": 254985723904, "mountpoints": [null],
+      "children": [{"name": "/dev/mapper/vg-root", "type": "lvm", "size": 254985723904, "mountpoints": ["/"]}]}]},
+  {"name": "/dev/sda", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "ro": false, "mountpoints": [null], "vendor": "Generic", "model": "SD Card Reader", "log-sec": 512}
+]}

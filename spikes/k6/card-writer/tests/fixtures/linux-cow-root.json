@@ -1,0 +1,13 @@
+{"blockdevices": [
+  {"name": "/dev/loop0", "type": "loop", "size": 77594624, "rm": false, "hotplug": false, "tran": null, "ro": true, "mountpoints": ["/snap/example/1"], "vendor": null, "model": null, "log-sec": 512},
+  {"name": "/dev/zram0", "type": "disk", "size": 0, "rm": false, "hotplug": false, "tran": null, "ro": false, "mountpoints": [null], "vendor": null, "model": null, "log-sec": 4096},
+  {"name": "/dev/nvme0n1", "type": "disk", "size": 161061273600, "rm": false, "hotplug": false, "tran": "nvme", "ro": false, "mountpoints": [null], "vendor": null, "model": "Example Virtual Disk", "log-sec": 512,
+   "children": [
+     {"name": "/dev/nvme0n1p13", "type": "part", "size": 1072693248, "mountpoints": ["/boot"]},
+     {"name": "/dev/nvme0n1p14", "type": "part", "size": 4194304, "mountpoints": [null]},
+     {"name": "/dev/nvme0n1p15", "type": "part", "size": 111149056, "mountpoints": ["/boot/efi"]},
+     {"name": "/dev/nvme0n1p1", "type": "part", "size": 159873236480, "mountpoints": [null],
+      "children": [{"name": "/dev/mapper/snap-root", "type": "dm", "size": 159873236480, "mountpoints": ["/"]}]}]},
+  {"name": "/dev/nvme1n1", "type": "disk", "size": 237000000000, "rm": false, "hotplug": false, "tran": "nvme", "ro": false, "mountpoints": [null], "vendor": null, "model": "Example Local Disk", "log-sec": 512,
+   "children": [{"name": "/dev/mapper/snap-root", "type": "dm", "size": 159873236480, "mountpoints": ["/"]}]}
+]}
