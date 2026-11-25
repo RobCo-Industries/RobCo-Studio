@@ -120,7 +120,7 @@ fn entries(text: &str) -> Vec<IndexPackage> {
                 .as_object()
                 .unwrap()
                 .iter()
-                .map(|(k, v)| (k.clone(), v.as_i64().unwrap()))
+                .map(|(k, v)| (k.clone(), v.as_u64().unwrap()))
                 .collect(),
             url: "u".to_owned(),
             size: 1,
@@ -1505,5 +1505,32 @@ fn resolve_sdk_json_file_path_keeps_the_archive_rules() {
         let e = sdk_json::parse(text.as_bytes()).unwrap_err();
         assert_eq!(e.code(), "package: manifest", "{bad}");
         assert!(e.to_string().contains("breaks the path rules"), "{e}");
+    }
+}
+
+#[test]
+fn resolve_index_format_value_is_a_positive_integer() {
+    // A value outside "one integer per format" is a malformed entry, read
+    // as `index: entry` naming the entry and the format, never passed over.
+    for v in ["0", "-1", "1.0", "\"1\"", "null", "{}"] {
+        let text = INDEX.replacen("\"boot\": 1", &format!("\"boot\": {v}"), 1);
+        assert_ne!(text, INDEX);
+        let e = parse_index(&text).unwrap_err();
+        assert_eq!(e.code(), "index: entry", "{v}");
+        assert!(
+            e.to_string()
+                .starts_with("index: entry: packages[0].formats.boot"),
+            "{v}: {e}"
+        );
+    }
+    // A positive integer the tool does not know is read, and rule 4 passes
+    // the version over.
+    for v in ["2", "18446744073709551615"] {
+        let text = INDEX.replacen("\"boot\": 1", &format!("\"boot\": {v}"), 1);
+        let i = parse_index(&text).unwrap();
+        assert_eq!(
+            code(resolve(&target("1.3"), &i, "x", "linux-x64")),
+            "sdk: no package"
+        );
     }
 }

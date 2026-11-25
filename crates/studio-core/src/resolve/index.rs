@@ -45,7 +45,7 @@ pub struct IndexPackage {
     /// for any other package.
     pub tools: Vec<ToolPin>,
     /// Format name to format version.
-    pub formats: BTreeMap<String, i64>,
+    pub formats: BTreeMap<String, u64>,
     /// Where the archive is.
     pub url: String,
     /// The archive size in bytes.
@@ -320,7 +320,7 @@ pub(super) fn formats(
     name: &str,
     at: &str,
     err: &dyn Fn(String) -> Error,
-) -> Result<BTreeMap<String, i64>, Error> {
+) -> Result<BTreeMap<String, u64>, Error> {
     let here = format!("{at}formats");
     let obj = v
         .ok_or_else(|| err(format!("{here} is missing")))?
@@ -328,9 +328,13 @@ pub(super) fn formats(
         .ok_or_else(|| err(format!("{here} is not an object")))?;
     let mut out = BTreeMap::new();
     for (k, v) in obj {
+        // "One integer per format": a format version is a positive integer,
+        // as `format` is. `0`, `-1` and `1.0` are malformed, not unknown, so
+        // they fail here and are never passed over by rule 4.
         let n = v
-            .as_i64()
-            .ok_or_else(|| err(format!("{here}.{k} is not an integer")))?;
+            .as_u64()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| err(format!("{here}.{k} = {v} is not a positive integer")))?;
         out.insert(k.clone(), n);
     }
     if let Some(m) = required_formats(name)

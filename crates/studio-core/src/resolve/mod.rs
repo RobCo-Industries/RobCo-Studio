@@ -40,7 +40,7 @@ pub const TEMPLATES: &str = "templates";
 
 /// The formats of `formats` this tool knows, with the one value it reads.
 /// Rule 4 of the fit rules uses this list.
-pub const KNOWN_FORMATS: [(&str, i64); 7] = [
+pub const KNOWN_FORMATS: [(&str, u64); 7] = [
     ("boot", 1),
     ("flags", 1),
     ("project", 1),
@@ -374,7 +374,7 @@ pub fn is_sha256(s: &str) -> bool {
 
 /// The formats of `formats` that this tool does not know, by name or by
 /// value, sorted by name.
-pub fn unknown_formats(formats: &BTreeMap<String, i64>) -> Vec<(&str, i64)> {
+pub fn unknown_formats(formats: &BTreeMap<String, u64>) -> Vec<(&str, u64)> {
     formats
         .iter()
         .filter(|(n, v)| !KNOWN_FORMATS.contains(&(n.as_str(), **v)))

@@ -33,7 +33,7 @@ pub struct SdkJson {
     /// One per repository that went into the package.
     pub built_from: Vec<BuiltFrom>,
     /// Format name to format version.
-    pub formats: BTreeMap<String, i64>,
+    pub formats: BTreeMap<String, u64>,
     /// Other packages this one needs, in file order.
     pub requires: Vec<Requirement>,
     /// The tools the package names: `gcc` then `qemu` for `pipos`, empty
@@ -169,8 +169,7 @@ fn check_formats(v: Option<&Value>) -> Result<(), Error> {
                 "sdk.json: formats.{name} = {value} is not a positive integer"
             )));
         };
-        let known = i64::try_from(n).is_ok_and(|n| KNOWN_FORMATS.contains(&(name.as_str(), n)));
-        if !known {
+        if !KNOWN_FORMATS.contains(&(name.as_str(), n)) {
             return Err(Error::PackageFormat(format!(
                 "sdk.json uses {name} {n}, which this tool does not know: install a newer tool"
             )));
