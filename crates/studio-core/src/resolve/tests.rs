@@ -354,6 +354,28 @@ fn resolve_two_majors_of_one_name_fail() {
 }
 
 #[test]
+fn resolve_keeps_a_requirement_whose_stater_was_passed_over() {
+    // SDK_PACKAGE.md, "Resolving requires": a requirement stays in the set
+    // once added. A pick only moves lower, so the root is `a` at any
+    // version. Pass 2 picks a 2.0.0, which requires c abi 1.0. b then moves
+    // a to 1.0.0, which requires c abi 2.0. The requirement of a 2.0.0
+    // still counts, so no c fits both. Dropping it would pick c 2.0.0.
+    let e = entries(
+        r#"[
+        {"name": "a", "version": "2.0.0", "abi": "2.0", "requires": [{"name": "b", "abi": "1.0"}, {"name": "c", "abi": "1.0"}], "formats": {}},
+        {"name": "a", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "b", "abi": "1.0"}, {"name": "c", "abi": "2.0"}], "formats": {}},
+        {"name": "b", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "a", "abi": "1.0"}], "formats": {}},
+        {"name": "c", "version": "1.0.0", "abi": "1.0", "requires": [], "formats": {}},
+        {"name": "c", "version": "2.0.0", "abi": "2.0", "requires": [], "formats": {}}
+    ]"#,
+    );
+    assert_eq!(
+        failure(resolve_requires(&e, &install("a"))),
+        "sdk: no package: c: a 1.0.0 abi 2.0, a 2.0.0 abi 1.0"
+    );
+}
+
+#[test]
 fn resolve_leaves_out_a_name_no_chain_reaches() {
     // Only the root and what its picks require enter the resolution.
     let e = entries(
@@ -964,6 +986,16 @@ fn resolve_stale_rules() {
         "lock: stale: package gfx 1.3.0 does not fit pipos 1.3.0 abi 1.5: run robco update"
     );
     assert_eq!(stale(&l, &target("1.3"), &[("pipos", "gfx", "1.2")]), "ok");
+    // Only another package's entry counts: gfx naming itself at an ABI it
+    // does not serve is not stale.
+    assert_eq!(
+        stale(
+            &l,
+            &target("1.3"),
+            &[("pipos", "gfx", "1.2"), ("gfx", "gfx", "1.5")]
+        ),
+        "ok"
+    );
     // Rule 2: a needed package that is not listed, from any listed package.
     assert_eq!(
         stale(

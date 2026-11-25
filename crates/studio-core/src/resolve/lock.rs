@@ -306,6 +306,9 @@ impl Lock {
                     p.name, p.version, target.platform, target.abi
                 ));
             }
+            // STUDIO_PROJECT.md, "A stale lock", rule 1: "a `requires` entry
+            // of another listed package". A package's entry on its own name
+            // does not count.
             for (by, r) in &stated {
                 if r.name == p.name && by.name != p.name && !abi.serves(r.abi) {
                     return stale(format!(

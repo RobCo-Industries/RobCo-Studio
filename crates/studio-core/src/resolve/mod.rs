@@ -574,6 +574,9 @@ pub fn resolve_requires<'a>(
                 });
             }
         }
+        // SDK_PACKAGE.md, "Resolving requires": a requirement stays in the
+        // set once added, even when a later pass passes over the version
+        // that stated it. Nothing is ever removed.
         for n in new {
             added |= set.insert(n);
         }
