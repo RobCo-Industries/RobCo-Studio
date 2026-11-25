@@ -12,7 +12,7 @@ Each spike has its own page in [`docs/spikes`](spikes/). This page is the index.
 | [K2](spikes/K2.md) | Does xPack gcc 15.2.1 build Culvert to the same bytes everywhere? | The sealed tape, yes. Intermediate files need cures | `CULVERT.HTP` has one SHA-256 on Ubuntu, macOS and Windows, and through Make and the direct build |
 | [K3](spikes/K3.md) | Does RobCo-Core's C build through Cargo, and can Rust write a card? | Yes, with `CC=clang` on Windows | 11 C files, 6 Rust tests pass on three systems. The card is the same bytes on each and boots in QEMU |
 | [K4](spikes/K4.md) | egui or GPUI for the window? | egui | `gpui` 0.2.2 does not build on Linux today. egui passes its headless tests on three systems |
-| [K5](spikes/K5.md) | Is QMP `screendump` fast enough for the simulator? | Yes | 145 to 260 frames a second at 640 by 480 flat out. At 30 a second the guest runs about 10 % slower |
+| [K5](spikes/K5.md) | Is QMP `screendump` fast enough for the simulator? | Yes | 145 to 260 frames a second at 640 by 480 flat out. At 30 a second the guest runs 5 % to 20 % slower |
 | [K6](spikes/K6.md) | Can a Rust card writer write and verify a disk, and refuse a system disk? | Yes, on virtual disks in CI | 60 MiB written and read back equal on three runners. The system disk refused on each. No real card reader |
 | [K7](spikes/K7.md) | Does a plain text editor hold up in egui? | Yes at 5,000 lines, on one Mac | 113 to 117 fps while typing at 5,000 lines. 57 to 60 fps at 20,000 lines |
 
@@ -54,7 +54,7 @@ Each spike has its own page in [`docs/spikes`](spikes/). This page is the index.
 
 - Measured on one Mac under load, load averages 4 to 7, and on a hosted Linux runner in the suite's container. Each phase lasted 2 s, so each number is one short sample and a lower bound.
 - Flat out at 640 by 480, PPM to a file: 145 to 260 frames a second on `raspi0`, `raspi2b` and `raspi3b`. At a fixed 30 a second, about 4 to 7 ms per frame from request to decoded pixels.
-- The cost is the guest's: each call stops it for about 4 ms. At 30 a second it runs about 10 % slower, at 15 about 3 to 4 %, flat out at about a quarter of its speed.
+- The cost is the guest's: each call stops it for about 4 ms. At 30 a second it runs 5 % to 20 % slower, at 15 1 % to 5 %, depending on the machine and where the frame is written. Flat out it runs at about a quarter of its speed.
 - PNG costs twice the time per frame, and the suite's QEMU has no PNG. VNC costs the guest nothing but tops out at about 29 updates a second with about 35 ms of delay, and the suite's QEMU has no VNC. Both ran on the Mac only.
 - One of two CI runs that wrote frames to disk had stalls up to 300 ms. `/dev/shm` and a named pipe had none above 14 ms.
 - Not proven: macOS and Windows runners, K1's QEMU builds, a calm machine, PNG on a busy screen, real key input.
@@ -63,7 +63,7 @@ Each spike has its own page in [`docs/spikes`](spikes/). This page is the index.
 
 - Proven in CI on Ubuntu, macOS and Windows, on virtual disks only: a 64 MiB loop device, disk image and VHD. A 60 MiB image is written and read back equal, and a different image is reported different.
 - The runner's own system disk is refused on all three before the writer opens it. On Linux `strace` shows no open with write flags.
-- The rules are one pure function. 22 tests run it on recorded lists written by hand. Only `decide` can build an `Approved` value, and only that value opens a disk for writing.
+- The rules are one pure function. 25 tests run it on recorded lists written by hand. Only `decide` can build an `Approved` value, and only that value opens a disk for writing.
 - Three review rounds and one sweep found faults of two kinds: a checked property not carried to where it is used, and a system value put in the wrong class. All are fixed with tests.
 - Not proven: any real card reader or SD slot, unmounting on macOS and Windows, a real image with a partition table, the macOS drive cache flush, a second byte check on Windows. The elevated helper was not built.
 
@@ -93,7 +93,7 @@ The owner decides. Each point lists the options as its page gives them. No optio
 
 ### The simulator screen, from K5
 
-- Which rate to offer? Fixed 30, fixed 15, a user setting, or a rate that adapts and slows when the guest's markers show it slowed. [K5](spikes/K5.md#what-it-means-for-studio)
+- Which rate to offer? 15 costs the guest 1 % to 5 %, 30 costs 5 % to 20 %. Fixed 30, fixed 15, a user setting, or a rate that adapts and slows when the guest's markers show it slowed. [K5](spikes/K5.md#what-it-means-for-studio)
 - Where does QEMU write the frame? A file in the system's temporary folder, as the harness does; a named pipe on macOS and Linux with a file on Windows; or memory-backed storage where there is some, `/dev/shm` on Linux. [K5](spikes/K5.md#what-it-means-for-studio)
 - One QMP connection or two? One is enough for keys. A second cuts key latency and keeps the poller and the input path apart, for one more `-qmp` argument. [K5](spikes/K5.md#what-it-means-for-studio)
 - Skip unchanged frames? Studio can hash each frame and skip the upload when nothing changed. The page leaves it to milestone S2. [K5](spikes/K5.md#what-it-means-for-studio)
@@ -109,6 +109,10 @@ The owner decides. Each point lists the options as its page gives them. No optio
 - When files above about 10,000 lines must edit at the display rate, or the editor grows towards analysis, completion, folding, several cursors or gutter diagnostics: write our own visible-lines view on egui, try a crate such as `egui-pop-editors` or `egui_code_editor`, or weigh GPUI with GPUI Kit's editor. [K7](spikes/K7.md#what-it-means-for-studio)
 - The old `TextEdit` ids' state stays in egui's memory until exit. S2 removes it, or keeps one id per open tab on purpose. [K7](spikes/K7.md#what-the-review-found)
 - If GPUI is ever used, it means one of: pinning a hand-picked set of old crates to keep 0.2.2 building on Linux, the weekly snapshot `gpui-pre`, or a git revision of Zed pinned by hash. [K4](spikes/K4.md#what-it-means-for-studio)
+
+### QEMU on Windows, from K1
+
+- How does Studio make QEMU die with its parent on Windows? RobCo-Core's harness uses a `/bin/sh` watcher and process groups, which Windows lacks, and the K1 plugin bypasses them. Options: a Windows Job Object that kills QEMU when Studio exits, or a watcher process of Studio's own. Neither was tested. [K1](spikes/K1.md#the-method)
 
 ## What the spikes changed in the code that follows
 
