@@ -162,25 +162,51 @@ jobs:
             "robco "[0-9]*.[0-9]*.[0-9]*) ;;
             *) echo "::error::unexpected version line: $out"; exit 1 ;;
           esac
-      - name: The binary is static
+      # robco does not call the C yet, so the linker leaves it out. The tests
+      # of studio-sys call it: build them for the release target, check them
+      # like robco, and run them.
+      - name: Build the studio-sys tests for the release target
+        run: |
+          cargo test --release --locked -p studio-sys --target ${{ matrix.target }} \
+            --no-run --message-format=json > "$RUNNER_TEMP/sys-tests.json"
+          jq -r 'select(.profile.test == true and .executable != null) | .executable' \
+            "$RUNNER_TEMP/sys-tests.json" | tr -d '\r' > "$RUNNER_TEMP/sys-tests.txt"
+          if [ "$RUNNER_OS" = Windows ]; then
+            while read -r f; do cygpath -u "$f"; done < "$RUNNER_TEMP/sys-tests.txt" > "$RUNNER_TEMP/x" \
+              && mv "$RUNNER_TEMP/x" "$RUNNER_TEMP/sys-tests.txt"
+          fi
+          cat "$RUNNER_TEMP/sys-tests.txt"
+          [ -s "$RUNNER_TEMP/sys-tests.txt" ] || { echo "::error::no studio-sys test binary"; exit 1; }
+      - name: The binaries are static
         if: runner.os == 'Linux'
         run: |
-          file "$BIN"
-          if out=$(ldd "$BIN" 2>&1); then rc=0; else rc=$?; fi
-          echo "ldd: $out (exit $rc)"
-          case "$out" in
-            *"not a dynamic executable"*|*"statically linked"*) ;;
-            *) echo "::error::robco is linked dynamically"; exit 1 ;;
-          esac
-      - name: The binary links the C runtime statically
+          bad=0
+          while read -r f; do
+            file "$f"
+            if out=$(ldd "$f" 2>&1); then rc=0; else rc=$?; fi
+            echo "ldd $f: $out (exit $rc)"
+            case "$out" in
+              *"not a dynamic executable"*|*"statically linked"*) ;;
+              *) echo "::error::$f is linked dynamically"; bad=1 ;;
+            esac
+          done < <(echo "$BIN"; cat "$RUNNER_TEMP/sys-tests.txt")
+          exit $bad
+      - name: The binaries link the C runtime statically
         if: runner.os == 'Windows'
         run: |
-          if grep -a -i -o -E '(vcruntime|msvcp)[0-9]+[_a-z0-9]*\.dll|api-ms-win-crt-[a-z0-9-]+\.dll|ucrtbase\.dll' "$BIN" > crt-imports.txt; then
-            sort -u crt-imports.txt
-            echo "::error::robco imports the C runtime from a DLL"
-            exit 1
-          fi
-          echo "no C runtime DLL among the imports"
+          bad=0
+          while read -r f; do
+            if grep -a -i -o -E '(vcruntime|msvcp)[0-9]+[_a-z0-9]*\.dll|api-ms-win-crt-[a-z0-9-]+\.dll|ucrtbase\.dll|clang_rt[a-z0-9_.-]*\.dll|libunwind\.dll|libc\+\+\.dll' "$f" > crt-imports.txt; then
+              sort -u crt-imports.txt
+              echo "::error::$f imports a C runtime from a DLL"
+              bad=1
+            else
+              echo "$f: no C runtime DLL among the imports"
+            fi
+          done < <(echo "$BIN"; cat "$RUNNER_TEMP/sys-tests.txt")
+          exit $bad
+      - name: Run the studio-sys tests on the release target
+        run: cargo test --release --locked -p studio-sys --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: robco-${{ runner.os }}-${{ runner.arch }}
