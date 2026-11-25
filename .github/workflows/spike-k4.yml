@@ -25,7 +25,7 @@ defaults:
 
 jobs:
   build:
-    name: ${{ matrix.toolkit }} on ${{ matrix.os }}
+    name: "${{ matrix.toolkit }} on ${{ matrix.os }}"
     strategy:
       fail-fast: false
       matrix:
@@ -37,12 +37,12 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - name: Install system packages for egui
-        if: runner.os == 'Linux' && matrix.toolkit == 'egui'
+        if: matrix.os == 'ubuntu-latest' && matrix.toolkit == 'egui'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev
       - name: Install system packages for GPUI
-        if: runner.os == 'Linux' && matrix.toolkit == 'gpui'
+        if: matrix.os == 'ubuntu-latest' && matrix.toolkit == 'gpui'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
