@@ -38,6 +38,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -52,6 +54,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -86,6 +90,8 @@ jobs:
       EXE: ${{ matrix.exe }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -104,6 +110,63 @@ jobs:
           name: robco-${{ runner.os }}-${{ runner.arch }}
           path: target/release/robco${{ env.EXE }}
           if-no-files-found: error
+
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: RobCo-Core is pinned to a commit on its main branch
+        run: |
+          pin=$(git rev-parse HEAD:external/robco-core)
+          head=$(git -C external/robco-core rev-parse HEAD)
+          echo "RobCo-Core pinned at $pin"
+          [ "$pin" = "$head" ] || { echo "::error::checked out $head, pinned $pin"; exit 1; }
+          git -C external/robco-core fetch --quiet origin main
+          git -C external/robco-core merge-base --is-ancestor "$pin" FETCH_HEAD \
+            || { echo "::error::$pin is not on RobCo-Core main"; exit 1; }
+
+  sys-card:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Write the card
+        run: |
+          mkdir -p "$RUNNER_TEMP/card"
+          STUDIO_SYS_CARD_OUT="$RUNNER_TEMP/card/card.img" \
+            cargo test -p studio-sys --locked --test card -- --exact card_written_from_rust
+          test -s "$RUNNER_TEMP/card/card.img"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-sys-card
+          path: ${{ runner.temp }}/card
+          if-no-files-found: error
+
+  sys-card-mtools:
+    needs: sys-card
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/robco-industries/robco-ci:ba6372158e4b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: studio-sys-card
+          path: card
+      - name: Read the card with mtools
+        run: crates/studio-sys/scripts/check_card.sh card/card.img
 
   docs:
     runs-on: ubuntu-latest
