@@ -57,7 +57,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            make tar xz curl
+            make tar xz curl diffutils bison flex git
             mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-glib2
             mingw-w64-ucrt-x86_64-pixman mingw-w64-ucrt-x86_64-dtc
             mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf
