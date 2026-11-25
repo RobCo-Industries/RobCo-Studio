@@ -102,7 +102,7 @@ jobs:
             exe: ""
           # macOS 15 runners are Apple silicon. The Intel ones are macos-15-intel.
           - os: macos-15
-            machine: arm64
+            machine: x86_64
             target: aarch64-apple-darwin
             rustflags: ""
             exe: ""
