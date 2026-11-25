@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod boot;
+pub mod codes;
 pub mod guard;
 pub mod manifest;
 pub mod resolve;
