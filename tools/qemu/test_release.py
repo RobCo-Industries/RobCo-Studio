@@ -1,7 +1,9 @@
 """Unit tests for release.py, on small fake packages. No network.
 Run with: python3 -m unittest discover -s tools/qemu -v"""
 
+import contextlib
 import hashlib
+import io
 import json
 import pathlib
 import shutil
@@ -244,6 +246,19 @@ class Scan(unittest.TestCase):
     def test_short_text_refused(self):
         with self.assertRaises(release.Refused):
             release.scan(self.pkg, ["/a"])
+
+    def test_context_shows_the_string_around_each_hit(self):
+        (self.pkg / "bin/qemu").write_bytes(b"\x01\x02/home/builder/qemu-10.1.2/build/x.h\x00\xff"
+                                            b"abc\x00assert /home/builder/y.c\x00")
+        self.assertEqual(release.context(self.pkg / "bin/qemu", "/home/builder"),
+                         [(2, "/home/builder/qemu-10.1.2/build/x.h"), (50, "assert /home/builder/y.c")])
+
+    def test_main_prints_the_context(self):
+        (self.pkg / "bin/qemu").write_bytes(b"\x00x /home/builder/a.c\x00")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(release.main(["scan", str(self.pkg), "--forbid", "/home/builder"]), 1)
+        self.assertIn("FAIL: bin/qemu holds /home/builder\n  at byte 3: x /home/builder/a.c\n", out.getvalue())
 
     def test_main_exit_code(self):
         (self.pkg / "NOTICE").write_text("/home/builder\n")

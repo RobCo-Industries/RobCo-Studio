@@ -7,7 +7,8 @@ SHA-256. Standard library only, no network.
       Fails when a file of the package holds one of the texts: the paths,
       user and host names of the machine that built it. Each path is also
       searched with the other slash and, for an MSYS2 path such as /c/x,
-      as C:/x and C:\\x.
+      as C:/x and C:\\x. Each hit is followed by up to five lines
+      "  at byte N: <text>", the printable string around it.
 
   release.py gather --in DIR --out DIR --repo DIR [--tag TAG] [--base-url URL]
       Reads the workflow's artifacts from --in:
@@ -99,6 +100,26 @@ def files_of(root):
             out.append((rel, p))
         elif not p.is_dir():
             raise Refused(f"{rel} is not a regular file")
+    return out
+
+
+def context(path, text, limit=5, width=100):
+    """Where text sits in a file: up to limit (offset, string) pairs, the
+    string being the run of printable bytes around each occurrence, as
+    strings -t d shows it, cut to width bytes on each side."""
+    data = pathlib.Path(path).read_bytes()
+    hay, needle = data, text.encode()
+    if b":" in needle:
+        hay, needle = data.lower(), needle.lower()
+    out, at = [], hay.find(needle)
+    while at >= 0 and len(out) < limit:
+        lo, hi = at, at + len(needle)
+        while lo > 0 and at - lo < width and 0x20 <= data[lo - 1] < 0x7f:
+            lo -= 1
+        while hi < len(data) and hi - at - len(needle) < width and 0x20 <= data[hi] < 0x7f:
+            hi += 1
+        out.append((at, data[lo:hi].decode("ascii", "replace")))
+        at = hay.find(needle, at + 1)
     return out
 
 
@@ -409,6 +430,8 @@ def main(argv=None):
             hits = scan(a.package, [t for t in a.forbid if t])
             for rel, text in hits:
                 print(f"FAIL: {rel} holds {text}")
+                for at, around in context(pathlib.Path(a.package) / rel, text):
+                    print(f"  at byte {at}: {around}")
             if hits:
                 return 1
             print(f"No file of {a.package} holds a path or name of this machine.")
