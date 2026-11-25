@@ -319,7 +319,7 @@ jobs:
           qemu-system-arm --version
           qemu-system-arm -M help | grep -E '^raspi(0|1ap|2b) '
           qemu-system-aarch64 -M help | grep -E '^raspi3b '
-          arm-none-eabi-gcc --version | head -1
+          arm-none-eabi-gcc --version | sed -n 1p
       - name: Python test tools
         run: |
           py=python; command -v python >/dev/null || py=python3

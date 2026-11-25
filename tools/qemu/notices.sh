@@ -217,7 +217,8 @@ check() {
     c=$(component "$f" 2>/dev/null) || { echo "FAIL: $f is a packed library this script does not know; state its licence in notices.sh"; bad=1; continue; }
     n=$(printf '%s\n' "$lines" | awk -F'\t' -v f="$f" '$1 == f' | wc -l | tr -d ' ')
     [ "$n" -le 1 ] || { echo "FAIL: $f ($c) has $n record lines naming licence texts, not one"; bad=1; }
-    t=$(printf '%s\n' "$lines" | awk -F'\t' -v f="$f" '$1 == f {print $2; exit}')
+    # awk reads the whole list: an early exit would break printf's pipe.
+    t=$(printf '%s\n' "$lines" | awk -F'\t' -v f="$f" '$1 == f && !n++ {print $2}')
     [ -n "$t" ] || { echo "FAIL: $f ($c) has no record line naming its licence texts"; bad=1; }
     pk=$(awk -F' [|] ' -v f="$f" '$1 == f {print $4; exit}' "$record" 2>/dev/null || true)
     if [ -n "$t" ] && ! msg=$(known_package "$f" "$c" "$pk"); then echo "FAIL: $msg"; bad=1; fi
