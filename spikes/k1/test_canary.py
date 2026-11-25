@@ -6,7 +6,9 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 import canary
-from canary import FAIL, KNOWN, PASS, RETRY, Verdict, verdict
+from canary import FAIL, PASS, Verdict, verdict
+
+KNOWN = "test_v23_spi0_byte_rate[raspi3b]"
 
 
 def report(n=canary.EXPECTED, failed=(), skipped=(), case_errors=(), suite_error=None):
@@ -33,22 +35,16 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(v.status, PASS)
         self.assertEqual(v.passed, 78)
 
-    def test_only_known_race_fails_is_retried(self):
+    def test_one_case_fails(self):
         v = verdict(1, report(failed=[KNOWN]))
-        self.assertEqual(v.status, RETRY)
-        self.assertEqual(v.failed, [KNOWN])
-
-    def test_retry_run_of_known_case(self):
-        self.assertEqual(verdict(0, report(n=1), expected=1).status, PASS)
-        self.assertEqual(verdict(1, report(n=1, failed=[KNOWN]), expected=1).status, RETRY)
-
-    def test_other_case_fails(self):
-        v = verdict(1, report(failed=["test_case_5"]))
         self.assertEqual(v.status, FAIL)
-        self.assertIn("other than the known race", v.reason)
+        self.assertEqual(v.failed, [KNOWN])
+        self.assertIn("1 case(s) failed", v.reason)
 
-    def test_known_and_other_case_fail(self):
-        self.assertEqual(verdict(1, report(failed=[KNOWN, "test_case_5"])).status, FAIL)
+    def test_two_cases_fail(self):
+        v = verdict(1, report(failed=[KNOWN, "test_case_5"]))
+        self.assertEqual(v.status, FAIL)
+        self.assertIn("2 case(s) failed", v.reason)
 
     def test_suite_level_error_without_failed_case(self):
         v = verdict(2, report(n=0, suite_error="collection failed"))
@@ -59,10 +55,10 @@ class VerdictTest(unittest.TestCase):
         v = verdict(0, report(suite_error="teardown failed"))
         self.assertEqual(v.status, FAIL)
 
-    def test_case_error_on_known_race_is_not_retried(self):
+    def test_case_error(self):
         v = verdict(1, report(case_errors=[KNOWN]))
         self.assertEqual(v.status, FAIL)
-        self.assertIn("never retried", v.reason)
+        self.assertIn("1 error(s)", v.reason)
 
     def test_nonzero_exit_with_clean_report(self):
         v = verdict(3, report())
@@ -94,34 +90,23 @@ class VerdictTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def main_with(self, verdicts):
-        with mock.patch.object(canary, "run", side_effect=verdicts) as run, \
+    def main_with(self, v):
+        with mock.patch.object(canary, "run", return_value=v) as run, \
              mock.patch("sys.argv", ["canary.py", "test"]), \
              mock.patch.dict("os.environ", {"GITHUB_STEP_SUMMARY": ""}), \
              redirect_stdout(io.StringIO()) as out:
             code = canary.main()
         return code, run.call_count, out.getvalue()
 
-    def test_known_race_fails_three_times(self):
-        r = Verdict(RETRY, "known", failed=[KNOWN])
-        code, calls, out = self.main_with([r, r, r])
-        self.assertEqual((code, calls), (1, 3))
-        self.assertIn("failed 3 times in a row", out)
+    def test_pass_runs_once(self):
+        code, calls, _ = self.main_with(Verdict(PASS, "ok", passed=canary.EXPECTED))
+        self.assertEqual((code, calls), (0, 1))
 
-    def test_known_race_passes_on_second_retry(self):
-        r = Verdict(RETRY, "known", failed=[KNOWN])
-        code, calls, out = self.main_with([r, r, Verdict(PASS, "ok", passed=1)])
-        self.assertEqual((code, calls), (0, 3))
-        self.assertIn("passed on retry 2 of 2", out)
-
-    def test_retry_that_errors_fails_at_once(self):
-        r = Verdict(RETRY, "known", failed=[KNOWN])
-        code, calls, _ = self.main_with([r, Verdict(FAIL, "report missing")])
-        self.assertEqual((code, calls), (1, 2))
-
-    def test_first_pass_fail_is_not_retried(self):
-        code, calls, _ = self.main_with([Verdict(FAIL, "skipped")])
+    def test_failed_case_fails_at_once(self):
+        v = Verdict(FAIL, "1 case(s) failed", failed=[KNOWN])
+        code, calls, out = self.main_with(v)
         self.assertEqual((code, calls), (1, 1))
+        self.assertIn(f"failed: `{KNOWN}`", out)
 
 
 if __name__ == "__main__":
