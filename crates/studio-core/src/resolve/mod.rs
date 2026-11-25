@@ -259,16 +259,6 @@ impl Version {
         };
         it.next().is_none().then_some(v)
     }
-
-    /// The first two parts. Only a locked package's ABI comes from its
-    /// version: the lock has no `abi` key. Everywhere else the ABI is read
-    /// from `abi`, never worked out from the version.
-    pub fn locked_abi(self) -> Abi {
-        Abi {
-            major: self.major,
-            minor: self.minor,
-        }
-    }
 }
 
 impl fmt::Display for Version {

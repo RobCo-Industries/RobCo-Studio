@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::Value;
 
 use super::index::{self, Index, IndexPackage};
-use super::lock::{self, Lock, LockedPackage};
+use super::lock::{self, Installed, Lock, LockedPackage};
 use super::sdk_json;
 use super::*;
 
@@ -1016,20 +1016,28 @@ fn resolve_lock_failed_write_keeps_the_old_lock_and_no_temporary_file() {
 
 // A stale lock.
 
-fn requires_map(edges: &[(&str, &str, &str)]) -> impl Fn(&LockedPackage) -> Vec<Requirement> {
+fn installed_map(
+    edges: &[(&str, &str, &str)],
+    abis: &[(&str, &str)],
+) -> impl Fn(&LockedPackage) -> Installed {
     let edges: Vec<(String, String, String)> = edges
         .iter()
         .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
         .collect();
-    move |p: &LockedPackage| {
-        edges
+    let abis: Vec<(String, Abi)> = abis
+        .iter()
+        .map(|(n, a)| (n.to_string(), Abi::parse(a).unwrap()))
+        .collect();
+    move |p: &LockedPackage| Installed {
+        abi: abis.iter().find(|(n, _)| *n == p.name).map(|(_, a)| *a),
+        requires: edges
             .iter()
             .filter(|(by, _, _)| *by == p.name)
             .map(|(_, n, abi)| Requirement {
                 name: n.clone(),
                 abi: Abi::parse(abi).unwrap(),
             })
-            .collect()
+            .collect(),
     }
 }
 
@@ -1046,7 +1054,11 @@ fn lock_with(extra: &[(&str, &str)]) -> Lock {
 }
 
 fn stale(l: &Lock, t: &Target, edges: &[(&str, &str, &str)]) -> String {
-    let f = requires_map(edges);
+    stale_with(l, t, edges, &[("pipos", "1.3"), ("gfx", "1.3")])
+}
+
+fn stale_with(l: &Lock, t: &Target, edges: &[(&str, &str, &str)], abis: &[(&str, &str)]) -> String {
+    let f = installed_map(edges, abis);
     match l.check_stale(t, "linux-x64", Some(&f)) {
         Ok(()) => "ok".to_owned(),
         Err(e) => {
@@ -1054,6 +1066,54 @@ fn stale(l: &Lock, t: &Target, edges: &[(&str, &str, &str)]) -> String {
             e.to_string()
         }
     }
+}
+
+#[test]
+fn resolve_stale_judges_a_package_other_than_pipos_by_its_declared_abi() {
+    let l = lock_with(&[("gfx", "2.0.0")]);
+    let gfx = [("gfx", "1.5")];
+    // gfx 2.0.0 declares ABI 1.5: its version says nothing about its ABI.
+    assert_eq!(
+        stale_with(&l, &target("1.3"), &[("pipos", "gfx", "1.5")], &gfx),
+        "ok"
+    );
+    for want in ["1.6", "2.0"] {
+        assert_eq!(
+            stale_with(&l, &target("1.3"), &[("pipos", "gfx", want)], &gfx),
+            format!(
+                "lock: stale: package gfx 2.0.0 does not fit pipos 1.3.0 abi {want}: run robco update"
+            )
+        );
+    }
+    // A package without a declared ABI fits no requires entry.
+    assert_eq!(
+        stale_with(&l, &target("1.3"), &[("pipos", "gfx", "1.0")], &[]),
+        "lock: stale: package gfx 2.0.0 does not fit pipos 1.3.0 abi 1.0: run robco update"
+    );
+    // pipos is judged by its version, whatever its sdk.json says.
+    let l = lock_with(&[("gfx", "1.0.0")]);
+    assert_eq!(
+        stale_with(
+            &l,
+            &target("1.3"),
+            &[("gfx", "pipos", "1.4")],
+            &[("gfx", "1.0"), ("pipos", "1.4")]
+        ),
+        "lock: stale: package pipos 1.3.0 does not fit gfx 1.0.0 abi 1.4: run robco update"
+    );
+    assert_eq!(
+        stale_with(
+            &l,
+            &target("1.3"),
+            &[("gfx", "pipos", "1.3"), ("pipos", "gfx", "1.0")],
+            &[("gfx", "1.0")]
+        ),
+        "ok"
+    );
+    // Without installed data, a requirement on gfx cannot be judged, and no
+    // ABI is guessed from its version: the check passes.
+    let l = lock_with(&[("gfx", "2.0.0")]);
+    assert!(l.check_stale(&target("1.3"), "linux-x64", None).is_ok());
 }
 
 #[test]

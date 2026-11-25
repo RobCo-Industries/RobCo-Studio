@@ -25,12 +25,34 @@ use toml::{Table, Value};
 use super::index::{Archive, Index, IndexPackage};
 use super::sdk_json::SdkJson;
 use super::{
-    Error, PIPOS, Requirement, TOOLS, Target, Version, is_host_name, is_package_name, is_sha256,
-    is_tool_version,
+    Abi, Error, PIPOS, Requirement, TOOLS, Target, Version, is_host_name, is_package_name,
+    is_sha256, is_tool_version,
 };
 
-/// Gives the `requires` of a locked package, from its installed `sdk.json`.
-pub type RequiresOf<'a> = dyn Fn(&LockedPackage) -> Vec<Requirement> + 'a;
+/// What the installed `sdk.json` of a locked package says that the lock
+/// does not: its declared `abi` and its `requires`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Installed {
+    /// The `abi` of the installed `sdk.json`, absent when it has none.
+    pub abi: Option<Abi>,
+    /// The `requires` of the installed `sdk.json`.
+    pub requires: Vec<Requirement>,
+}
+
+/// Gives what the installed `sdk.json` of a locked package says.
+pub type InstalledOf<'a> = dyn Fn(&LockedPackage) -> Installed + 'a;
+
+/// The ABI of a locked `pipos` package, the first two parts of its version.
+/// STUDIO_PROJECT.md, "A stale lock", rule 1, allows this for `pipos` only:
+/// "The lock has no `abi` key, so the ABI of a locked `pipos` package is the
+/// first two parts of its `version`". SDK_PACKAGE.md: "A tool never works out
+/// an ABI from a version". Returns `None` for any other package.
+fn locked_pipos_abi(p: &LockedPackage) -> Option<Abi> {
+    (p.name == PIPOS).then_some(Abi {
+        major: p.version.major,
+        minor: p.version.minor,
+    })
+}
 
 /// The lock `format` this module reads and writes. A larger one fails.
 pub const FORMAT: i64 = 1;
@@ -277,46 +299,59 @@ impl Lock {
 
     /// Checks the lock against the project by "A stale lock".
     ///
-    /// Before the listed packages are installed, `requires_of` is `None`,
-    /// and only the parts that need no `requires` run: the manifest's
-    /// requirement on `pipos`, a missing `pipos`, and the tools. Once they
-    /// are installed, `requires_of` gives each listed package's `requires`
-    /// from its `sdk.json`, and every rule runs. The first failure, in the
-    /// order of the spec's list and then by name, gives `lock: stale`.
+    /// Before the listed packages are installed, `installed_of` is `None`,
+    /// and only the parts that need no installed `sdk.json` run: the
+    /// manifest's requirement on `pipos`, a missing `pipos`, and the tools.
+    /// Once they are installed, `installed_of` gives each listed package's
+    /// declared `abi` and `requires`, and every rule runs. The ABI of a
+    /// locked `pipos` comes from its version; the ABI of any other package
+    /// is its declared `abi`, and a package without one fits no `requires`
+    /// entry. The first failure, in the order of the spec's list and then by
+    /// name, gives `lock: stale`.
     pub fn check_stale(
         &self,
         target: &Target,
         host: &str,
-        requires_of: Option<&RequiresOf<'_>>,
+        installed_of: Option<&InstalledOf<'_>>,
     ) -> Result<(), Error> {
         let stale = |d: String| Err(Error::LockStale(d));
         let mut packages: Vec<&LockedPackage> = self.packages.iter().collect();
         packages.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+        // What each listed package declares, once installed.
+        let installed: Vec<(&LockedPackage, Installed)> = match installed_of {
+            Some(f) => packages.iter().map(|p| (*p, f(p))).collect(),
+            None => Vec::new(),
+        };
         // Every `requires` entry of every listed package, with who states it.
-        let mut stated: Vec<(&LockedPackage, Requirement)> = Vec::new();
-        if let Some(requires_of) = requires_of {
-            for p in &packages {
-                for r in requires_of(p) {
-                    stated.push((p, r));
-                }
-            }
-        }
+        let stated: Vec<(&LockedPackage, &Requirement)> = installed
+            .iter()
+            .flat_map(|(p, i)| i.requires.iter().map(move |r| (*p, r)))
+            .collect();
 
-        // 1. A listed package no longer fits a requirement on it. The ABI of
-        //    a locked package is the first two parts of its version.
+        // 1. A listed package no longer fits a requirement on it.
         for p in &packages {
-            let abi = p.version.locked_abi();
-            if p.name == PIPOS && (target.platform != PIPOS || !abi.serves(target.abi)) {
+            let pipos_abi = locked_pipos_abi(p);
+            if let Some(abi) = pipos_abi
+                && (target.platform != PIPOS || !abi.serves(target.abi))
+            {
                 return stale(format!(
                     "package {} {} does not fit robco.toml platform {} abi {}",
                     p.name, p.version, target.platform, target.abi
                 ));
             }
+            // The ABI a `requires` entry is judged against: `pipos` from its
+            // version, any other package from its installed `sdk.json`.
+            let abi = pipos_abi.or_else(|| {
+                installed
+                    .iter()
+                    .find(|(q, _)| q.name == p.name)
+                    .and_then(|(_, i)| i.abi)
+            });
             // STUDIO_PROJECT.md, "A stale lock", rule 1: "a `requires` entry
             // of another listed package". A package's entry on its own name
             // does not count.
             for (by, r) in &stated {
-                if r.name == p.name && by.name != p.name && !abi.serves(r.abi) {
+                if r.name == p.name && by.name != p.name && !abi.is_some_and(|a| a.serves(r.abi)) {
                     return stale(format!(
                         "package {} {} does not fit {} {} abi {}",
                         p.name, p.version, by.name, by.version, r.abi
@@ -336,7 +371,7 @@ impl Lock {
         }
         // 3. A listed package the manifest does not need: one that no chain
         //    of `requires` from `pipos` reaches. It needs the `requires`.
-        if requires_of.is_some() {
+        if installed_of.is_some() {
             let mut reached: BTreeSet<&str> = BTreeSet::new();
             let mut todo: Vec<&str> = Vec::new();
             if target.platform == PIPOS {
