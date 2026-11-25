@@ -4,11 +4,12 @@
 
 1. `rust-toolchain.toml` names one exact stable release, and every workspace
    manifest states the same `rust-version`, directly or through the workspace.
-2. The RobCo-Core submodule at `external/robco-core` points at a commit on
-   RobCo-Core's `main`. While the repository has no such submodule, the check
-   says so and passes.
+2. The RobCo-Core submodule at `external/robco-core` is declared in
+   `.gitmodules`, is checked out at the commit HEAD records, and that commit
+   is on RobCo-Core's `main`. A missing submodule fails.
 
-Run it from the repository root. It exits 1 on the first broken rule set.
+Run it from the repository root, with the submodule checked out. It exits 1
+when any rule is broken.
 """
 
 import pathlib
@@ -60,20 +61,20 @@ def git(*args, cwd=ROOT):
 def check_core_submodule(errors):
     declared = git("config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$")
     paths = declared.stdout.split()[1::2] if declared.returncode == 0 else []
-    tree = git("ls-tree", "HEAD", CORE_PATH).stdout.split()
-    if CORE_PATH not in paths and not tree and not (ROOT / CORE_PATH).exists():
-        print(f"robco-core: no submodule yet at {CORE_PATH}, nothing to check")
-        return
     if CORE_PATH not in paths:
-        errors.append(f"{CORE_PATH} exists but .gitmodules does not declare it")
+        errors.append(f".gitmodules does not declare a submodule at {CORE_PATH}")
         return
+    tree = git("ls-tree", "HEAD", CORE_PATH).stdout.split()
     if len(tree) < 3 or tree[1] != "commit":
         errors.append(f"{CORE_PATH} is declared in .gitmodules but HEAD holds no submodule commit there")
         return
     pinned = tree[2]
-    init = git("submodule", "update", "--init", CORE_PATH)
-    if init.returncode != 0:
-        errors.append(f"{CORE_PATH}: could not check out the pinned commit: {init.stderr.strip()}")
+    head = git("rev-parse", "HEAD", cwd=ROOT / CORE_PATH) if (ROOT / CORE_PATH / ".git").exists() else None
+    if head is None or head.returncode != 0:
+        errors.append(f"{CORE_PATH} is not checked out. Run `git submodule update --init`.")
+        return
+    if head.stdout.strip() != pinned:
+        errors.append(f"{CORE_PATH}: checked out {head.stdout.strip()}, HEAD records {pinned}")
         return
     sub = ROOT / CORE_PATH
     fetch = git("fetch", "--quiet", "origin", CORE_BRANCH, cwd=sub)
