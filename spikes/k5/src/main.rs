@@ -174,6 +174,11 @@ fn check_qemu() {
         if let Some(mut s) = c.stderr.take() {
             let _ = s.read_to_string(&mut e);
         }
+        if e.contains("-vnc: invalid option") {
+            // A QEMU built without its VNC server: a fact about the build.
+            println!("NOT-RUN: this QEMU has no VNC server: {}", hide(e.trim()));
+            std::process::exit(0);
+        }
         println!("FAIL: QEMU exited early ({st}): {}", hide(e.trim()));
         std::process::exit(1);
     }
