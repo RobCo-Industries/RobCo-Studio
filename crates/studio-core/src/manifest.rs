@@ -3,9 +3,9 @@
 //! The project manifest, `robco.toml`, format 1.
 //!
 //! The rules are the "robco.toml", "Kinds" and "Errors" sections of
-//! `docs/spec/STUDIO_PROJECT.md` in RobCo-Core, read at commit `a7acab5`. The source order follows the
-//! "Source order" section of the same file as it stands in review, read at
-//! commit `dc294ad`. The manifest is TOML 1.1, as the `toml` crate parses it.
+//! `docs/spec/STUDIO_PROJECT.md` in RobCo-Core, with "Source order", and
+//! "Order of checks" of `docs/spec/STUDIO_CLI.md`, read at commit
+//! `223e8cd`. The manifest is TOML 1.1, as the `toml` crate parses it.
 //!
 //! This module is pure: text in, a checked [`Manifest`] or a
 //! [`ManifestError`] out. It reads no file. Three checks need the project
@@ -265,9 +265,31 @@ impl fmt::Display for ManifestError {
 
 impl std::error::Error for ManifestError {}
 
-/// The keys format 1 defines, per table. Anything else is unknown, the
-/// reserved keys `build.runtime` and `[[asset]]` included.
-const ROOT_KEYS: &[&str] = &["format", "project", "target", "build"];
+impl crate::codes::ErrorCode for ManifestError {
+    fn error_code(&self) -> &'static str {
+        match self {
+            ManifestError::Syntax { .. } => "manifest: syntax",
+            ManifestError::Format(_) => "manifest: format",
+            ManifestError::UnknownKey(_) => "manifest: unknown key",
+            ManifestError::Type { .. } => "manifest: type",
+            ManifestError::Missing(_) => "manifest: missing",
+            ManifestError::Name(_) => "manifest: name",
+            ManifestError::Version(_) => "manifest: version",
+            ManifestError::Title(_) => "manifest: title",
+            ManifestError::Kind(_) => "manifest: kind",
+            ManifestError::Subtype(_) => "manifest: subtype",
+            ManifestError::Platform(_) => "manifest: platform",
+            ManifestError::Abi(_) => "manifest: abi",
+            ManifestError::Path { .. } => "manifest: path",
+            ManifestError::Icon(_) => "manifest: icon",
+            ManifestError::Sources(_) => "manifest: sources",
+        }
+    }
+}
+
+/// The keys format 1 defines, per table, besides `format`, `project`,
+/// `target` and `build` at the top. Anything else is unknown, the reserved
+/// keys `build.runtime` and `[[asset]]` included.
 const PROJECT_KEYS: &[&str] = &["name", "title", "version", "kind", "subtype", "icon"];
 const TARGET_KEYS: &[&str] = &["platform", "abi"];
 const BUILD_KEYS: &[&str] = &["backend", "sources"];
@@ -289,7 +311,7 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ManifestError> {
         })?;
 
     let format = check_format(&root)?;
-    check_unknown(&root)?;
+    check_unknown(text)?;
 
     let project = table(&root, "project")?;
     let target = table(&root, "target")?;
@@ -334,16 +356,10 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     let (backend, sources) = match build {
         None => (Backend::Robco, vec![DEFAULT_SOURCES.to_string()]),
         Some(build) => {
-            let backend = match optional_str(build, "build", "backend")? {
-                None | Some("robco") => Backend::Robco,
-                // The spec reserves `make` and names no other value: a
-                // format 1 tool refuses it as an unknown key.
-                Some(other) => {
-                    return Err(ManifestError::UnknownKey(format!(
-                        "build.backend = \"{other}\""
-                    )));
-                }
-            };
+            // A string other than `robco` failed at step 4, with the
+            // unknown keys.
+            optional_str(build, "build", "backend")?;
+            let backend = Backend::Robco;
             (backend, check_sources(build)?)
         }
     };
@@ -383,27 +399,51 @@ fn check_format(root: &Table) -> Result<i64, ManifestError> {
     }
 }
 
-/// Fails on the first unknown key, in byte order of the dotted names.
-fn check_unknown(root: &Table) -> Result<(), ManifestError> {
-    for key in root.keys() {
-        if !ROOT_KEYS.contains(&key.as_str()) {
-            return Err(ManifestError::UnknownKey(key.clone()));
-        }
-    }
-    for (name, keys) in [
-        ("project", PROJECT_KEYS),
-        ("target", TARGET_KEYS),
-        ("build", BUILD_KEYS),
-    ] {
-        if let Some(Value::Table(t)) = root.get(name) {
-            for key in t.keys() {
-                if !keys.contains(&key.as_str()) {
-                    return Err(ManifestError::UnknownKey(format!("{name}.{key}")));
-                }
+/// Step 4 of "Errors": the first unknown key or table in the order of the
+/// file, where a `build.backend` other than `robco` counts as one at the
+/// place of its key. The detail of that backend is `build.backend = "<value>"`,
+/// the value written as a TOML basic string.
+fn check_unknown(text: &str) -> Result<(), ManifestError> {
+    use toml::de::{DeTable, DeValue};
+    // The text parsed once already, so this parse cannot fail.
+    let Ok(root) = DeTable::parse(text) else {
+        return Ok(());
+    };
+    let mut found: Vec<(usize, String)> = Vec::new();
+    for (key, value) in root.get_ref() {
+        let name: &str = key.get_ref();
+        let keys = match name {
+            "format" => continue,
+            "project" => PROJECT_KEYS,
+            "target" => TARGET_KEYS,
+            "build" => BUILD_KEYS,
+            _ => {
+                found.push((key.span().start, name.to_string()));
+                continue;
+            }
+        };
+        let DeValue::Table(table) = value.get_ref() else {
+            continue;
+        };
+        for (k, v) in table {
+            let inner: &str = k.get_ref();
+            if !keys.contains(&inner) {
+                found.push((k.span().start, format!("{name}.{inner}")));
+            } else if (name, inner) == ("build", "backend")
+                && let DeValue::String(backend) = v.get_ref()
+                && backend != "robco"
+            {
+                found.push((
+                    k.span().start,
+                    format!("build.backend = {}", crate::resolve::lock::quote(backend)),
+                ));
             }
         }
     }
-    Ok(())
+    match found.into_iter().min_by_key(|(at, _)| *at) {
+        Some((_, key)) => Err(ManifestError::UnknownKey(key)),
+        None => Ok(()),
+    }
 }
 
 fn optional_table<'a>(root: &'a Table, name: &str) -> Result<Option<&'a Table>, ManifestError> {
@@ -582,7 +622,7 @@ fn check_sources(build: &Table) -> Result<Vec<String>, ManifestError> {
     };
     if array.is_empty() || array.len() > MAX_SOURCE_PATTERNS {
         return Err(ManifestError::Sources(format!(
-            "{} patterns, must be 1 to {MAX_SOURCE_PATTERNS}",
+            "build.sources holds {} patterns, 1 to {MAX_SOURCE_PATTERNS} allowed",
             array.len()
         )));
     }

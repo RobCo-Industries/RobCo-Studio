@@ -374,13 +374,13 @@ fn code_sources() {
     check(
         err(&format!("{BASE}[build]\nsources = []\n")),
         "sources",
-        "0 patterns, must be 1 to 256",
+        "build.sources holds 0 patterns, 1 to 256 allowed",
     );
     let many = vec!["\"a.c\""; 257].join(", ");
     check(
         err(&format!("{BASE}[build]\nsources = [{many}]\n")),
         "sources",
-        "257 patterns, must be 1 to 256",
+        "build.sources holds 257 patterns, 1 to 256 allowed",
     );
 }
 
@@ -476,4 +476,82 @@ fn culvert_example_keeps_its_makefile_order() {
 fn toml_1_1_inline_table_over_lines_parses() {
     let text = "format = 1\nproject = {\n  name = \"PIPES\",\n  version = \"1.0.0\",\n  kind = \"holotape\",\n  subtype = \"game\",\n}\ntarget = { platform = \"pipos\", abi = \"1.3\" }\n";
     assert_eq!(parse(text.as_bytes()).unwrap().project.name, "PIPES");
+}
+
+/// Step 4 reports the first unknown key in the order of the file, not in
+/// the order of the names.
+#[test]
+fn unknown_keys_come_in_file_order() {
+    let text = BASE
+        .replace("[project]\n", "[project]\nzeta = 1\n")
+        .replace("[target]\n", "[target]\nalpha = 1\n");
+    check(err(&text), "unknown key", "project.zeta");
+    let text = format!("zz = 1\n{BASE}[aa]\n");
+    check(err(&text), "unknown key", "zz");
+    let text = format!("{BASE}[build]\nbackend = \"make\"\nruntime = \"reel\"\n");
+    check(err(&text), "unknown key", "build.backend = \"make\"");
+    let text = format!("{BASE}[build]\nruntime = \"reel\"\nbackend = \"make\"\n");
+    check(err(&text), "unknown key", "build.runtime");
+}
+
+/// A `build.backend` other than `robco` is step 4: it comes before every
+/// value of step 5, and its value is written as a TOML basic string.
+#[test]
+fn backend_fails_before_values() {
+    let text = format!(
+        "{}[build]\nbackend = \"Ro\\\"bco\"\n",
+        with("name = \"PIPES\"", "name = \"pipes\"")
+    );
+    check(err(&text), "unknown key", "build.backend = \"Ro\\\"bco\"");
+    check(
+        err(&format!("{BASE}[build]\nbackend = 1\n")),
+        "type",
+        "build.backend: expected string",
+    );
+}
+
+/// `format` may stand anywhere above the first header, as the TOML 1.1
+/// fixture shows; below one it belongs to that table, and the file has no
+/// `format`. A later format is reported before unknown keys and values.
+#[test]
+fn format_anywhere_at_the_top() {
+    let text = BASE.replace("format = 1\n", "");
+    check(
+        err(&format!("{text}[build]\nformat = 1\n")),
+        "format",
+        "missing",
+    );
+    check(
+        err(&format!(
+            "format = 2\nwhat = 1\n{}",
+            text.replace("PIPES", "pipes")
+        )),
+        "format",
+        "2 is newer than this tool reads, 1: install a newer tool",
+    );
+}
+
+/// The spec's TOML 1.1 manifest means the first manifest of its Examples,
+/// and each of the four forms TOML 1.1 adds is read.
+#[test]
+fn toml_1_1_forms() {
+    let first = parse(EXAMPLE).unwrap();
+    let new = parse(include_bytes!("../../tests/manifest/toml11.toml")).unwrap();
+    assert_eq!(new, first);
+    // \e parses. The spec says the title then fails its own rule, but the
+    // title rule refuses only non-ASCII and NUL: see the report.
+    let text = BASE.replace("name = \"PIPES\"", "name = \"PIPES\"\ntitle = \"\\e\"");
+    assert_eq!(parse(text.as_bytes()).unwrap().project.title, "\u{1b}");
+    // A time without seconds parses and then fails as a type.
+    let text = BASE.replace("abi = \"1.3\"", "abi = 08:30");
+    check(err(&text), "type", "target.abi: expected string");
+}
+
+/// The error codes, as the table of `STUDIO_CLI.md` spells them.
+#[test]
+fn error_codes_are_spelled_as_the_table() {
+    use crate::codes::ErrorCode;
+    let e = err(&with("format = 1", "format = 2"));
+    assert_eq!(e.error_code(), "manifest: format");
+    assert_eq!(e.exit_code(), 3);
 }
