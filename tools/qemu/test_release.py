@@ -21,6 +21,30 @@ QSRC = b"qemu source archive"
 QSHA = hashlib.sha256(QSRC).hexdigest()
 
 
+def elf(machine):
+    """The first bytes of a little-endian 64-bit ELF program."""
+    return b"\x7fELF\x02\x01\x01" + bytes(11) + machine.to_bytes(2, "little") + bytes(10)
+
+
+def macho(cpu):
+    return b"\xcf\xfa\xed\xfe" + cpu.to_bytes(4, "little") + bytes(8)
+
+
+def fat(*cpus):
+    return (b"\xca\xfe\xba\xbe" + len(cpus).to_bytes(4, "big")
+            + b"".join(c.to_bytes(4, "big") + bytes(16) for c in cpus))
+
+
+def pe(machine):
+    return b"MZ" + bytes(0x3A) + (0x40).to_bytes(4, "little") + b"PE\0\0" + machine.to_bytes(2, "little")
+
+
+X64_ELF, ARM64_ELF = elf(0x3E), elf(0xB7)
+ARM64_MACHO, X64_MACHO = macho(0x0100000C), macho(0x01000007)
+X64_PE, ARM64_PE = pe(0x8664), pe(0xAA64)
+RIGHT = {"linux": X64_ELF, "macos": ARM64_MACHO, "windows": X64_PE}
+
+
 class Release(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
@@ -39,7 +63,7 @@ class Release(unittest.TestCase):
             (p / "bin").mkdir(parents=True)
             (p / "licenses").mkdir()
             for t in ("arm", "aarch64"):
-                (p / "bin" / f"qemu-system-{t}{exe}").write_bytes(b"\x7fELF" + os_.encode())
+                (p / "bin" / f"qemu-system-{t}{exe}").write_bytes(RIGHT[os_] + os_.encode())
             (p / "licenses/qemu-COPYING").write_text("GPL\n")
             (p / "licenses/packed-libraries.txt").write_text("# record\n")
             (p / "NOTICE").write_text(f"QEMU 10.1.2 for Arm, as built by RobCo Studio from qemu-10.1.2.tar.xz,\n"
@@ -195,6 +219,93 @@ class Release(unittest.TestCase):
         (self.out / "qemu-10.1.2.tar.xz").write_bytes(b"changed")
         with self.assertRaises(release.Refused):
             release.verify(self.out)
+
+    def put_program(self, os_, name, data):
+        (self.src / f"qemu-{os_}" / name).parent.mkdir(exist_ok=True)
+        (self.src / f"qemu-{os_}" / name).write_bytes(data)
+
+    def test_wrong_architecture_on_each_host(self):
+        cases = [("linux", "bin/qemu-system-arm", ARM64_ELF, "ELF arm64", "linux-x64 expects ELF x86_64"),
+                 ("macos", "bin/qemu-system-aarch64", X64_MACHO, "Mach-O x86_64",
+                  "macos-arm64 expects Mach-O arm64"),
+                 ("windows", "bin/qemu-system-arm.exe", ARM64_PE, "PE arm64", "windows-x64 expects PE x86_64")]
+        for os_, name, data, found, want in cases:
+            with self.subTest(os_):
+                self.setUp()
+                self.put_program(os_, name, data)
+                with self.assertRaises(release.Refused) as e:
+                    self.gather()
+                msg = str(e.exception)
+                self.assertIn(f"qemu-{os_}/{name} is {found}", msg)
+                self.assertIn(want, msg)
+                self.assertFalse(any(self.out.iterdir()))
+
+    def test_wrong_format(self):
+        self.put_program("macos", "bin/qemu-system-arm", elf(0xB7))
+        self.refused("bin/qemu-system-arm is ELF arm64, but macos-arm64 expects Mach-O arm64")
+
+    def test_library_checked_too(self):
+        self.put_program("linux", "lib/libglib-2.0.so.0", ARM64_ELF)
+        self.refused("lib/libglib-2.0.so.0 is ELF arm64")
+
+    def test_truncated_program(self):
+        self.put_program("windows", "bin/qemu-system-arm.exe", X64_PE[:0x44])
+        self.refused("bin/qemu-system-arm.exe: cannot read its architecture, the header is cut short")
+
+    def test_not_a_program(self):
+        self.put_program("linux", "bin/qemu-system-arm", b"#!/bin/sh\n")
+        self.refused("bin/qemu-system-arm: cannot read its architecture, it is not an ELF, Mach-O or PE")
+
+    def test_universal_macho(self):
+        self.assertEqual(release.arch_of(fat(0x01000007, 0x0100000C)), ("Mach-O", ("arm64", "x86_64")))
+        self.put_program("macos", "lib/libz.1.dylib", fat(0x01000007, 0x0100000C))
+        self.gather()
+        self.setUp()
+        self.put_program("macos", "lib/libz.1.dylib", fat(0x01000007))
+        self.refused("lib/libz.1.dylib is Mach-O x86_64, but macos-arm64 expects Mach-O arm64")
+
+    def test_arch_of_right_cases(self):
+        self.assertEqual(release.arch_of(X64_ELF), ("ELF", ("x86_64",)))
+        self.assertEqual(release.arch_of(ARM64_MACHO), ("Mach-O", ("arm64",)))
+        self.assertEqual(release.arch_of(X64_PE), ("PE", ("x86_64",)))
+        big = b"\x7fELF\x02\x02\x01" + bytes(11) + b"\x00\xb7"
+        self.assertEqual(release.arch_of(big), ("ELF", ("arm64",)))
+
+    def reseal(self, p, host):
+        """Fixes the list and SHA256SUMS after archive p changed."""
+        listing_p = self.out / "qemu-10.1.2-files.json"
+        listing = json.loads(listing_p.read_text())
+        sha, size = release.sha256(p), p.stat().st_size
+        for f in listing["files"]:
+            if f["name"] == p.name:
+                f["sha256"], f["size"] = sha, size
+        listing["archives"][host].update(sha256=sha, size=size)
+        listing_p.write_text(json.dumps(listing))
+        sums = "".join(f"{release.sha256(q)}  {q.name}\n" for q in sorted(self.out.iterdir())
+                       if not q.name.endswith("SHA256SUMS"))
+        (self.out / "qemu-10.1.2-SHA256SUMS").write_text(sums)
+
+    def test_verify_wrong_architecture_in_tar(self):
+        self.gather()
+        p = self.out / "qemu-10.1.2-macos-arm64.tar.gz"
+        with tarfile.open(p) as t:
+            entries = {m.name: t.extractfile(m).read() for m in t.getmembers() if m.isfile()}
+        entries["qemu-10.1.2-macos-arm64/bin/qemu-system-arm"] = X64_MACHO
+        p.write_bytes(release.tar_bytes([(n, d, 0o755) for n, d in sorted(entries.items())], True))
+        self.reseal(p, "macos-arm64")
+        self.verify_refused("qemu-10.1.2-macos-arm64.tar.gz/bin/qemu-system-arm is Mach-O x86_64, "
+                            "but macos-arm64 expects Mach-O arm64")
+
+    def test_verify_wrong_architecture_in_zip(self):
+        self.gather()
+        p = self.out / "qemu-10.1.2-windows-x64.zip"
+        with zipfile.ZipFile(p) as z:
+            kept = [(i, z.read(i)) for i in z.infolist()]
+        with zipfile.ZipFile(p, "w") as z:
+            for i, d in kept:
+                z.writestr(i, ARM64_PE if i.filename.endswith("qemu-system-aarch64.exe") else d)
+        self.reseal(p, "windows-x64")
+        self.verify_refused("bin/qemu-system-aarch64.exe is PE arm64, but windows-x64 expects PE x86_64")
 
     def test_verify_archive_without_notice(self):
         self.gather()

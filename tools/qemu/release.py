@@ -16,6 +16,9 @@ SHA-256. Standard library only, no network.
         sources-<os>/     the library sources of sources.sh
         report-<os>/report.txt   the pack report, for the configure line
         qemu-source/qemu-<version>.tar.xz
+      Before packing a host, each file of bin/ and lib/ must be an ELF,
+      Mach-O or PE program of the machine the host name states: x64 is
+      x86_64, arm64 is arm64.
       Writes into --out, for each host of HOSTS:
         qemu-<version>-<host>.tar.gz, or .zip on Windows: the package
             under the folder qemu-<version>-<host>/, which is the root
@@ -52,12 +55,22 @@ import tarfile
 import zipfile
 
 # The workflow's system name to the host name of the index, and the kind
-# of archive. macos-latest runs on arm64.
+# of archive. The host name states the architecture; ARCH says which
+# program format and machine that is, and check_arch holds every packed
+# program to it.
 HOSTS = {
     "linux": ("linux-x64", "tar.gz"),
     "macos": ("macos-arm64", "tar.gz"),
     "windows": ("windows-x64", "zip"),
 }
+ARCH = {
+    "linux-x64": ("ELF", "x86_64"),
+    "macos-arm64": ("Mach-O", "arm64"),
+    "windows-x64": ("PE", "x86_64"),
+}
+ELF_MACHINE = {0x03: "i386", 0x28: "arm", 0x3E: "x86_64", 0xB7: "arm64"}
+MACHO_CPU = {7: "i386", 0x01000007: "x86_64", 12: "arm", 0x0100000C: "arm64"}
+PE_MACHINE = {0x014C: "i386", 0x01C4: "arm", 0x8664: "x86_64", 0xAA64: "arm64"}
 TAG = re.compile(r"^qemu-(\d+\.\d+\.\d+)-r([1-9][0-9]*)$")
 NOTICE_HEAD = re.compile(r"^QEMU (\d+\.\d+\.\d+) for Arm")
 NOTICE_SHA = re.compile(r"SHA-256 ([0-9a-f]{64})\.")
@@ -139,6 +152,63 @@ def scan(package, forbid):
             if n in data or (b":" in n and n.lower() in low):
                 hits.append((rel, n.decode()))
     return hits
+
+
+def arch_of(data):
+    """The (format, machines) a program's header states, machines being a
+    sorted tuple: one name, or the slices of a universal Mach-O. A machine
+    code not known here is named by its number. Refuses a file whose header
+    cannot be read."""
+    def num(at, size, order):
+        if len(data) < at + size:
+            raise ValueError("the header is cut short")
+        return int.from_bytes(data[at:at + size], order)
+
+    try:
+        if data[:4] == b"\x7fELF":
+            order = {1: "little", 2: "big"}.get(num(5, 1, "little"))
+            if order is None:
+                raise ValueError("the ELF byte order is unknown")
+            m = num(18, 2, order)
+            return "ELF", (ELF_MACHINE.get(m, hex(m)),)
+        if data[:4] in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe"):
+            c = num(4, 4, "little")
+            return "Mach-O", (MACHO_CPU.get(c, hex(c)),)
+        if data[:4] == b"\xca\xfe\xba\xbe":
+            n = num(4, 4, "big")
+            if not 0 < n < 16:
+                raise ValueError("not a universal Mach-O")
+            cpus = [num(8 + 20 * i, 4, "big") for i in range(n)]
+            return "Mach-O", tuple(sorted(MACHO_CPU.get(c, hex(c)) for c in cpus))
+        if data[:2] == b"MZ":
+            pe = num(0x3C, 4, "little")
+            if data[pe:pe + 4] != b"PE\0\0":
+                raise ValueError("no PE signature")
+            m = num(pe + 4, 2, "little")
+            return "PE", (PE_MACHINE.get(m, hex(m)),)
+    except ValueError as e:
+        raise Refused(str(e)) from None
+    raise Refused("it is not an ELF, Mach-O or PE program")
+
+
+def check_arch(programs, host, where):
+    """Checks that each (name, bytes) of programs, the files of bin/ and
+    lib/, is a program of the format and machine the host name states. A
+    universal Mach-O passes when it holds that machine."""
+    fmt, machine = ARCH[host]
+    for name, data in programs:
+        try:
+            found_fmt, found = arch_of(data)
+        except Refused as e:
+            raise Refused(f"{where}/{name}: cannot read its architecture, {e}; "
+                          f"{host} expects {fmt} {machine}") from None
+        if found_fmt != fmt or machine not in found:
+            raise Refused(f"{where}/{name} is {found_fmt} {'+'.join(found)}, "
+                          f"but {host} expects {fmt} {machine}")
+
+
+def is_program(rel):
+    return rel.startswith("bin/") or rel.startswith("lib/")
 
 
 def mode_of(rel):
@@ -283,6 +353,11 @@ def gather(src, out, repo, tag=None, base_url=None):
     if sha256(qsrc) != qsha:
         raise Refused(f"{qsrc.name} is not the archive the packages were built from")
 
+    for os_, (host, _) in HOSTS.items():
+        package = src / f"qemu-{os_}"
+        check_arch([(rel, p.read_bytes()) for rel, p in files_of(package) if is_program(rel)],
+                   host, str(package))
+
     written = {}
 
     def put(name, data):
@@ -346,17 +421,23 @@ def gather(src, out, repo, tag=None, base_url=None):
     return version
 
 
-def members(path):
+def members(path, read=None):
     """The member names of a tool archive, told apart by its first bytes as
-    the index's reader does."""
+    the index's reader does. With read, a function of the name, also the
+    bytes of each file member it is true for, as a list of (name, bytes)."""
     head = path.read_bytes()[:4]
     if head == b"PK\x03\x04":
         with zipfile.ZipFile(path) as z:
-            return z.namelist()
-    if head[:2] == b"\x1f\x8b":
+            names = z.namelist()
+            data = [(n, z.read(n)) for n in names if read and not n.endswith("/") and read(n)]
+    elif head[:2] == b"\x1f\x8b":
         with tarfile.open(path, "r:gz") as t:
-            return t.getnames()
-    raise Refused(f"{path.name} is neither a zip nor a gzip archive")
+            names = t.getnames()
+            data = [(m.name, t.extractfile(m).read()) for m in t.getmembers()
+                    if read and m.isfile() and read(m.name)]
+    else:
+        raise Refused(f"{path.name} is neither a zip nor a gzip archive")
+    return (names, data) if read else names
 
 
 def verify(folder):
@@ -389,8 +470,11 @@ def verify(folder):
         f = by_url.get(a["url"])
         if not f or f["size"] != a["size"] or f["sha256"] != a["sha256"]:
             raise Refused(f"the archive object of {host} does not match a listed file")
-        names = set(members(folder / f["name"]))
         r = a["root"] + "/" if a["root"] else ""
+        all_names, programs = members(folder / f["name"],
+                                      read=lambda n: n.startswith(r) and is_program(n[len(r):]))
+        names = set(all_names)
+        check_arch([(n[len(r):], d) for n, d in programs], host, f["name"])
         exe = ".exe" if host.startswith("windows") else ""
         for need in (f"bin/qemu-system-arm{exe}", f"bin/qemu-system-aarch64{exe}", "NOTICE",
                      "licenses/qemu-COPYING", "licenses/packed-libraries.txt"):
