@@ -44,7 +44,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev
       - name: Count packages in the lock file
-        run: echo "lock packages: $(grep -c '^name = ' Cargo.lock)" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "lock packages: $(grep -c '^name = ' Cargo.lock)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Check formatting
         run: cargo fmt --check
       - name: Fetch crates
@@ -69,4 +70,5 @@ jobs:
           if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
           echo "release size: $(wc -c < "$bin") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Cost of one edit, no window
-        run: cargo test --release --locked --test cost -- --ignored --nocapture | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          cargo test --release --locked --test cost -- --ignored --nocapture | tee -a "$GITHUB_STEP_SUMMARY"
