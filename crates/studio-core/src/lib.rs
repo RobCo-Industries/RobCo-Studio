@@ -10,6 +10,8 @@
 //! two programs. It holds no `unsafe` code.
 #![forbid(unsafe_code)]
 
+pub mod boot;
+
 /// The version of Studio, from `workspace.package.version` in the root
 /// `Cargo.toml`. Every program prints this one value.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
