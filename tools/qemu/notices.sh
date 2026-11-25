@@ -5,7 +5,10 @@
 # steps 1, 2, 4 and 6. The release adds the sources, step 3.
 # Usage: notices.sh <linux|macos|windows> <out-dir>
 #        notices.sh --check <linux|macos|windows> <out-dir>
-# Reads <out-dir>/build/ to find where each packed library came from.
+# Reads <out-dir>/sources.txt, written by pack.sh, for the real path each
+# packed library was copied from, and asks the packager which package owns
+# that exact path. Reads QEMU's version from the packed program and its
+# licence files from the source archive in <out-dir>/build/.
 # --check runs only the final check on a package already written.
 #
 # The record, licenses/packed-libraries.txt, has this format. Lines that
@@ -30,7 +33,9 @@ build=$out/build
 dist=$out/qemu
 lic=$dist/licenses
 record=$lic/packed-libraries.txt
-ver=10.1.2
+sources=$out/sources.txt
+exe=""
+[ "$os" = windows ] && exe=.exe
 
 # The component a packed file belongs to, named as in docs/THIRD_PARTY.md.
 component() {
@@ -61,6 +66,41 @@ licence() {
     libatomic) echo "GPL-3.0-or-later WITH GCC-exception-3.1" ;;
     iconv) echo "LGPL, version as stated in its source" ;;
     winpthread) echo "MIT AND BSD-3-Clause" ;;
+  esac
+}
+
+# The packages, per packager, that the licence table above was read from.
+# A library from any other package, renamed or split off, stops the packing
+# until someone reads that package's licence and adds it here.
+packages() {
+  case $os:$1 in
+    linux:glib) echo libglib2.0-0 ;;
+    linux:pcre) echo libpcre3 ;;
+    linux:pcre2) echo libpcre2-8-0 ;;
+    linux:pixman) echo libpixman-1-0 ;;
+    linux:libfdt) echo libfdt1 ;;
+    linux:zlib) echo zlib1g ;;
+    linux:libatomic) echo libatomic1 ;;
+    macos:libfdt) echo dtc ;;
+    macos:intl) echo gettext ;;
+    macos:iconv) echo libiconv ;;
+    macos:*) echo "$1" ;;
+    windows:glib) echo mingw-w64-ucrt-x86_64-glib2 ;;
+    windows:libfdt) echo mingw-w64-ucrt-x86_64-dtc ;;
+    windows:intl) echo mingw-w64-ucrt-x86_64-gettext-runtime ;;
+    windows:iconv) echo mingw-w64-ucrt-x86_64-libiconv ;;
+    windows:winpthread) echo mingw-w64-ucrt-x86_64-libwinpthread ;;
+    windows:libatomic) echo mingw-w64-ucrt-x86_64-gcc-libs ;;
+    windows:*) echo "mingw-w64-ucrt-x86_64-$1" ;;
+  esac
+}
+
+# Fails and prints why, naming the library, when package $3 is not one the licence table
+# of component $2 was read from.
+known_package() {
+  case " $(packages "$2") " in
+    *" $3 "*) return 0 ;;
+    *) echo "$1 ($2) comes from package $3, but its licence was read from $(packages "$2"); read the licence of $3 and update notices.sh"; return 1 ;;
   esac
 }
 
@@ -130,10 +170,28 @@ packed() {
   esac
 }
 
-# Where the build loaded a packed file from, on Linux and Windows.
+# The real path pack.sh copied packed file $1 from, once its bytes still
+# match: the source's now, and on macOS and Windows the packed copy's too.
+# On Linux patchelf has changed the copy's run path since pack.sh compared
+# it. Fails, naming the library, when pack.sh recorded no single source.
 origin() {
-  ldd "$build"/qemu-system-arm* "$build"/qemu-system-aarch64* \
-    | awk -v f="$1" '$1 == f && $2 == "=>" {print $3; exit}'
+  local n p d
+  [ -f "$sources" ] || { echo "no $sources: pack.sh records where each library came from" >&2; return 1; }
+  n=$(awk -F'\t' -v f="$1" '$1 == f' "$sources" | wc -l | tr -d ' ')
+  [ "$n" = 1 ] || { echo "$1 has $n source lines in $sources, not one" >&2; return 1; }
+  p=$(awk -F'\t' -v f="$1" '$1 == f {print $2}' "$sources")
+  d=$(awk -F'\t' -v f="$1" '$1 == f {print $3}' "$sources")
+  [ -f "$p" ] || { echo "$1 was copied from $p, which is gone" >&2; return 1; }
+  [ "$("$here/digest.sh" "$os" "$p")" = "$d" ] || { echo "$1: its source $p changed since it was packed" >&2; return 1; }
+  if [ "$os" != linux ] && [ "$("$here/digest.sh" "$os" "$(packed_path "$1")")" != "$d" ]; then
+    echo "$1: the packed file is not the bytes of $p" >&2
+    return 1
+  fi
+  echo "$p"
+}
+
+packed_path() {
+  case $os in windows) echo "$dist/bin/$1" ;; *) echo "$dist/lib/$1" ;; esac
 }
 
 # Step 6. The list of libraries comes from the files really in the package,
@@ -144,7 +202,7 @@ origin() {
 # file not in the package fails, and so does a file this script does not
 # know: a new dependency stops the packing until someone states its licence.
 check() {
-  local bad=0 f c t want own files lines n
+  local bad=0 f c t want own files lines n pk msg
   for f in qemu-COPYING qemu-LICENSE packed-libraries.txt; do
     [ -s "$lic/$f" ] || { echo "FAIL: licenses/$f is missing"; bad=1; }
   done
@@ -159,6 +217,8 @@ check() {
     [ "$n" -le 1 ] || { echo "FAIL: $f ($c) has $n record lines naming licence texts, not one"; bad=1; }
     t=$(printf '%s\n' "$lines" | awk -F'\t' -v f="$f" '$1 == f {print $2; exit}')
     [ -n "$t" ] || { echo "FAIL: $f ($c) has no record line naming its licence texts"; bad=1; }
+    pk=$(awk -F' [|] ' -v f="$f" '$1 == f {print $4; exit}' "$record" 2>/dev/null || true)
+    if [ -n "$t" ] && ! msg=$(known_package "$f" "$c" "$pk"); then echo "FAIL: $msg"; bad=1; fi
     want=$(texts "$c")
     [ "$(echo $t)" = "$want" ] || { echo "FAIL: the record names licence texts '$t' for $f ($c), but $want apply"; bad=1; }
     for id in $want; do
@@ -188,9 +248,20 @@ fi
 
 rm -rf "$lic" "$dist/NOTICE"
 mkdir -p "$lic"
-# Step 1: QEMU's own licence files, from the source tree it was built from.
-cp "$build/COPYING" "$lic/qemu-COPYING"
-cp "$build/LICENSE" "$lic/qemu-LICENSE"
+# Step 1: QEMU's own licence files. The version is the packed program's
+# own answer. build.sh keeps the source archive it checked the hash of; it
+# must hold that version, and the licence files come from it.
+ver=$("$dist/bin/qemu-system-arm$exe" --version | tr -d '\r' | sed -n '1s/^QEMU emulator version \([^ ]*\).*/\1/p')
+[ -n "$ver" ] || { echo "the packed qemu-system-arm names no version" >&2; exit 1; }
+qsrc=$build/qemu-$ver.tar.xz
+[ -f "$qsrc" ] || { echo "no source archive $qsrc for the packed QEMU $ver" >&2; exit 1; }
+t=$(mktemp -d)
+tar xJf "$qsrc" -C "$t" "qemu-$ver/VERSION" "qemu-$ver/COPYING" "qemu-$ver/LICENSE"
+[ "$(tr -d '\r\n' <"$t/qemu-$ver/VERSION")" = "$ver" ] || { echo "$qsrc is not the source of QEMU $ver" >&2; exit 1; }
+cp "$t/qemu-$ver/COPYING" "$lic/qemu-COPYING"
+cp "$t/qemu-$ver/LICENSE" "$lic/qemu-LICENSE"
+rm -rf "$t"
+qsha=$("$here/digest.sh" linux "$qsrc")
 
 {
   echo "# What was packed, recorded when it was packed."
@@ -200,26 +271,30 @@ notice_libs=""
 
 for f in $(packed); do
   c=$(component "$f")
+  p=$(origin "$f")
   case $os in
     linux)
-      # dpkg knows the path under /lib or /usr/lib, as installed. ldd may
-      # print the other one, since /lib links to /usr/lib.
-      p=$(origin "$f")
-      real=$(readlink -f "$p")
+      # dpkg knows the file under /lib or /usr/lib, as installed, and /lib
+      # links to /usr/lib: ask for the resolved path under either name.
       pkg=""
-      for try in "$(dirname "$p")/$(basename "$real")" "$real" "/lib${real#/usr/lib}"; do
+      for try in "$p" "/lib${p#/usr/lib}"; do
+        [ "$try" -ef "$p" ] || continue
         pkg=$(dpkg -S "$try" 2>/dev/null | sed -n '1s/:.*//p' || true)
         if [ -n "$pkg" ]; then break; fi
       done
-      [ -n "$pkg" ] || { echo "no dpkg package owns $p" >&2; exit 1; }
+      [ -n "$pkg" ] || { echo "no dpkg package owns $p, the source of $f" >&2; exit 1; }
+      known_package "$f" "$c" "$pkg" >&2
       v=$(dpkg-query -W -f='${Version}' "$pkg")
       src=$(dpkg-query -W -f='${source:Package} ${source:Version}' "$pkg")
       entry="$f | $c | Ubuntu $(. /etc/os-release && echo "$VERSION_ID") | $pkg | $v | source package $src, from $p"
-      # The packager's copyright file. It may name a licence and point to
-      # its text under /usr/share/common-licenses/, which is not packed:
-      # copy each text it points to, once, as text-<name>.
-      cp "/usr/share/doc/$pkg/copyright" "$lic/$c-copyright"
-      ptrs=$(python3 "$here/deb_copyright.py" "/usr/share/doc/$pkg/copyright")
+      # The packager's copyright file, the one that package installs. It
+      # may name a licence and point to its text under
+      # /usr/share/common-licenses/, which is not packed: copy each text it
+      # points to, once, as text-<name>.
+      cr=/usr/share/doc/$pkg/copyright
+      [ "$(dpkg -S "$cr" 2>/dev/null | sed -n '1s/:.*//p' || true)" = "$pkg" ] || { echo "$pkg does not install $cr" >&2; exit 1; }
+      cp "$cr" "$lic/$c-copyright"
+      ptrs=$(python3 "$here/deb_copyright.py" "$cr")
       # A pointer may be a link, such as LGPL to LGPL-3: name the copy after
       # the text it really is. The LGPL 3 is a supplement to the GPL 3.
       for t in $ptrs; do
@@ -244,14 +319,16 @@ for f in $(packed); do
       done
       ;;
     macos)
+      # The keg is the Cellar folder the resolved source path lies in.
       cellar=$(brew --cellar)
-      p=$(find "$cellar" -name "$f" -not -type d -print -quit)
-      [ -n "$p" ] || { echo "no Homebrew keg holds $f" >&2; exit 1; }
+      case $p in "$cellar"/*/*/*) ;; *) echo "$p, the source of $f, is in no Homebrew keg" >&2; exit 1 ;; esac
       rel=${p#"$cellar"/}
       formula=${rel%%/*}
       rest=${rel#*/}
       v=${rest%%/*}
       keg=$cellar/$formula/$v
+      [ -f "$keg/INSTALL_RECEIPT.json" ] || { echo "$keg, the source of $f, has no install receipt" >&2; exit 1; }
+      known_package "$f" "$c" "$formula" >&2
       head=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("source") or {}).get("tap_git_head") or "unknown")' "$keg/INSTALL_RECEIPT.json")
       entry="$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p"
       cp "$keg/INSTALL_RECEIPT.json" "$lic/$c-INSTALL_RECEIPT.json"
@@ -296,8 +373,8 @@ for f in $(packed); do
       fi
       ;;
     windows)
-      p=$(origin "$f")
-      pkg=$(pacman -Qqo "$p")
+      pkg=$(pacman -Qqo "$p") || { echo "no MSYS2 package owns $p, the source of $f" >&2; exit 1; }
+      known_package "$f" "$c" "$pkg" >&2
       v=$(pacman -Q "$pkg" | cut -d' ' -f2)
       entry="$f | $c | MSYS2 | $pkg | $v | from $p"
       pacman -Qi "$pkg" >"$lic/$c-pacman-Qi.txt"
@@ -337,7 +414,8 @@ done
 
 # Step 2: the NOTICE at the top of the package.
 {
-  echo "QEMU $ver for Arm, as built by RobCo Studio."
+  echo "QEMU $ver for Arm, as built by RobCo Studio from qemu-$ver.tar.xz,"
+  echo "SHA-256 $qsha."
   echo
   echo "QEMU is released under the GNU General Public License, version 2."
   echo "Its licence texts are licenses/qemu-COPYING and licenses/qemu-LICENSE."
