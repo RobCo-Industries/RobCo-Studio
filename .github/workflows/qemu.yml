@@ -187,9 +187,15 @@ jobs:
       # No packed file may hold a path, user or host name of this machine,
       # nor the folder QEMU was built in. The scan is first shown to fail
       # on a copy that holds one.
+      # The scan's Python, on every host. On Windows the default shell is
+      # Git Bash, which does not see MSYS2's Python. Set up after the
+      # build, packing and sources steps, so it changes none of them.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: No path or name of the build machine in the package
         run: |
-          py=python3; [ "${{ matrix.name }}" = windows ] && py=python
+          py=python
           work=$(sed -n 's/^work: //p' out/build/build.txt)
           test -n "$work"
           forbid=(--forbid "$work" --forbid "$HOME" --forbid "$GITHUB_WORKSPACE" --forbid "$RUNNER_TEMP" --forbid "$(hostname)")
@@ -343,6 +349,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       # Every artifact of the run, each in in/<name>/. release.py reads
       # the ones it names and ignores the canary reports.
       - uses: actions/download-artifact@v4
@@ -356,10 +365,10 @@ jobs:
           if [ -n "$TAG" ]; then
             args+=(--tag "$TAG" --base-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG")
           fi
-          python3 tools/qemu/release.py gather "${args[@]}"
+          python tools/qemu/release.py gather "${args[@]}"
       - name: Check the list against the files
         run: |
-          python3 tools/qemu/release.py verify dist
+          python tools/qemu/release.py verify dist
           cd dist && sha256sum -c qemu-*-SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
