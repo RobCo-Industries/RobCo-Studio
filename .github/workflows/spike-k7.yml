@@ -33,6 +33,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
+        shell: bash
         working-directory: spikes/k7
     steps:
       - uses: actions/checkout@v4
