@@ -28,7 +28,7 @@ A library that will list disks and read and write raw blocks on each system, ref
 
 ### studio-core
 
-The headless product. It will hold projects, SDK install, builds, asset packing, card images, simulator sessions, the serial monitor and debug sessions. Today it holds the version, which comes from `workspace.package.version` in the root `Cargo.toml`. It never depends on a window or toolkit crate. `unsafe` is forbidden.
+The headless product. It will hold projects, SDK install, builds, asset packing, card images, simulator sessions, the serial monitor and debug sessions. Today it holds the version, which comes from `workspace.package.version` in the root `Cargo.toml`, the reader of `robco.toml`, and the build plan, which reads `flags.json` and lists the commands of a build without running them. It never depends on a window or toolkit crate. `unsafe` is forbidden.
 
 ### robco
 
