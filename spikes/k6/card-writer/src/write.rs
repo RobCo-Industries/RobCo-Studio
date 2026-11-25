@@ -1,6 +1,6 @@
 //! The raw write and the read-back. It takes an [`Approved`] disk and nothing else.
 
-use crate::rules::Approved;
+use crate::rules::{Approved, padded_len};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::time::Instant;
 
 /// Chunks are 1 MiB, a multiple of every sector size in use (512 and 4096).
 const CHUNK: usize = 1024 * 1024;
-/// The image is padded with zeros to this multiple. Raw devices refuse partial sectors.
+/// The read buffer starts at this alignment, as O_DIRECT wants for both sector sizes.
 const ALIGN: usize = 4096;
 
 #[derive(Debug)]
@@ -42,8 +42,9 @@ fn read_full<R: Read>(f: &mut R, buf: &mut [u8]) -> io::Result<usize> {
     Ok(n)
 }
 
-fn padded(n: usize) -> usize {
-    n.div_ceil(ALIGN) * ALIGN
+/// `n` padded with zeros to whole sectors. Raw devices refuse partial sectors.
+fn padded(n: usize, sector: u32) -> usize {
+    padded_len(n as u64, sector) as usize
 }
 
 #[cfg(target_os = "linux")]
@@ -94,9 +95,14 @@ impl Aligned {
 }
 
 /// Copies exactly `len` bytes from `src` to `dst`, the last chunk padded with zeros to
-/// [`ALIGN`]. Fails if `src` ends before `len` or still has bytes after it. The check for
+/// whole sectors. Fails if `src` ends before `len` or still has bytes after it. The check for
 /// extra bytes runs before the last chunk is written. Returns the bytes written.
-pub fn copy_exact<R: Read, W: Write>(src: &mut R, dst: &mut W, len: u64) -> io::Result<u64> {
+pub fn copy_exact<R: Read, W: Write>(
+    src: &mut R,
+    dst: &mut W,
+    len: u64,
+    sector: u32,
+) -> io::Result<u64> {
     let mut buf = vec![0u8; CHUNK];
     let mut done = 0u64;
     let mut written = 0u64;
@@ -113,7 +119,7 @@ pub fn copy_exact<R: Read, W: Write>(src: &mut R, dst: &mut W, len: u64) -> io::
         if done == len {
             ensure_ended(src, len)?;
         }
-        let m = padded(n);
+        let m = padded(n, sector);
         buf[n..m].fill(0);
         dst.write_all(&buf[..m])?;
         written += m as u64;
@@ -141,8 +147,9 @@ pub fn compare_streams<D: Read, I: Read>(
     dev: &mut D,
     img: &mut I,
     len: u64,
+    sector: u32,
 ) -> io::Result<Option<u64>> {
-    let total = padded(len as usize) as u64;
+    let total = padded_len(len, sector);
     let mut want = vec![0u8; CHUNK];
     let mut got = Aligned::new(CHUNK);
     let mut off = 0u64;
@@ -185,7 +192,8 @@ pub fn write_and_verify(
 ) -> io::Result<Outcome> {
     let raw = raw_path(target.path());
     let len = target.image_len();
-    if padded(len as usize) as u64 > target.size() {
+    let sector = target.block_size();
+    if padded_len(len, sector) > target.size() {
         return Err(io::Error::other("image does not fit on the disk"));
     }
     image.seek(SeekFrom::Start(0))?;
@@ -194,14 +202,14 @@ pub fn write_and_verify(
     let mut dev = open_write(&raw)?;
     recheck(&target).map_err(|e| io::Error::other(format!("disk changed after the check: {e}")))?;
     device_size_matches(&mut dev, target.size())?;
-    let bytes = copy_exact(image, &mut dev, len)?;
+    let bytes = copy_exact(image, &mut dev, len, sector)?;
     flush(&dev)?;
     drop(dev);
     let write_ms = t0.elapsed().as_millis();
     let t1 = Instant::now();
     image.seek(SeekFrom::Start(0))?;
     let mut d = open_read(&raw)?;
-    let mismatch = compare_streams(&mut d, image, len)?;
+    let mismatch = compare_streams(&mut d, image, len, sector)?;
     Ok(Outcome {
         raw_path: raw,
         bytes,
@@ -232,9 +240,9 @@ fn device_size_matches(_dev: &mut File, _want: u64) -> io::Result<()> {
 
 /// Reads a device and compares it with exactly `len` bytes of the image, padded with
 /// zeros. Read only. Returns the first differing offset.
-pub fn compare(device: &str, image: &mut File, len: u64) -> io::Result<Option<u64>> {
+pub fn compare(device: &str, image: &mut File, len: u64, sector: u32) -> io::Result<Option<u64>> {
     let mut dev = open_read(device)?;
-    compare_streams(&mut dev, image, len)
+    compare_streams(&mut dev, image, len, sector)
 }
 
 /// A pseudo-random test image, the same for the same seed.
@@ -277,8 +285,8 @@ mod tests {
     fn writes_exactly_the_approved_length() {
         let len = CHUNK + 1000;
         let mut out = Vec::new();
-        let w = copy_exact(&mut Cursor::new(image(len)), &mut out, len as u64).unwrap();
-        assert_eq!(w as usize, padded(len));
+        let w = copy_exact(&mut Cursor::new(image(len)), &mut out, len as u64, 4096).unwrap();
+        assert_eq!(w as usize, padded(len, 4096));
         assert_eq!(&out[..len], &image(len)[..]);
         assert!(out[len..].iter().all(|&b| b == 0));
     }
@@ -287,7 +295,7 @@ mod tests {
     fn an_image_that_grew_after_the_check_is_refused() {
         // Checked at 1000 bytes, the file now holds 3 MiB.
         let mut out = Vec::new();
-        let e = copy_exact(&mut Cursor::new(image(3 * CHUNK)), &mut out, 1000).unwrap_err();
+        let e = copy_exact(&mut Cursor::new(image(3 * CHUNK)), &mut out, 1000, 4096).unwrap_err();
         assert!(e.to_string().contains("longer"), "{e}");
         assert!(out.is_empty(), "nothing past the check may reach the disk");
         // Grown by one byte past a whole chunk: the last chunk is not written.
@@ -296,7 +304,8 @@ mod tests {
             copy_exact(
                 &mut Cursor::new(image(CHUNK * 2 + 1)),
                 &mut out,
-                CHUNK as u64 * 2
+                CHUNK as u64 * 2,
+                4096
             )
             .is_err()
         );
@@ -306,7 +315,13 @@ mod tests {
     #[test]
     fn an_image_that_shrank_after_the_check_is_refused() {
         let mut out = Vec::new();
-        let e = copy_exact(&mut Cursor::new(image(500)), &mut out, 2 * CHUNK as u64).unwrap_err();
+        let e = copy_exact(
+            &mut Cursor::new(image(500)),
+            &mut out,
+            2 * CHUNK as u64,
+            4096,
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("ended"), "{e}");
         assert!(out.is_empty());
     }
@@ -315,12 +330,13 @@ mod tests {
     fn read_back_compares_exactly_the_approved_length() {
         let len = 5000usize;
         let mut disk = image(len);
-        disk.resize(padded(len), 0);
+        disk.resize(padded(len, 4096), 0);
         assert_eq!(
             compare_streams(
                 &mut Cursor::new(&disk),
                 &mut Cursor::new(image(len)),
-                len as u64
+                len as u64,
+                4096
             )
             .unwrap(),
             None
@@ -330,7 +346,8 @@ mod tests {
             compare_streams(
                 &mut Cursor::new(&disk),
                 &mut Cursor::new(image(len + 1)),
-                len as u64
+                len as u64,
+                4096
             )
             .is_err()
         );
@@ -339,7 +356,8 @@ mod tests {
             compare_streams(
                 &mut Cursor::new(&disk),
                 &mut Cursor::new(image(len - 1)),
-                len as u64
+                len as u64,
+                4096
             )
             .is_err()
         );
@@ -349,7 +367,8 @@ mod tests {
             compare_streams(
                 &mut Cursor::new(&disk),
                 &mut Cursor::new(image(len)),
-                len as u64
+                len as u64,
+                4096
             )
             .unwrap(),
             Some(42)
@@ -358,7 +377,8 @@ mod tests {
             compare_streams(
                 &mut Cursor::new(&disk[..100]),
                 &mut Cursor::new(image(len)),
-                len as u64
+                len as u64,
+                4096
             )
             .unwrap(),
             Some(100)

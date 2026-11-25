@@ -84,10 +84,10 @@ fn linux_unmounted_holders_are_in_use() {
     let text = r#"{"blockdevices": [
       {"name": "/dev/nvme0n1", "type": "disk", "size": 512110190592, "rm": false, "hotplug": false, "tran": "nvme", "mountpoints": [null],
        "children": [{"name": "/dev/nvme0n1p1", "type": "part", "mountpoints": ["/"]}]},
-      {"name": "/dev/sdb", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null],
+      {"name": "/dev/sdb", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "log-sec": 512, "mountpoints": [null],
        "children": [{"name": "/dev/sdb1", "type": "part", "mountpoints": [null],
          "children": [{"name": "/dev/mapper/vg-data", "type": "lvm", "mountpoints": [null]}]}]},
-      {"name": "/dev/sdc", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null],
+      {"name": "/dev/sdc", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "log-sec": 512, "mountpoints": [null],
        "children": [{"name": "/dev/md0", "type": "raid1", "mountpoints": [null]}]}
     ]}"#;
     let l = linux::parse(text);
@@ -105,6 +105,37 @@ fn linux_unmounted_holders_are_in_use() {
             "in use by raid1 /dev/md0".into()
         ])]
     );
+}
+
+#[test]
+fn sector_size_must_be_known_and_512_or_4096() {
+    // The writer pads to the sector size. 8192 is one it does not know; none is unknown.
+    let text = r#"{"blockdevices": [
+      {"name": "/dev/nvme0n1", "type": "disk", "size": 512110190592, "rm": false, "hotplug": false, "tran": "nvme", "log-sec": 512, "mountpoints": ["/"]},
+      {"name": "/dev/sdb", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "log-sec": 8192, "mountpoints": [null]},
+      {"name": "/dev/sdc", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null]},
+      {"name": "/dev/sdd", "type": "disk", "size": 67109888, "rm": true, "hotplug": true, "tran": "usb", "log-sec": 4096, "mountpoints": [null]},
+      {"name": "/dev/sde", "type": "disk", "size": 67109888, "rm": true, "hotplug": true, "tran": "usb", "log-sec": 512, "mountpoints": [null]}
+    ]}"#;
+    let l = linux::parse(text);
+    assert!(l.complete() && l.system_located, "{:?}", l.problems);
+    let p = Policy::default();
+    assert_eq!(
+        refusals(&l, "/dev/sdb", &p),
+        vec![Refusal::SectorSizeUnsupported(Some(8192))]
+    );
+    assert_eq!(
+        refusals(&l, "/dev/sdc", &p),
+        vec![Refusal::SectorSizeUnsupported(None)]
+    );
+    // 64 MiB plus 512 bytes, on a disk of 64 MiB plus 1024: fits padded to 512, not to 4096.
+    let len = 64 * MIB + 512;
+    assert!(matches!(
+        decide(&l, "/dev/sdd", len, &p).err().as_deref(),
+        Some([Refusal::ImageLargerThanDisk { .. }])
+    ));
+    let a = decide(&l, "/dev/sde", len, &p).unwrap();
+    assert_eq!(a.block_size(), 512);
 }
 
 #[test]

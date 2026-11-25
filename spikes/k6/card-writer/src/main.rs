@@ -165,7 +165,14 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            match write::compare(&write::raw_path(&d), &mut img, len) {
+            // Read only: the listed sector size, or 512, which compares the fewest pad bytes.
+            let sector = live_list()
+                .disks
+                .iter()
+                .find(|x| x.path == d)
+                .and_then(|x| x.block_size)
+                .unwrap_or(512);
+            match write::compare(&write::raw_path(&d), &mut img, len, sector) {
                 Ok(None) => {
                     println!("READ-BACK OK");
                     ExitCode::SUCCESS

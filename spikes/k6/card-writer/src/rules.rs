@@ -57,6 +57,9 @@ pub enum Refusal {
         image: u64,
         disk: u64,
     },
+    /// The logical sector size is unknown, or is not 512 or 4096. The writer pads the last
+    /// chunk to the sector size and only knows these two.
+    SectorSizeUnsupported(Option<u32>),
     /// Volumes are mounted. The helper unmounts them, lists again and decides again.
     VolumesMounted(Vec<String>),
 }
@@ -66,7 +69,7 @@ pub enum Refusal {
 pub struct Approved {
     path: String,
     size: u64,
-    block_size: Option<u32>,
+    block_size: u32,
     /// The image length the rules checked. The write writes exactly this many bytes.
     image_len: u64,
 }
@@ -78,7 +81,7 @@ impl Approved {
     pub fn size(&self) -> u64 {
         self.size
     }
-    pub fn block_size(&self) -> Option<u32> {
+    pub fn block_size(&self) -> u32 {
         self.block_size
     }
     pub fn image_len(&self) -> u64 {
@@ -108,6 +111,11 @@ fn path_chars_ok(p: &str) -> bool {
         && p.len() < 64
         && p.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | '.' | '_' | '-'))
+}
+
+/// The image length padded to whole sectors: what the writer writes.
+pub fn padded_len(len: u64, sector: u32) -> u64 {
+    len.div_ceil(sector as u64) * sector as u64
 }
 
 /// Decides whether `device` may be written with an image of `image_len` bytes.
@@ -170,6 +178,13 @@ pub fn decide(
         Bus::Internal => why.push(Refusal::FixedInternal),
         Bus::Unknown => why.push(Refusal::BusUnknown(disk.bus_raw.clone())),
     }
+    let sector = match disk.block_size {
+        Some(b @ (512 | 4096)) => b,
+        other => {
+            why.push(Refusal::SectorSizeUnsupported(other));
+            4096
+        }
+    };
     let size = match disk.size {
         Some(s) if s > 0 => {
             if s > policy.max_size {
@@ -178,8 +193,8 @@ pub fn decide(
                     max: policy.max_size,
                 });
             }
-            // The writer pads the last chunk to 4096 bytes, so the padded length must fit.
-            if image_len.div_ceil(4096) * 4096 > s {
+            // The writer pads the last chunk to the sector size, so the padded length must fit.
+            if padded_len(image_len, sector) > s {
                 why.push(Refusal::ImageLargerThanDisk {
                     image: image_len,
                     disk: s,
@@ -199,7 +214,7 @@ pub fn decide(
         Ok(Approved {
             path: disk.path.clone(),
             size,
-            block_size: disk.block_size,
+            block_size: sector,
             image_len,
         })
     } else {
