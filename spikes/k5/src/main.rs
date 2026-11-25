@@ -16,7 +16,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -136,6 +136,49 @@ fn boot_args(o: &Opts) -> (String, Vec<String>) {
     (bin, v)
 }
 
+/// The QEMU child, so that every exit path can stop it.
+static QEMU: OnceLock<Arc<Mutex<Child>>> = OnceLock::new();
+/// Local paths to hide from anything printed: (path, label).
+static HIDE: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
+
+fn hide(s: &str) -> String {
+    let mut s = s.to_string();
+    for (p, l) in HIDE.get().map(|v| v.as_slice()).unwrap_or(&[]) {
+        if !p.is_empty() {
+            s = s.replace(p.as_str(), l);
+        }
+    }
+    s
+}
+
+/// Kills QEMU when main returns or panics.
+struct Guard;
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if let Some(c) = QEMU.get() {
+            if let Ok(mut c) = c.lock() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+}
+
+/// If QEMU has exited, print why and stop.
+fn check_qemu() {
+    let Some(c) = QEMU.get() else { return };
+    let mut c = c.lock().unwrap();
+    if let Ok(Some(st)) = c.try_wait() {
+        let mut e = String::new();
+        if let Some(mut s) = c.stderr.take() {
+            let _ = s.read_to_string(&mut e);
+        }
+        println!("FAIL: QEMU exited early ({st}): {}", hide(e.trim()));
+        std::process::exit(1);
+    }
+}
+
 fn connect(port: u16) -> TcpStream {
     let t0 = Instant::now();
     loop {
@@ -146,7 +189,10 @@ fn connect(port: u16) -> TcpStream {
                 return s;
             }
             Err(e) if t0.elapsed() > Duration::from_secs(10) => panic!("connect: {e}"),
-            Err(_) => thread::sleep(Duration::from_millis(20)),
+            Err(_) => {
+                check_qemu();
+                thread::sleep(Duration::from_millis(20))
+            }
         }
     }
 }
@@ -442,6 +488,12 @@ fn poll(
     }
     let _ = std::fs::remove_file(&path);
     if let Some(e) = err {
+        let e = hide(&e);
+        if frames == 0 && e.contains("Enable PNG support") {
+            // A QEMU built without libpng: a fact about the build, not a fault.
+            println!("phase={name} not-run: this QEMU has no PNG screendump: {e}");
+            return;
+        }
         println!("phase={name} error: {e}");
         c.failed.push(format!("{name}: {e}"));
         return;
@@ -575,6 +627,13 @@ fn main() {
         .expect("start QEMU");
     let pid = child.id();
     let child = Arc::new(Mutex::new(child));
+    let _ = QEMU.set(child.clone());
+    let _guard = Guard;
+    let _ = HIDE.set(vec![
+        (o.guest.to_string_lossy().into_owned(), "<guest>"),
+        (o.fwstub.to_string_lossy().into_owned(), "<fwstub>"),
+        (o.tmp.to_string_lossy().into_owned(), "<tmp>"),
+    ]);
     let started = Instant::now();
     {
         // Watchdog: QEMU never lives longer than RUN_LIMIT.

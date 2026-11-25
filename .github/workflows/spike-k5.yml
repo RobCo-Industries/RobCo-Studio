@@ -87,19 +87,25 @@ jobs:
           qemu-system-aarch64 --version | head -n 1
           arm-none-eabi-gcc --version | head -n 1
           echo "cpus: $(getconf _NPROCESSORS_ONLN)"
-      - name: Benchmark
+      - name: Benchmark, screendump files on the container's disk
         run: spikes/k5/bench.sh robco-core "$RUNNER_TEMP/k5-linux.txt"
+      - name: Benchmark, screendump files in /dev/shm
+        if: ${{ !cancelled() }}
+        env:
+          K5_MODES: screendump
+          K5_TMP: /dev/shm
+        run: spikes/k5/bench.sh robco-core "$RUNNER_TEMP/k5-linux-shm.txt"
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
           {
             echo '```'
-            cat "$RUNNER_TEMP/k5-linux.txt"
+            cat "$RUNNER_TEMP"/k5-linux*.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
           name: k5-linux
-          path: ${{ runner.temp }}/k5-linux.txt
+          path: ${{ runner.temp }}/k5-linux*.txt
           if-no-files-found: error

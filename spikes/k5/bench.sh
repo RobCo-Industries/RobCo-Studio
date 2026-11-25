@@ -5,7 +5,8 @@
 # under spikes/k5/.cache, builds the poller, then runs one QEMU at a time:
 # screendump on each board and size, then VNC on each board at 640x480.
 # Each QEMU lives at most 20 s. Output goes to stdout and RESULT_FILE.
-# K5_BOARDS, K5_SIZES and K5_MODES narrow the runs. K5_QEMU_DIR picks a
+# K5_BOARDS, K5_SIZES and K5_MODES narrow the runs. K5_TMP sets where QEMU
+# writes each screendump file (default spikes/k5/.cache/tmp). K5_QEMU_DIR picks a
 # QEMU build directory. Prints no path, user or host name.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -42,7 +43,7 @@ for mode in $modes; do
       if [ "$mode" = vnc ] && [ "$s" != 640x480 ]; then continue; fi
       echo "## $mode $b $s, load averages: $(uptime | sed 's/.*load average[s]*: //')" | tee -a "$out"
       if ! "$bin" "$mode" --board "$b" --size "$s" --guest "$cache/guest-$s/k5.img" \
-          --fwstub "$cache/fwstub/fwstub.bin" --tmp "$cache/tmp" ${qdir[@]+"${qdir[@]}"} | tee -a "$out"; then
+          --fwstub "$cache/fwstub/fwstub.bin" --tmp "${K5_TMP:-$cache/tmp}" ${qdir[@]+"${qdir[@]}"} | tee -a "$out"; then
         status=1
       fi
     done
