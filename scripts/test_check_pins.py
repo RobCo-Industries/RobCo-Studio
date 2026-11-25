@@ -5,6 +5,7 @@ Run from the repository root: `python3 -m unittest scripts/test_check_pins.py`.
 The submodule is a shallow clone, as CI's checkout makes it.
 """
 
+import os
 import pathlib
 import subprocess
 import sys
@@ -12,11 +13,44 @@ import tempfile
 import unittest
 
 SCRIPT = pathlib.Path(__file__).resolve().parent / "check-pins.py"
-GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "protocol.file.allow=always"]
+GIT = ["git", "-c", "protocol.file.allow=always"]
+HOME = tempfile.TemporaryDirectory()
+
+
+def closed_env():
+    """A git environment that owes nothing to the machine's configuration."""
+    home = HOME.name
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": home,
+        "XDG_CONFIG_HOME": home,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test Author",
+        "GIT_AUTHOR_EMAIL": "author@example.invalid",
+        "GIT_COMMITTER_NAME": "Test Committer",
+        "GIT_COMMITTER_EMAIL": "committer@example.invalid",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_TEMPLATE_DIR": "",
+        "GIT_CONFIG_COUNT": "4",
+        "GIT_CONFIG_KEY_0": "commit.gpgsign",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "tag.gpgsign",
+        "GIT_CONFIG_VALUE_1": "false",
+        "GIT_CONFIG_KEY_2": "core.hooksPath",
+        "GIT_CONFIG_VALUE_2": os.devnull,
+        "GIT_CONFIG_KEY_3": "init.defaultBranch",
+        "GIT_CONFIG_VALUE_3": "main",
+    }
 
 
 def git(cwd, *args):
-    return subprocess.run([*GIT, *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(
+        [*GIT, *args], cwd=cwd, check=True, capture_output=True, text=True, env=closed_env()
+    ).stdout.strip()
 
 
 def commit(repo, name):
@@ -67,7 +101,9 @@ class CheckPins(unittest.TestCase):
         git(self.studio, "commit", "-qm", "pin")
 
     def run_check(self):
-        r = subprocess.run([sys.executable, str(SCRIPT)], cwd=self.studio, capture_output=True, text=True)
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT)], cwd=self.studio, capture_output=True, text=True, env=closed_env()
+        )
         return r.returncode, r.stdout
 
     def test_pin_behind_main_in_a_shallow_clone_passes(self):
@@ -88,6 +124,15 @@ class CheckPins(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("could not tell", out)
         self.assertNotIn("is not on", out)
+
+    def test_url_rewrite_stops_the_fetch(self):
+        self.pin(self.behind, url="https://example.invalid/robco-core")
+        sub = self.studio / "external/robco-core"
+        git(sub, "config", f"url.{self.core.as_uri()}.insteadOf", "https://example.invalid/robco-core")
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1)
+        self.assertIn("a url rewrite rule turns", out)
+        self.assertNotIn(f"robco-core: {self.behind} is on", out)
 
     def test_missing_submodule_fails(self):
         git(self.studio, "add", "rust-toolchain.toml", "Cargo.toml", "crates/x/Cargo.toml")

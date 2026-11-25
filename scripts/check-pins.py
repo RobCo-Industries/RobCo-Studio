@@ -12,6 +12,7 @@ Run it from the repository root, with the submodule checked out. It exits 1
 when any rule is broken.
 """
 
+import os
 import pathlib
 import re
 import subprocess
@@ -55,8 +56,13 @@ def check_toolchain(errors):
     print(f"toolchain: {channel}, checked {len(members)} workspace members")
 
 
+# The script reads a real repository, so it keeps the repository's own
+# configuration. It never prompts for credentials or a passphrase.
+GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "ssh -o BatchMode=yes"}
+
+
 def git(*args, cwd=ROOT):
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=GIT_ENV)
 
 
 def check_core_submodule(errors):
@@ -82,6 +88,16 @@ def check_core_submodule(errors):
     # fetch the whole history of main.
     shallow = git("rev-parse", "--is-shallow-repository", cwd=sub).stdout.strip() == "true"
     depth = ["--unshallow"] if shallow else []
+    # A url.<base>.insteadOf rule would send the fetch elsewhere, such as to
+    # SSH under the contributor's own identity. Do not fetch then.
+    declared_url = git("config", "--get", f"remote.{CORE_REMOTE}.url", cwd=sub).stdout.strip()
+    used_url = git("remote", "get-url", CORE_REMOTE, cwd=sub).stdout.strip()
+    if declared_url != used_url:
+        errors.append(
+            f"{CORE_PATH}: could not tell whether {pinned} is on {CORE_BRANCH}: the fetch did not run, "
+            f"a url rewrite rule turns {declared_url} into {used_url}. CI runs this check."
+        )
+        return
     fetch = git("fetch", "--quiet", *depth, CORE_REMOTE, CORE_BRANCH, cwd=sub)
     if fetch.returncode != 0:
         errors.append(f"{CORE_PATH}: could not tell whether {pinned} is on {CORE_BRANCH}: the fetch failed: {fetch.stderr.strip()}")
