@@ -49,7 +49,8 @@ jobs:
             libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfontconfig-dev libfreetype-dev libvulkan-dev
       - name: Count packages in the lock file
         working-directory: spikes/k4/${{ matrix.toolkit }}
-        run: echo "lock packages: $(grep -c '^name = ' Cargo.lock)" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "lock packages: $(grep -c '^name = ' Cargo.lock)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Fetch crates
         working-directory: spikes/k4/${{ matrix.toolkit }}
         run: cargo fetch --locked
