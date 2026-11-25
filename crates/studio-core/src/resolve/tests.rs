@@ -823,6 +823,36 @@ fn resolve_sdk_json_fields() {
 }
 
 #[test]
+fn resolve_sdk_json_files_hold_no_manifest_and_no_case_pair() {
+    let base: Value = serde_json::from_str(SDK).unwrap();
+    let with = |path: &str| {
+        let mut v = base.clone();
+        let files = v["files"].as_array_mut().unwrap();
+        let mut entry = files[0].clone();
+        entry["path"] = Value::from(path);
+        files.push(entry);
+        files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+        sdk_json::parse(v.to_string().as_bytes())
+    };
+    for path in ["sdk.json", "SDK.JSON", "Sdk.Json"] {
+        let e = with(path).unwrap_err();
+        assert_eq!(e.code(), "package: manifest", "{path}");
+        assert!(e.to_string().contains(&format!("{path:?}")), "{e}");
+        assert!(e.to_string().contains("manifest"), "{e}");
+    }
+    let e = with("BOOT.JSON").unwrap_err();
+    assert_eq!(e.code(), "package: manifest");
+    assert!(
+        e.to_string().contains("\"BOOT.JSON\"") && e.to_string().contains("\"boot.json\""),
+        "{e}"
+    );
+    // A manifest name in a folder, or a longer name, is an ordinary file.
+    for path in ["docs/sdk.json", "sdk.json.txt"] {
+        assert!(with(path).is_ok(), "{path}");
+    }
+}
+
+#[test]
 fn resolve_sdk_json_firmware_pins() {
     let fw: Value = serde_json::from_str(SDK).unwrap();
     let files = fw["firmware"]["files"].as_array().unwrap().clone();

@@ -97,6 +97,9 @@ const FIRMWARE_REPO: &str = "raspberrypi/firmware";
 /// The firmware files a `pipos` package pins, each once, in any order.
 const FIRMWARE_FILES: [&str; 3] = ["bootcode.bin", "start.elf", "fixup.dat"];
 
+/// The manifest's name at the archive root.
+const MANIFEST: &str = "sdk.json";
+
 fn bad(at: &str, what: &str) -> Error {
     Error::PackageManifest(format!("sdk.json: {at} {what}"))
 }
@@ -317,6 +320,27 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
             return Err(bad(
                 &format!("{at}path = {:?}", f.path),
                 "breaks the path rules of the archive",
+            ));
+        }
+        // `files` lists every file but `sdk.json`. The archive allows no two
+        // names that differ only in case, so `SDK.JSON` is refused too.
+        if f.path.eq_ignore_ascii_case(MANIFEST) {
+            return Err(bad(
+                &format!("{at}path = {:?}", f.path),
+                "names the manifest: files lists every file but sdk.json",
+            ));
+        }
+        // No two names that differ only in case, by the archive rules.
+        if let Some(other) = files
+            .iter()
+            .find(|p| p.path != f.path && p.path.eq_ignore_ascii_case(&f.path))
+        {
+            return Err(bad(
+                &format!("{at}path = {:?}", f.path),
+                &format!(
+                    "differs only in case from {:?}: the archive allows no such pair",
+                    other.path
+                ),
             ));
         }
         // Strictly ascending byte order: a path out of order or twice fails.
