@@ -583,6 +583,62 @@ fn resolve_stale_follows_requires() {
     );
 }
 
+/// The lock example with extra packages, each at 1.0.0.
+fn lock_with(extra: &[&str]) -> Lock {
+    let mut add = String::new();
+    for n in extra {
+        add.push_str(&format!(
+            "\n[[package]]\nname = \"{n}\"\nversion = \"1.0.0\"\nsha256 = \"{H}\"\n"
+        ));
+    }
+    Lock::parse(&LOCK.replacen("\n[[tool]]", &format!("{add}\n[[tool]]"), 1)).unwrap()
+}
+
+/// Checks a lock where each `(from, to)` edge is a `requires` at ABI 1.0.
+fn stale_with_edges(lock: &Lock, edges: &[(&str, &str)]) -> Result<(), Error> {
+    let edges: Vec<(String, String)> = edges
+        .iter()
+        .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+        .collect();
+    let requires = move |p: &lock::LockedPackage| {
+        edges
+            .iter()
+            .filter(|(from, _)| *from == p.name)
+            .map(|(_, to)| Requirement {
+                name: to.clone(),
+                abi: Abi::parse("1.0").unwrap(),
+            })
+            .collect()
+    };
+    lock.check_stale(&target("1.3"), "linux-x64", &requires)
+}
+
+#[test]
+fn resolve_stale_needs_only_what_the_root_reaches() {
+    let stale = |d: &str| Err(Error::LockStale(d.to_owned()));
+    // Two packages that need each other and that pipos never reaches.
+    assert_eq!(
+        stale_with_edges(&lock_with(&["a", "b"]), &[("a", "b"), ("b", "a")]),
+        stale("package a is listed and not needed")
+    );
+    // A chain that pipos never reaches.
+    assert_eq!(
+        stale_with_edges(&lock_with(&["a", "b", "c"]), &[("a", "b"), ("b", "c")]),
+        stale("package a is listed and not needed")
+    );
+    // A cycle that pipos reaches, one that runs back to pipos too: fine.
+    stale_with_edges(
+        &lock_with(&["a", "b"]),
+        &[(PIPOS, "a"), ("a", "b"), ("b", "a"), ("b", PIPOS)],
+    )
+    .unwrap();
+    // A requirement on a package the lock does not hold.
+    assert_eq!(
+        stale_with_edges(&lock_with(&["a"]), &[(PIPOS, "a"), ("a", "ghost")]),
+        stale("package ghost is needed and not listed")
+    );
+}
+
 #[test]
 fn resolve_lock_read_errors() {
     assert_eq!(code(Lock::parse("format = \n")), "lock: syntax");

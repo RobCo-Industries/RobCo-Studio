@@ -232,21 +232,28 @@ impl Lock {
         let mut packages: Vec<&LockedPackage> = self.packages.iter().collect();
         packages.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
 
-        // What the project needs, by name: pipos at the target ABI, and each
-        // `requires` of a listed package.
+        // What the project needs, by name: what the project's root package
+        // reaches by `requires`, and nothing else. The root is pipos at the
+        // target ABI. Only a listed package's `requires` can be followed: a
+        // requirement on a package the lock does not hold stays in `needs`,
+        // and rule 2 names it. `seen` stops a cycle.
         let mut needs: BTreeMap<String, Vec<Requirement>> = BTreeMap::new();
+        let mut todo: Vec<Requirement> = Vec::new();
         if target.platform == PIPOS {
-            needs
-                .entry(PIPOS.to_owned())
-                .or_default()
-                .push(Requirement {
-                    name: PIPOS.to_owned(),
-                    abi: target.abi,
-                });
+            todo.push(Requirement {
+                name: PIPOS.to_owned(),
+                abi: target.abi,
+            });
         }
-        for p in &packages {
-            for r in requires_of(p) {
-                needs.entry(r.name.clone()).or_default().push(r);
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        while let Some(r) = todo.pop() {
+            let name = r.name.clone();
+            needs.entry(name.clone()).or_default().push(r);
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(p) = packages.iter().find(|p| p.name == name) {
+                todo.extend(requires_of(p));
             }
         }
 
