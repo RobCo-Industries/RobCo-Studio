@@ -130,7 +130,11 @@ def stop_proc(self):
 
 
 def connect_serial(path, qemu, timeout):
-    return connect(port_for(qemu, path), qemu.proc, qemu.stderr, timeout)
+    # The harness's reader thread treats a recv timeout as a closed
+    # connection, so the serial socket must block, as the Unix one does.
+    s = connect(port_for(qemu, path), qemu.proc, qemu.stderr, timeout)
+    s.settimeout(None)
+    return s
 
 
 def build_fwstub():
