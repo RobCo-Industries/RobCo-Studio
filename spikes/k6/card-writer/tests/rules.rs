@@ -340,3 +340,25 @@ fn size_cap_and_image_size() {
         Some([Refusal::ImageLargerThanDisk { .. }])
     ));
 }
+
+#[test]
+fn second_look_must_see_the_same_disk() {
+    let l = windows::parse(&fixture("windows-laptop.json"));
+    let p = Policy::default();
+    let a = decide(&l, r"\\.\PhysicalDrive4", 64 * MIB, &p).unwrap();
+    assert_eq!(a.image_len(), 64 * MIB);
+    let b = decide(&l, r"\\.\PhysicalDrive4", 64 * MIB, &p).unwrap();
+    assert!(a.same_as(&b));
+    // The reader now holds a card of another size under the same path.
+    let mut l2 = l.clone();
+    l2.disks
+        .iter_mut()
+        .find(|d| d.path.ends_with('4'))
+        .unwrap()
+        .size = Some(15_931_539_456);
+    let c = decide(&l2, r"\\.\PhysicalDrive4", 64 * MIB, &p).unwrap();
+    assert!(!a.same_as(&c));
+    // Another image length is another approval.
+    let d = decide(&l, r"\\.\PhysicalDrive4", 32 * MIB, &p).unwrap();
+    assert!(!a.same_as(&d));
+}

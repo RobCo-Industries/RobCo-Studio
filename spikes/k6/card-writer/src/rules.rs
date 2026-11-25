@@ -67,6 +67,8 @@ pub struct Approved {
     path: String,
     size: u64,
     block_size: Option<u32>,
+    /// The image length the rules checked. The write writes exactly this many bytes.
+    image_len: u64,
 }
 
 impl Approved {
@@ -78,6 +80,16 @@ impl Approved {
     }
     pub fn block_size(&self) -> Option<u32> {
         self.block_size
+    }
+    pub fn image_len(&self) -> u64 {
+        self.image_len
+    }
+    /// True when a second decision names the same disk, the same size and the same image
+    /// length. The writer decides again after it opens the disk and needs this to hold.
+    pub fn same_as(&self, other: &Approved) -> bool {
+        same_path(&self.path, &other.path)
+            && self.size == other.size
+            && self.image_len == other.image_len
     }
 }
 
@@ -166,7 +178,8 @@ pub fn decide(
                     max: policy.max_size,
                 });
             }
-            if image_len > s {
+            // The writer pads the last chunk to 4096 bytes, so the padded length must fit.
+            if image_len.div_ceil(4096) * 4096 > s {
                 why.push(Refusal::ImageLargerThanDisk {
                     image: image_len,
                     disk: s,
@@ -187,6 +200,7 @@ pub fn decide(
             path: disk.path.clone(),
             size,
             block_size: disk.block_size,
+            image_len,
         })
     } else {
         Err(why)

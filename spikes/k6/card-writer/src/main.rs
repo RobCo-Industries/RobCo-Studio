@@ -72,14 +72,24 @@ fn main() -> ExitCode {
                 eprintln!("--device is required\n{USAGE}");
                 return ExitCode::from(2);
             };
-            let image_len = match a.image.as_deref().map(std::fs::metadata) {
-                Some(Ok(m)) => m.len(),
+            // The image is opened once. Its length comes from this handle, and the write
+            // reads this handle, so a file swapped at the path later is never read.
+            let mut image = match a.image.as_deref().map(std::fs::File::open) {
+                Some(Ok(f)) => Some(f),
                 Some(Err(e)) => {
                     eprintln!("image: {e}");
                     return ExitCode::from(2);
                 }
                 None if a.cmd == "write" => {
                     eprintln!("--image is required\n{USAGE}");
+                    return ExitCode::from(2);
+                }
+                None => None,
+            };
+            let image_len = match image.as_ref().map(|f| f.metadata()) {
+                Some(Ok(m)) => m.len(),
+                Some(Err(e)) => {
+                    eprintln!("image: {e}");
                     return ExitCode::from(2);
                 }
                 None => 0,
@@ -100,8 +110,26 @@ fn main() -> ExitCode {
             if a.cmd == "check" {
                 return ExitCode::SUCCESS;
             }
-            let image = a.image.unwrap_or_default();
-            match write::write_and_verify(approved, Path::new(&image)) {
+            let Some(image) = image.as_mut() else {
+                return ExitCode::from(2);
+            };
+            let policy = a.policy.clone();
+            let recheck = |first: &card_writer::rules::Approved| match decide(
+                &live_list(),
+                device,
+                image_len,
+                &policy,
+            ) {
+                Ok(again) if again.same_as(first) => Ok(()),
+                Ok(again) => Err(format!(
+                    "{} is now {} bytes, the check saw {}",
+                    again.path(),
+                    again.size(),
+                    first.size()
+                )),
+                Err(why) => Err(format!("refused on the second look: {why:?}")),
+            };
+            match write::write_and_verify(approved, image, recheck) {
                 Ok(o) => {
                     println!(
                         "wrote {} bytes to {} in {} ms, read back in {} ms",
@@ -129,14 +157,15 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
-            let len = match std::fs::metadata(&i) {
-                Ok(m) => m.len().div_ceil(4096) * 4096,
+            let opened = std::fs::File::open(&i).and_then(|f| f.metadata().map(|m| (f, m.len())));
+            let (mut img, len) = match opened {
+                Ok(x) => x,
                 Err(e) => {
                     eprintln!("image: {e}");
                     return ExitCode::from(2);
                 }
             };
-            match write::compare(&write::raw_path(&d), Path::new(&i), len) {
+            match write::compare(&write::raw_path(&d), &mut img, len) {
                 Ok(None) => {
                     println!("READ-BACK OK");
                     ExitCode::SUCCESS
