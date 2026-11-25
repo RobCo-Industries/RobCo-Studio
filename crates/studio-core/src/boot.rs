@@ -201,9 +201,13 @@ impl fmt::Display for BootError {
 impl std::error::Error for BootError {}
 
 impl crate::codes::ErrorCode for BootError {
-    /// The code of "Order of checks" for `boot.json`. A mode the file does
-    /// not list takes the code of a board it does not list, and two cases
-    /// the spec gives no code take `internal`: see the module report.
+    /// Maps each error to its code, following "Order of checks" in
+    /// `STUDIO_CLI.md`: a file that does not parse or a bad field is
+    /// `package: manifest`, a bad `format` is `package: format`, and a board
+    /// the file does not list is `run: board`. A mode the file does not
+    /// list takes the code of a board it does not list. A path that is not
+    /// UTF-8 and a missing SD image have no code in the spec, so they take
+    /// `internal`.
     fn error_code(&self) -> &'static str {
         match self {
             Self::Json(_)
@@ -725,6 +729,26 @@ mod tests {
             assert_eq!(e, BootError::Field(path.into()));
             assert!(e.to_string().contains(path));
         }
+    }
+
+    #[test]
+    fn only_a_larger_format_asks_for_a_newer_studio() {
+        use crate::codes::ErrorCode;
+        let text = FIXTURE.replacen("\"format\": 1", "\"format\": 2", 1);
+        assert!(
+            parse(&text)
+                .unwrap_err()
+                .to_string()
+                .contains("update Studio")
+        );
+        for f in ["0", "-1", "\"1\"", "1.5", "null", "{}"] {
+            let text = FIXTURE.replacen("\"format\": 1", &format!("\"format\": {f}"), 1);
+            let e = parse(&text).unwrap_err();
+            assert_eq!(e.error_code(), "package: format", "{f}");
+            assert!(!e.to_string().contains("update"), "{f}: {e}");
+        }
+        let e = parse(&FIXTURE.replacen("\"format\": 1,", "", 1)).unwrap_err();
+        assert!(!e.to_string().contains("update"), "{e}");
     }
 
     #[test]
