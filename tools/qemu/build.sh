@@ -62,6 +62,8 @@ cp "$work/qemu.tar.xz" "$out/qemu-${ver}.tar.xz"
 
 {
   echo "os: $os"
+  # The release checks that no packed file holds this folder's path.
+  echo "work: $work"
   echo "configure: ${configure[*]}"
   echo "build seconds (configure + ninja -j$jobs, two emulators): $secs"
   ls -l "$out"
