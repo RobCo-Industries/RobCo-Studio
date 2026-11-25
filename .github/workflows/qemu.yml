@@ -10,6 +10,8 @@ on:
       - tools/qemu/**
       - .github/workflows/qemu.yml
   workflow_dispatch:
+  push:
+    branches: [s1-qemu-linux]
 
 permissions:
   contents: read
@@ -131,6 +133,20 @@ jobs:
       - name: Licence text of pcre as packed (Linux)
         if: matrix.name == 'linux'
         run: cat out/qemu/licenses/pcre-copyright
+      # The licence check must tell a full text from a file that only points
+      # to one: without the LGPL text, glib's copyright file is not enough.
+      - name: Licence check fails without the LGPL text (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          rm -rf broken && mkdir broken && cp -r out/qemu broken/qemu
+          rm broken/qemu/licenses/text-LGPL-2.1
+          set +e
+          bash tools/qemu/notices.sh --check linux broken > nolgpl.log 2>&1
+          code=$?
+          set -e
+          grep -v '^+' nolgpl.log
+          test "$code" -eq 1
+          grep -F "FAIL: no full LGPL-2.1 text in licenses/ for libglib-2.0.so.0 (glib)" nolgpl.log
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-${{ matrix.name }}

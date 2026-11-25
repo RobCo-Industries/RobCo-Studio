@@ -4,9 +4,14 @@
 # library has its licence. Follows the checklist in docs/THIRD_PARTY.md,
 # steps 1, 2, 4 and 6. The release adds the sources, step 3.
 # Usage: notices.sh <linux|macos|windows> <out-dir>
+#        notices.sh --check <linux|macos|windows> <out-dir>
 # Reads <out-dir>/build/ to find where each packed library came from.
+# --check runs only the final check on a package already written.
 set -euxo pipefail
 
+check_only=0
+if [ "$1" = --check ]; then check_only=1; shift; fi
+here=$(cd "$(dirname "$0")" && pwd)
 os=$1
 out=$(cd "$2" && pwd)
 build=$out/build
@@ -47,6 +52,58 @@ licence() {
   esac
 }
 
+# The licence texts that apply to a component, by SPDX-style short name.
+# The package must hold the full text of each.
+texts() {
+  case $1 in
+    glib | intl | iconv) echo "LGPL-2.1" ;;
+    pcre) echo "BSD-3-Clause" ;;
+    pcre2) echo "BSD-3-Clause PCRE2-exception" ;;
+    pixman) echo "MIT" ;;
+    libfdt) echo "GPL-2.0 BSD-2-Clause" ;;
+    zlib) echo "Zlib" ;;
+    libatomic) echo "GPL-3.0 GCC-exception-3.1" ;;
+    winpthread) echo "MIT BSD-3-Clause" ;;
+  esac
+}
+
+# Phrases only the full text of a licence holds: its title line and a line
+# from near its end. A file that names a licence and points elsewhere holds
+# neither. Compared ignoring case and line breaks.
+markers() {
+  case $1 in
+    LGPL-2.1) printf '%s\n' "GNU LESSER GENERAL PUBLIC LICENSE" "Version 2.1, February 1999" "That's all there is to it!" ;;
+    GPL-2.0) printf '%s\n' "GNU GENERAL PUBLIC LICENSE" "Version 2, June 1991" "Public License instead of this License." ;;
+    GPL-3.0) printf '%s\n' "GNU GENERAL PUBLIC LICENSE" "Version 3, 29 June 2007" "why-not-lgpl.html" ;;
+    GCC-exception-3.1) printf '%s\n' "GCC RUNTIME LIBRARY EXCEPTION" "Version 3.1, 31 March 2009" "Eligible Compilation Process" ;;
+    BSD-2-Clause) printf '%s\n' "Redistribution and use in source and binary forms" "EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE" ;;
+    BSD-3-Clause) printf '%s\n' "Redistribution and use in source and binary forms" "Neither the name of" "EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE" ;;
+    PCRE2-exception) printf '%s\n' "EXEMPTION FOR BINARY LIBRARY-LIKE PACKAGES" ;;
+    MIT) printf '%s\n' "Permission is hereby granted" "WITHOUT WARRANTY OF ANY KIND" ;;
+    Zlib) printf '%s\n' "Permission is granted to anyone to use this software for any purpose" "This notice may not be removed or altered from any source distribution." ;;
+    *) echo "no full-text markers for licence $1" >&2; return 1 ;;
+  esac
+}
+
+# Succeeds when one of the files holds the full text of licence $1.
+# Written for macOS's bash 3.2. The text is read whole first: grep -q
+# stopping early would break the pipe and pipefail would call it a miss.
+has_text() {
+  local id=$1 f m ok n want
+  shift
+  want=$(markers "$id") || return 1
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    n=$(tr -s ' \t\r\n' ' ' <"$f")
+    ok=1
+    while IFS= read -r m; do
+      grep -qiF -- "$m" <<<"$n" || { ok=0; break; }
+    done <<<"$want"
+    [ "$ok" = 1 ] && return 0
+  done
+  return 1
+}
+
 # The packed library files.
 packed() {
   case $os in
@@ -61,6 +118,32 @@ origin() {
     | awk -v f="$1" '$1 == f && $2 == "=>" {print $3; exit}'
 }
 
+# Step 6: every packed library has a record line, and its licence texts,
+# as the record names them, are in full in licenses/: in a file named after
+# the library or in a shared text-* file.
+check() {
+  local bad=0 f c t
+  for f in qemu-COPYING qemu-LICENSE packed-libraries.txt; do
+    [ -s "$lic/$f" ] || { echo "FAIL: licenses/$f is missing"; bad=1; }
+  done
+  has_text GPL-2.0 "$lic/qemu-COPYING" || { echo "FAIL: licenses/qemu-COPYING is not the full GPL-2.0 text"; bad=1; }
+  [ -s "$dist/NOTICE" ] || { echo "FAIL: NOTICE is missing"; bad=1; }
+  for f in $(packed); do
+    c=$(component "$f")
+    t=$(awk -F' [|] ' -v f="$f" '$1 == f && $7 ~ /^licence texts: / {sub(/^licence texts: /, "", $7); print $7; exit}' "$record")
+    [ -n "$t" ] || { echo "FAIL: $f has no record line naming its licence texts"; bad=1; continue; }
+    for id in $t; do
+      has_text "$id" "$lic/$c"-* "$lic"/text-* || { echo "FAIL: no full $id text in licenses/ for $f ($c)"; bad=1; }
+    done
+  done
+  return "$bad"
+}
+
+if [ "$check_only" = 1 ]; then
+  if check; then echo "Every packed library has the full text of each of its licences."; exit 0; fi
+  exit 1
+fi
+
 rm -rf "$lic" "$dist/NOTICE"
 mkdir -p "$lic"
 # Step 1: QEMU's own licence files, from the source tree it was built from.
@@ -69,7 +152,7 @@ cp "$build/LICENSE" "$lic/qemu-LICENSE"
 
 {
   echo "# What was packed, recorded when it was packed."
-  echo "# file | component | packager | package | version | details"
+  echo "# file | component | packager | package | version | details | licence texts"
 } >"$record"
 notice_libs=""
 
@@ -89,9 +172,16 @@ for f in $(packed); do
       [ -n "$pkg" ] || { echo "no dpkg package owns $p" >&2; exit 1; }
       v=$(dpkg-query -W -f='${Version}' "$pkg")
       src=$(dpkg-query -W -f='${source:Package} ${source:Version}' "$pkg")
-      echo "$f | $c | Ubuntu $(. /etc/os-release && echo "$VERSION_ID") | $pkg | $v | source package $src, from $p" >>"$record"
-      # The packager's copyright file, which holds the licence text.
+      echo "$f | $c | Ubuntu $(. /etc/os-release && echo "$VERSION_ID") | $pkg | $v | source package $src, from $p | licence texts: $(texts "$c")" >>"$record"
+      # The packager's copyright file. It may name a licence and point to
+      # its text under /usr/share/common-licenses/, which is not packed:
+      # copy each text it points to, once, as text-<name>.
       cp "/usr/share/doc/$pkg/copyright" "$lic/$c-copyright"
+      ptrs=$(python3 "$here/deb_copyright.py" "/usr/share/doc/$pkg/copyright")
+      for t in $ptrs; do
+        [ -f "$t" ] || { echo "$pkg copyright points to $t, which does not exist" >&2; exit 1; }
+        [ -f "$lic/text-$(basename "$t")" ] || cp "$t" "$lic/text-$(basename "$t")"
+      done
       ;;
     macos)
       cellar=$(brew --cellar)
@@ -103,15 +193,21 @@ for f in $(packed); do
       v=${rest%%/*}
       keg=$cellar/$formula/$v
       head=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("source") or {}).get("tap_git_head") or "unknown")' "$keg/INSTALL_RECEIPT.json")
-      echo "$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p" >>"$record"
+      echo "$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p | licence texts: $(texts "$c")" >>"$record"
       cp "$keg/INSTALL_RECEIPT.json" "$lic/$c-INSTALL_RECEIPT.json"
       found=0
       for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT*; do
         if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; found=1; fi
       done
-      if [ "$found" = 0 ]; then
-        # Some kegs, such as glib and dtc, keep no licence file. Take it
-        # from the formula's own source archive, checked to be this version.
+      need=0
+      for id in $(texts "$c"); do
+        has_text "$id" "$lic/$c"-* || need=1
+      done
+      if [ "$found" = 0 ] || [ "$need" = 1 ]; then
+        # Some kegs, such as glib and dtc, keep no licence file, and some,
+        # such as gettext for intl, keep one that is not the library's.
+        # Take the texts from the formula's own source archive, checked to
+        # be this version.
         brew fetch --build-from-source --formula "$formula" >&2
         tarball=$(brew --cache --build-from-source --formula "$formula")
         case $(basename "$tarball") in
@@ -123,6 +219,18 @@ for f in $(packed); do
         for l in "$t"/*/COPYING* "$t"/*/LICENSE* "$t"/*/LICENCE* "$t"/*/README.license "$t"/*/BSD-2-Clause "$t"/*/GPL; do
           if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; fi
         done
+        # A text still missing may sit deeper, as gettext keeps the LGPL
+        # of libintl: take the first licence file that holds it in full.
+        for id in $(texts "$c"); do
+          has_text "$id" "$lic/$c"-* && continue
+          while IFS= read -r l; do
+            if has_text "$id" "$l"; then
+              rel=${l#"$t"/*/}
+              cp "$l" "$lic/$c-${rel//\//-}"
+              break
+            fi
+          done < <(find "$t" -maxdepth 4 -type f \( -name 'COPYING*' -o -name 'LICENSE*' -o -name 'LICENCE*' \) | sort)
+        done
         rm -rf "$t"
         echo "$f | $c | Homebrew | $formula | $v | licence texts from the source archive $(basename "$tarball")" >>"$record"
       fi
@@ -131,7 +239,7 @@ for f in $(packed); do
       p=$(origin "$f")
       pkg=$(pacman -Qqo "$p")
       v=$(pacman -Q "$pkg" | cut -d' ' -f2)
-      echo "$f | $c | MSYS2 | $pkg | $v | from $p" >>"$record"
+      echo "$f | $c | MSYS2 | $pkg | $v | from $p | licence texts: $(texts "$c")" >>"$record"
       pacman -Qi "$pkg" >"$lic/$c-pacman-Qi.txt"
       for l in $(pacman -Qlq "$pkg" | grep '/share/licenses/.*[^/]$' || true); do
         cp "$l" "$lic/$c-$(basename "$l")"
@@ -162,21 +270,8 @@ done
   echo "above. This build was not published, so it names no release address."
 } >"$dist/NOTICE"
 
-# Step 6: every packed library has a licence file and a record line.
-bad=0
-for f in qemu-COPYING qemu-LICENSE packed-libraries.txt; do
-  [ -s "$lic/$f" ] || { echo "FAIL: licenses/$f is missing"; bad=1; }
-done
-[ -s "$dist/NOTICE" ] || { echo "FAIL: NOTICE is missing"; bad=1; }
-for f in $(packed); do
-  c=$(component "$f")
-  n=$(cd "$lic" && ls | { grep -E "^$c-" || true; } | { grep -vE -- '-(INSTALL_RECEIPT\.json|pacman-Qi\.txt)$' || true; } | wc -l)
-  [ "$n" -gt 0 ] || { echo "FAIL: no licence file for $f ($c)"; bad=1; }
-  grep -q "^$f | " "$record" || { echo "FAIL: $f is not in the record"; bad=1; }
-done
-
 echo "NOTICE:"; cat "$dist/NOTICE"
 echo "Record:"; cat "$record"
 echo "licenses/:"; ls -l "$lic"
-[ "$bad" -eq 0 ] || exit 1
-echo "Every packed library has a licence file and a record line."
+check
+echo "Every packed library has the full text of each of its licences."
