@@ -353,34 +353,46 @@ pub fn command(file: &BootFile, request: &BootRequest<'_>) -> Result<QemuCommand
     };
     let mode_at = format!("boards.{}.modes.{mode}", request.board);
 
+    // Every source of the command line, in the spec's order. Each string,
+    // from the file or built here, passes through `fill` on its way out.
     let ports = request.ports;
-    let mut args = vec!["-M".to_owned(), board.machine.clone()];
-    args.extend(file.common.iter().cloned());
-    args.push("-qmp".into());
-    args.push(format!("tcp:{HOST}:{},server=on,wait=off", ports.qmp));
+    let mut parts: Vec<(String, Vec<String>)> = Vec::new();
+    parts.push((
+        format!("boards.{}.machine", request.board),
+        vec!["-M".to_owned(), board.machine.clone()],
+    ));
+    parts.push(("common".to_owned(), file.common.clone()));
+    let mut ours = vec![
+        "-qmp".to_owned(),
+        format!("tcp:{HOST}:{},server=on,wait=off", ports.qmp),
+    ];
     if let Some(port) = ports.qtest {
-        args.push("-qtest".into());
-        args.push(format!("tcp:{HOST}:{port}"));
+        ours.push("-qtest".into());
+        ours.push(format!("tcp:{HOST}:{port}"));
     }
     let mut serial = |id: &str, port: u16| {
-        args.push("-chardev".into());
-        args.push(format!(
+        ours.push("-chardev".into());
+        ours.push(format!(
             "socket,id={id},host={HOST},port={port},server=on,wait=off"
         ));
-        args.push("-serial".into());
-        args.push(format!("chardev:{id}"));
+        ours.push("-serial".into());
+        ours.push(format!("chardev:{id}"));
     };
     serial("ser0", ports.pl011);
     if let Some(port) = ports.mini_uart {
         serial("ser1", port);
     }
-    args.push("-S".into());
-    for arg in mode_args {
-        args.push(fill(&mode_at, arg)?);
-    }
+    ours.push("-S".into());
+    parts.push(("ports".to_owned(), ours));
+    parts.push((mode_at, mode_args.clone()));
     if card.is_some() {
-        for arg in &file.sd {
-            args.push(fill("sd", arg)?);
+        parts.push(("sd".to_owned(), file.sd.clone()));
+    }
+
+    let mut args = Vec::new();
+    for (at, list) in &parts {
+        for (i, arg) in list.iter().enumerate() {
+            args.push(fill(&format!("{at}[{i}]"), arg)?);
         }
     }
     Ok(QemuCommand {
@@ -737,6 +749,37 @@ mod tests {
             }
         );
         assert!(e.to_string().contains("raspi0") && e.to_string().contains("{sd}"));
+    }
+
+    #[test]
+    fn placeholders_in_common_are_filled() {
+        for (ph, want) in [
+            ("{stub}", "x=s,,1"),
+            ("{image}", "x=i,,2"),
+            ("{sd}", "x=c,,3"),
+        ] {
+            let text = FIXTURE.replacen("\"none\",", &format!("\"x={ph}\","), 1);
+            let mut r = req("raspi0", Mode::Default);
+            r.stub = Path::new("s,1");
+            r.image = Path::new("i,2");
+            r.card = Some(Path::new("c,3"));
+            let args = command(&parse(&text).unwrap(), &r).unwrap().args;
+            assert_eq!(args[3], want, "{ph}");
+            assert!(!args.iter().any(|a| a.contains(ph)), "{ph}");
+        }
+    }
+
+    #[test]
+    fn sd_in_common_without_a_card_fails() {
+        let text = FIXTURE.replacen("\"none\",", "\"x={sd}\",", 1);
+        let e = command(&parse(&text).unwrap(), &req("raspi0", Mode::Default)).unwrap_err();
+        assert_eq!(
+            e,
+            BootError::MissingCard {
+                board: "raspi0".into(),
+                placeholder: "{sd}".into()
+            }
+        );
     }
 
     #[test]
