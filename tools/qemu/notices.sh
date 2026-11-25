@@ -178,9 +178,27 @@ for f in $(packed); do
       # copy each text it points to, once, as text-<name>.
       cp "/usr/share/doc/$pkg/copyright" "$lic/$c-copyright"
       ptrs=$(python3 "$here/deb_copyright.py" "/usr/share/doc/$pkg/copyright")
+      # A pointer may be a link, such as LGPL to LGPL-3: name the copy after
+      # the text it really is. The LGPL 3 is a supplement to the GPL 3.
       for t in $ptrs; do
         [ -f "$t" ] || { echo "$pkg copyright points to $t, which does not exist" >&2; exit 1; }
+        t=$(readlink -f "$t")
+        case $(basename "$t") in LGPL-3) ptrs="$ptrs /usr/share/common-licenses/GPL-3" ;; esac
+      done
+      for t in $ptrs; do
+        t=$(readlink -f "$t")
         [ -f "$lic/text-$(basename "$t")" ] || cp "$t" "$lic/text-$(basename "$t")"
+      done
+      # A licence the record names but the copyright file does not point
+      # to, as glib's file points to the newest LGPL while glib is under
+      # the LGPL 2.1 or later: take its text from the same folder.
+      for id in $(texts "$c"); do
+        has_text "$id" "$lic/$c"-* "$lic"/text-* && continue
+        case $id in
+          LGPL-2.1) t=LGPL-2.1 ;; GPL-2.0) t=GPL-2 ;; GPL-3.0) t=GPL-3 ;; BSD-3-Clause) t=BSD ;;
+          *) continue ;;
+        esac
+        [ -f "$lic/text-$t" ] || cp "/usr/share/common-licenses/$t" "$lic/text-$t"
       done
       ;;
     macos)
@@ -244,6 +262,30 @@ for f in $(packed); do
       for l in $(pacman -Qlq "$pkg" | grep '/share/licenses/.*[^/]$' || true); do
         cp "$l" "$lic/$c-$(basename "$l")"
       done
+      # A text MSYS2 does not install, such as libfdt's BSD licence: take it
+      # from MSYS2's source package of this exact version, and from the
+      # upstream archive inside it.
+      need=""
+      for id in $(texts "$c"); do
+        has_text "$id" "$lic/$c"-* || need="$need $id"
+      done
+      if [ -n "$need" ]; then
+        srcpkg="mingw-w64-${pkg#mingw-w64-ucrt-x86_64-}-$v.src.tar.zst"
+        t=$(mktemp -d)
+        curl -fsSLo "$t/$srcpkg" "https://repo.msys2.org/mingw/sources/$srcpkg"
+        tar xf "$t/$srcpkg" -C "$t"
+        for a in "$t"/*/*.tar.*; do
+          case $a in *.sig | *.asc) continue ;; esac
+          [ -f "$a" ] && tar xf "$a" -C "$(dirname "$a")"
+        done
+        for id in $need; do
+          while IFS= read -r l; do
+            if has_text "$id" "$l"; then cp "$l" "$lic/$c-$(basename "$l")"; break; fi
+          done < <(find "$t" -maxdepth 5 -type f \( -name 'COPYING*' -o -name 'LICENSE*' -o -name 'LICENCE*' -o -name 'BSD-2-Clause' -o -name 'README.license' \) | sort)
+        done
+        rm -rf "$t"
+        echo "$f | $c | MSYS2 | $pkg | $v | licence texts from the source package $srcpkg" >>"$record"
+      fi
       ;;
   esac
   case " $notice_libs " in *" $c "*) ;; *) notice_libs="$notice_libs $c" ;; esac
