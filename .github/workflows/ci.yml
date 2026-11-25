@@ -74,42 +74,17 @@ jobs:
       - name: Licences, advisories, bans and sources
         run: cargo deny --locked check
 
-  release:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            exe: ""
-          - os: macos-latest
-            exe: ""
-          - os: windows-latest
-            exe: .exe
-    runs-on: ${{ matrix.os }}
-    env:
-      EXE: ${{ matrix.exe }}
+  file-licences:
+    runs-on: ubuntu-latest
     steps:
+      # The submodule is checked out so that the check sees it and skips it.
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install the pinned toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Release build
-        run: cargo build --release --locked -p robco
-      - name: Run the binary
-        run: |
-          out=$(./target/release/robco$EXE --version | tr -d '\r')
-          echo "$out"
-          case "$out" in
-            "robco "[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::unexpected version line: $out"; exit 1 ;;
-          esac
-      - uses: actions/upload-artifact@v4
+      - name: Every file carries an SPDX licence
+        uses: fsfe/reuse-action@v5
         with:
-          name: robco-${{ runner.os }}-${{ runner.arch }}
-          path: target/release/robco${{ env.EXE }}
-          if-no-files-found: error
+          args: lint
 
   pins:
     runs-on: ubuntu-latest
@@ -117,15 +92,128 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: RobCo-Core is pinned to a commit on its main branch
+      - name: Tests of the pin check
+        run: python3 -m unittest scripts/test_check_pins.py
+      - name: Toolchain file, manifests and the RobCo-Core submodule agree
+        run: python3 scripts/check-pins.py
+      - name: No workflow file repeats a key
+        run: python3 scripts/check-workflows.py
+
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each row names the runner and the target together. The label pins
+        # the system version, and the first step checks that the machine has
+        # the architecture the target needs, because the binary runs there.
+        include:
+          # Linux: statically linked against musl, so it runs in any container.
+          - os: ubuntu-24.04
+            machine: x86_64
+            target: x86_64-unknown-linux-musl
+            rustflags: ""
+            exe: ""
+          # macOS 15 runners are Apple silicon. The Intel ones are macos-15-intel.
+          - os: macos-15
+            machine: arm64
+            target: aarch64-apple-darwin
+            rustflags: ""
+            exe: ""
+          # Windows: the C runtime is linked statically.
+          - os: windows-2025
+            machine: x86_64
+            target: x86_64-pc-windows-msvc
+            rustflags: -C target-feature=+crt-static
+            exe: .exe
+    runs-on: ${{ matrix.os }}
+    env:
+      EXE: ${{ matrix.exe }}
+      BIN: target/${{ matrix.target }}/release/robco${{ matrix.exe }}
+      RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
+    steps:
+      - name: The runner can run the target
+        env:
+          EXPECTED: ${{ matrix.machine }}
         run: |
-          pin=$(git rev-parse HEAD:external/robco-core)
-          head=$(git -C external/robco-core rev-parse HEAD)
-          echo "RobCo-Core pinned at $pin"
-          [ "$pin" = "$head" ] || { echo "::error::checked out $head, pinned $pin"; exit 1; }
-          git -C external/robco-core fetch --quiet origin main
-          git -C external/robco-core merge-base --is-ancestor "$pin" FETCH_HEAD \
-            || { echo "::error::$pin is not on RobCo-Core main"; exit 1; }
+          got=$(uname -m)
+          echo "runner machine: $got, expected: $EXPECTED for ${{ matrix.target }}"
+          if [ "$got" != "$EXPECTED" ]; then
+            echo "::error::runner ${{ matrix.os }} is $got, but ${{ matrix.target }} needs $EXPECTED"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - name: Install the musl C compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Release build
+        run: cargo build --release --locked -p robco --target ${{ matrix.target }}
+      - name: Run the binary
+        run: |
+          out=$("./$BIN" --version | tr -d '\r')
+          echo "$out"
+          case "$out" in
+            "robco "[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::unexpected version line: $out"; exit 1 ;;
+          esac
+      # robco does not call the C yet, so the linker leaves it out. The tests
+      # of studio-sys call it: build them for the release target, check them
+      # like robco, and run them.
+      - name: Build the studio-sys tests for the release target
+        run: |
+          cargo test --release --locked -p studio-sys --target ${{ matrix.target }} \
+            --no-run --message-format=json > "$RUNNER_TEMP/sys-tests.json"
+          jq -r 'select(.profile.test == true and .executable != null) | .executable' \
+            "$RUNNER_TEMP/sys-tests.json" | tr -d '\r' > "$RUNNER_TEMP/sys-tests.txt"
+          if [ "$RUNNER_OS" = Windows ]; then
+            while read -r f; do cygpath -u "$f"; done < "$RUNNER_TEMP/sys-tests.txt" > "$RUNNER_TEMP/x" \
+              && mv "$RUNNER_TEMP/x" "$RUNNER_TEMP/sys-tests.txt"
+          fi
+          cat "$RUNNER_TEMP/sys-tests.txt"
+          [ -s "$RUNNER_TEMP/sys-tests.txt" ] || { echo "::error::no studio-sys test binary"; exit 1; }
+      - name: The binaries are static
+        if: runner.os == 'Linux'
+        run: |
+          bad=0
+          while read -r f; do
+            file "$f"
+            if out=$(ldd "$f" 2>&1); then rc=0; else rc=$?; fi
+            echo "ldd $f: $out (exit $rc)"
+            case "$out" in
+              *"not a dynamic executable"*|*"statically linked"*) ;;
+              *) echo "::error::$f is linked dynamically"; bad=1 ;;
+            esac
+          done < <(echo "$BIN"; cat "$RUNNER_TEMP/sys-tests.txt")
+          exit $bad
+      - name: The binaries link the C runtime statically
+        if: runner.os == 'Windows'
+        run: |
+          bad=0
+          while read -r f; do
+            if grep -a -i -o -E '(vcruntime|msvcp)[0-9]+[_a-z0-9]*\.dll|api-ms-win-crt-[a-z0-9-]+\.dll|ucrtbase\.dll|clang_rt[a-z0-9_.-]*\.dll|libunwind\.dll|libc\+\+\.dll' "$f" > crt-imports.txt; then
+              sort -u crt-imports.txt
+              echo "::error::$f imports a C runtime from a DLL"
+              bad=1
+            else
+              echo "$f: no C runtime DLL among the imports"
+            fi
+          done < <(echo "$BIN"; cat "$RUNNER_TEMP/sys-tests.txt")
+          exit $bad
+      - name: Run the studio-sys tests on the release target
+        run: cargo test --release --locked -p studio-sys --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: robco-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ env.BIN }}
+          if-no-files-found: error
 
   sys-card:
     runs-on: ubuntu-latest
