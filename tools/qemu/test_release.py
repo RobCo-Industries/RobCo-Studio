@@ -45,7 +45,8 @@ class Release(unittest.TestCase):
             s = self.src / f"sources-{os_}"
             (s / "glib").mkdir(parents=True)
             (s / "glib/glib.dsc").write_text("dsc\n")
-            (s / "SOURCES.txt").write_text("# head\nglib | 1 | glib/glib.dsc | x\n")
+            (s / "SOURCES.txt").write_text("# head\nglib | 1 | glib/glib.dsc | "
+                                     + hashlib.sha256(b"dsc\n").hexdigest() + "\n")
             r = self.src / f"report-{os_}"
             r.mkdir()
             (r / "report.txt").write_text("os: x\nwork: /tmp/w\nconfigure: ./configure --x\n")
@@ -124,11 +125,53 @@ class Release(unittest.TestCase):
 
     def test_sources_missing(self):
         shutil.rmtree(self.src / "sources-linux/glib")
-        self.refused("does not list exactly its files")
+        self.refused("missing ['glib/glib.dsc']")
 
     def test_sources_unlisted(self):
         (self.src / "sources-macos/glib/extra.patch").write_text("p\n")
-        self.refused("does not list exactly its files")
+        self.refused("unlisted ['glib/extra.patch']")
+
+    def test_sources_changed_after_listed(self):
+        (self.src / "sources-windows/glib/glib.dsc").write_text("changed\n")
+        self.refused("glib/glib.dsc does not match its SHA-256 in SOURCES.txt")
+
+    def rewrite_sources_tar(self, change):
+        """Changes the linux library-sources archive, then fixes the outer
+        list and SHA256SUMS so that only the inner check can catch it."""
+        p = self.out / "qemu-10.1.2-linux-x64-library-sources.tar"
+        with tarfile.open(p) as t:
+            entries = {m.name: t.extractfile(m).read() for m in t.getmembers() if m.isfile()}
+        change(entries, "qemu-10.1.2-linux-x64-library-sources/")
+        p.write_bytes(release.tar_bytes([(n, d, 0o644) for n, d in sorted(entries.items())], False))
+        listing_p = self.out / "qemu-10.1.2-files.json"
+        listing = json.loads(listing_p.read_text())
+        for f in listing["files"]:
+            if f["name"] == p.name:
+                f["sha256"], f["size"] = release.sha256(p), p.stat().st_size
+        listing_p.write_text(json.dumps(listing))
+        sums = "".join(f"{release.sha256(q)}  {q.name}\n" for q in sorted(self.out.iterdir())
+                       if not q.name.endswith("SHA256SUMS"))
+        (self.out / "qemu-10.1.2-SHA256SUMS").write_text(sums)
+
+    def verify_refused(self, needle):
+        with self.assertRaises(release.Refused) as e:
+            release.verify(self.out)
+        self.assertIn(needle, str(e.exception))
+
+    def test_verify_source_changed_in_archive(self):
+        self.gather()
+        self.rewrite_sources_tar(lambda e, r: e.update({r + "glib/glib.dsc": b"changed\n"}))
+        self.verify_refused("glib/glib.dsc does not match its SHA-256 in SOURCES.txt")
+
+    def test_verify_source_unlisted_in_archive(self):
+        self.gather()
+        self.rewrite_sources_tar(lambda e, r: e.update({r + "glib/extra.patch": b"p\n"}))
+        self.verify_refused("unlisted ['glib/extra.patch']")
+
+    def test_verify_source_missing_in_archive(self):
+        self.gather()
+        self.rewrite_sources_tar(lambda e, r: e.pop(r + "glib/glib.dsc"))
+        self.verify_refused("missing ['glib/glib.dsc']")
 
     def test_link_refused(self):
         (self.src / "qemu-linux/lib").mkdir()

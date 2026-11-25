@@ -33,8 +33,10 @@ SHA-256. Standard library only, no network.
 
   release.py verify <folder>
       Fails unless the list names exactly the files of the folder, with
-      their sizes and SHA-256, SHA256SUMS agrees, and each archive holds
-      bin/, NOTICE and licenses/ under its root.
+      their sizes and SHA-256, SHA256SUMS agrees, each archive holds
+      bin/, NOTICE and licenses/ under its root, and each library-sources
+      archive holds exactly the files its SOURCES.txt lists, with their
+      SHA-256.
 """
 
 import argparse
@@ -194,6 +196,49 @@ def configure_line(report):
     raise Refused(f"{report} holds no configure line")
 
 
+def check_sources(listing, files, where):
+    """Checks that SOURCES.txt, as text, lists exactly the files, a dict of
+    name to bytes, each with its SHA-256."""
+    listed = {}
+    for line in listing.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(" | ")
+        if len(parts) != 4:
+            raise Refused(f"{where}/SOURCES.txt has a line that is not package | version | file | sha256: {line!r}")
+        listed[parts[2]] = parts[3]
+    present = set(files)
+    if set(listed) != present:
+        raise Refused(f"{where}/SOURCES.txt does not list exactly its files: "
+                      f"unlisted {sorted(present - set(listed))}, missing {sorted(set(listed) - present)}")
+    if not present:
+        raise Refused(f"{where} holds no library source")
+    for name in sorted(present):
+        if hashlib.sha256(files[name]).hexdigest() != listed[name]:
+            raise Refused(f"{where}/{name} does not match its SHA-256 in SOURCES.txt")
+
+
+def library_sources(path):
+    """Checks a library-sources archive against the SOURCES.txt inside it."""
+    root = path.name[:-len(".tar")]
+    files, listing = {}, None
+    with tarfile.open(path, "r:") as t:
+        for m in t.getmembers():
+            if m.isdir():
+                continue
+            if not m.isfile() or not m.name.startswith(root + "/") or ".." in m.name.split("/"):
+                raise Refused(f"{path.name} holds {m.name}, which is not a file under {root}/")
+            data = t.extractfile(m).read()
+            rel = m.name[len(root) + 1:]
+            if rel == "SOURCES.txt":
+                listing = data.decode("utf-8")
+            else:
+                files[rel] = data
+    if listing is None:
+        raise Refused(f"{path.name} holds no {root}/SOURCES.txt")
+    check_sources(listing, files, path.name)
+
+
 def gather(src, out, repo, tag=None, base_url=None):
     src, out, repo = pathlib.Path(src), pathlib.Path(out), pathlib.Path(repo)
     out.mkdir(parents=True, exist_ok=True)
@@ -237,14 +282,9 @@ def gather(src, out, repo, tag=None, base_url=None):
         sources = src / f"sources-{os_}"
         if not (sources / "SOURCES.txt").is_file():
             raise Refused(f"{sources} holds no SOURCES.txt")
-        listed = {l.split(" | ")[2] for l in (sources / "SOURCES.txt").read_text(encoding="utf-8").splitlines()
-                  if l and not l.startswith("#")}
-        present = {rel for rel, _ in files_of(sources)} - {"SOURCES.txt"}
-        if listed != present:
-            raise Refused(f"{sources}/SOURCES.txt does not list exactly its files: "
-                          f"missing {sorted(present - listed)}, gone {sorted(listed - present)}")
-        if not present:
-            raise Refused(f"{sources} holds no library source")
+        check_sources((sources / "SOURCES.txt").read_text(encoding="utf-8"),
+                      {rel: p.read_bytes() for rel, p in files_of(sources) if rel != "SOURCES.txt"},
+                      str(sources))
         put(f"{root}-library-sources.tar",
             tar_bytes(tree(sources, f"{root}-library-sources", mode=lambda _: 0o644), False))
         recipe_extra.append((f"qemu-{version}-recipe/configure-{host}.txt",
@@ -339,6 +379,11 @@ def verify(folder):
                    if not (n.startswith(r) or n.rstrip("/") == a["root"]) or ".." in n.split("/")]
         if outside:
             raise Refused(f"{f['name']} holds entries outside its root: {outside[:3]}")
+    for host, _ in HOSTS.values():
+        name = f"qemu-{version}-{host}-library-sources.tar"
+        if name not in listed:
+            raise Refused(f"the list names no {name}")
+        library_sources(folder / name)
     return version
 
 
