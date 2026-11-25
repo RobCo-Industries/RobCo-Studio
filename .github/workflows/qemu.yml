@@ -78,14 +78,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # build.sh pins the QEMU tarball's SHA-256, so its hash keys both the
-      # recipe and the source. Packing is not in the key: a change to it
+      # recipe and the source. prefix-map.sh gives it compiler flags. Packing is not in the key: a change to it
       # packs the cached build again.
       - name: Cached QEMU build
         id: cache
         uses: actions/cache@v4
         with:
           path: out/build
-          key: qemu-build-${{ matrix.os }}-${{ hashFiles('tools/qemu/build.sh') }}
+          key: qemu-build-${{ matrix.os }}-${{ hashFiles('tools/qemu/build.sh', 'tools/qemu/prefix-map.sh') }}
       # The packing step needs the libraries even when the build is cached.
       - name: Build tools (Linux)
         if: matrix.name == 'linux'
@@ -205,9 +205,12 @@ jobs:
           $py tools/qemu/release.py scan scanned "${forbid[@]}" > scan.log 2>&1
           code=$?
           set -e
+          echo "The copy with a planted path, which must fail:"
           cat scan.log
           test "$code" -eq 1
-          grep -F "FAIL: NOTICE holds" scan.log
+          grep -qF "FAIL: NOTICE holds" scan.log
+          # Each hit is followed by the string around it and its offset.
+          echo "The package itself:"
           $py tools/qemu/release.py scan out/qemu "${forbid[@]}"
       - uses: actions/upload-artifact@v4
         with:

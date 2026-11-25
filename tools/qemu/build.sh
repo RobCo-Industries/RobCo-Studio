@@ -3,10 +3,12 @@
 # Usage: build.sh <linux|macos|windows> <out-dir>
 # Runs in CI only. Writes <out-dir>/build/: the two programs, not stripped,
 # QEMU's licence files, the source archive and build.txt.
-# CI caches <out-dir>/build keyed on this file, which pins the source hash.
+# CI caches <out-dir>/build keyed on this file, which pins the source hash,
+# and on prefix-map.sh.
 # Packing lives in pack.sh so that a change to it does not rebuild.
 set -euxo pipefail
 
+here=$(cd "$(dirname "$0")" && pwd)
 os=$1
 out=$(mkdir -p "$2/build" && cd "$2/build" && pwd)
 ver=10.1.2
@@ -38,11 +40,16 @@ configure=(./configure
   --disable-slirp
   --disable-werror)
 
+# No path of this machine in the programs: map the build folder away in
+# __FILE__ and debug information. One --extra-cflags holds every flag.
+cflags=$(bash "$here/prefix-map.sh" "$os" "$work")
 if [ "$os" = macos ]; then
   # Homebrew's libfdt has no pkg-config file that meson finds.
   brew=$(brew --prefix)
-  configure+=(--extra-cflags="-I$brew/include" --extra-ldflags="-L$brew/lib")
+  cflags="$cflags -I$brew/include"
+  configure+=(--extra-ldflags="-L$brew/lib")
 fi
+configure+=(--extra-cflags="$cflags")
 
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
 start=$(date +%s)
@@ -64,7 +71,10 @@ cp "$work/qemu.tar.xz" "$out/qemu-${ver}.tar.xz"
   echo "os: $os"
   # The release checks that no packed file holds this folder's path.
   echo "work: $work"
-  echo "configure: ${configure[*]}"
+  # The release publishes this line, so it names the folder <work>.
+  line=${configure[*]}
+  if [ "$os" = windows ]; then line=${line//"$(cygpath -m "$work")"/<work>}; fi
+  echo "configure: ${line//"$work"/<work>}"
   echo "build seconds (configure + ninja -j$jobs, two emulators): $secs"
   ls -l "$out"
 } >"$out/build.txt"
