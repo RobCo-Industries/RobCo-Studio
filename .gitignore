@@ -1,0 +1,8 @@
+/target/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
