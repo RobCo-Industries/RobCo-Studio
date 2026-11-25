@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "packages": [
+    {
+      "name": "pipos",
+      "version": "1.3.0",
+      "abi": "1.3",
+      "requires": [],
+      "tools": [
+        {"name": "gcc", "version": "15.2.1-1.1"},
+        {"name": "qemu", "version": "10.1.2"}
+      ],
+      "url": "https://example.invalid/robco/pipos-1.3.0.zip",
+      "size": 812345,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  ],
+  "tools": [
+    {
+      "name": "gcc",
+      "version": "15.2.1-1.1",
+      "archives": {
+        "linux-x64": {"url": "https://example.invalid/gcc-linux-x64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000003", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "linux-arm64": {"url": "https://example.invalid/gcc-linux-arm64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "macos-x64": {"url": "https://example.invalid/gcc-macos-x64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000005", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "macos-arm64": {"url": "https://example.invalid/gcc-macos-arm64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000004", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "windows-x64": {"url": "https://example.invalid/gcc-windows-x64.zip", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000006", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"}
+      }
+    },
+    {
+      "name": "qemu",
+      "version": "10.1.2",
+      "archives": {
+        "linux-x64": {"url": "https://example.invalid/qemu-linux-x64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000007", "root": ""},
+        "macos-arm64": {"url": "https://example.invalid/qemu-macos-arm64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000008", "root": ""},
+        "windows-x64": {"url": "https://example.invalid/qemu-windows-x64.zip", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000009", "root": ""}
+      }
+    }
+  ]
+}
