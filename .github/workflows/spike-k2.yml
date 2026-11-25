@@ -114,6 +114,11 @@ jobs:
           name: hashes-${{ matrix.name }}
           path: hashes/
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: out-cured-${{ matrix.name }}
+          path: out-cured/
+
   compare:
     needs: build
     runs-on: ubuntu-latest
@@ -122,5 +127,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: all
+          pattern: hashes-*
       - name: Compare the three systems
         run: python3 spikes/k2/compare.py all
