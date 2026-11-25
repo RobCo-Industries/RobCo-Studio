@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 
 use super::{
     Abi, Error, PIPOS, Requirement, TEMPLATES, TOOLS, ToolPin, Version, is_host_name,
-    is_package_name, is_sha256, is_tool_version,
+    is_package_name, is_sha256, is_tool_version, required_formats,
 };
 
 /// The index `format` this module reads. A larger one fails.
@@ -285,9 +285,11 @@ pub(super) fn tool_pins(
     Ok(out)
 }
 
-/// Reads `formats`, shared with `sdk.json`: an object of integers.
+/// Reads `formats`, shared with `sdk.json`: an object of integers that
+/// holds every name [`required_formats`] gives for the package `name`.
 pub(super) fn formats(
     v: Option<&Value>,
+    name: &str,
     at: &str,
     err: &dyn Fn(String) -> Error,
 ) -> Result<BTreeMap<String, i64>, Error> {
@@ -302,6 +304,12 @@ pub(super) fn formats(
             .as_i64()
             .ok_or_else(|| err(format!("{here}.{k} is not an integer")))?;
         out.insert(k.clone(), n);
+    }
+    if let Some(m) = required_formats(name)
+        .iter()
+        .find(|f| !out.contains_key(**f))
+    {
+        return Err(err(format!("{here}.{m} is missing, and {name} carries it")));
     }
     Ok(out)
 }
@@ -319,7 +327,7 @@ fn package(v: &Value, at: &str) -> Result<IndexPackage, Error> {
     let abi = abi(obj.get("abi"), &name, version, &dot, &Error::IndexEntry)?;
     let requires = requires(obj.get("requires"), &dot, &Error::IndexEntry)?;
     let tools = tool_pins(obj.get("tools"), &name, &dot, &Error::IndexEntry)?;
-    let formats = formats(obj.get("formats"), &dot, &Error::IndexEntry)?;
+    let formats = formats(obj.get("formats"), &name, &dot, &Error::IndexEntry)?;
     let url = formed(obj, at, "url", is_url)?.to_owned();
     let size = uint(obj, at, "size")?;
     let sha256 = formed(obj, at, "sha256", is_sha256)?.to_owned();

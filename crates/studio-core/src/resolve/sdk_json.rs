@@ -220,7 +220,7 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
         });
     }
 
-    let formats = index::formats(o.get("formats"), "", &manifest)?;
+    let formats = index::formats(o.get("formats"), &name, "", &manifest)?;
     let requires = index::requires(o.get("requires"), "", &manifest)?;
     let tools = index::tool_pins(o.get("tools"), &name, "", &manifest)?;
 

@@ -50,6 +50,16 @@ pub const KNOWN_FORMATS: [(&str, i64); 7] = [
     ("templates", 1),
 ];
 
+/// The format names a package must carry, by its name: "sdk.json" in the
+/// SDK package spec. Other packages carry what they use.
+pub fn required_formats(package: &str) -> &'static [&'static str] {
+    match package {
+        PIPOS => &["rimg", "flags", "boot", "runner"],
+        TEMPLATES => &["templates", "project", "scenario"],
+        _ => &[],
+    }
+}
+
 /// Why reading the index, reading `sdk.json`, resolving or using the lock
 /// failed. Each variant is one code of the spec's table; [`Error::code`]
 /// gives it as the spec spells it.

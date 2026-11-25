@@ -642,6 +642,40 @@ fn resolve_index_duplicates() {
     assert_eq!(code(parse_index(&both.to_string())), "index: entry");
 }
 
+#[test]
+fn resolve_required_formats_index_and_sdk_json() {
+    let pipos = r#""formats": {"rimg": 1, "flags": 1, "boot": 1, "runner": 1}"#;
+    let tpl = r#""formats": {"templates": 1, "project": 1, "scenario": 1}"#;
+    for (from, file) in [(pipos, 0), (tpl, 1)] {
+        for drop in [
+            "rimg",
+            "flags",
+            "boot",
+            "runner",
+            "templates",
+            "project",
+            "scenario",
+        ] {
+            if !from.contains(&format!("\"{drop}\"")) {
+                continue;
+            }
+            let to = from
+                .replace(&format!("\"{drop}\": 1, "), "")
+                .replace(&format!(", \"{drop}\": 1"), "");
+            assert_ne!(to, from);
+            let e = parse_index(&INDEX.replacen(from, &to, 1)).unwrap_err();
+            assert_eq!(e.code(), "index: entry", "{drop}");
+            assert!(e.to_string().contains(&format!("formats.{drop}")), "{e}");
+            let sdk = if file == 0 { SDK } else { SDK_TEMPLATES };
+            let e = sdk_json::parse(sdk.replacen(from, &to, 1).as_bytes()).unwrap_err();
+            assert_eq!(e.code(), "package: manifest", "{drop}");
+            assert!(e.to_string().contains(&format!("formats.{drop}")), "{e}");
+        }
+        let e = parse_index(&INDEX.replacen(from, "\"formats\": {}", 1)).unwrap_err();
+        assert_eq!(e.code(), "index: entry");
+    }
+}
+
 // sdk.json.
 
 fn sdk_code(text: &str) -> &'static str {
