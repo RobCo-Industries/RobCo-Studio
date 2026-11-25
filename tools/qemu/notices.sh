@@ -105,9 +105,27 @@ for f in $(packed); do
       head=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("source") or {}).get("tap_git_head") or "unknown")' "$keg/INSTALL_RECEIPT.json")
       echo "$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p" >>"$record"
       cp "$keg/INSTALL_RECEIPT.json" "$lic/$c-INSTALL_RECEIPT.json"
-      for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT* "$keg"/README.license* "$keg"/BSD-2-Clause "$keg"/GPL; do
-        if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; fi
+      found=0
+      for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT*; do
+        if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; found=1; fi
       done
+      if [ "$found" = 0 ]; then
+        # Some kegs, such as glib and dtc, keep no licence file. Take it
+        # from the formula's own source archive, checked to be this version.
+        brew fetch --build-from-source --formula "$formula" >&2
+        tarball=$(brew --cache --build-from-source --formula "$formula")
+        case $(basename "$tarball") in
+          *"${v%_*}"*) ;;
+          *) echo "source $tarball is not version $v" >&2; exit 1 ;;
+        esac
+        t=$(mktemp -d)
+        tar xf "$tarball" -C "$t"
+        for l in "$t"/*/COPYING* "$t"/*/LICENSE* "$t"/*/LICENCE* "$t"/*/README.license "$t"/*/BSD-2-Clause "$t"/*/GPL; do
+          if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; fi
+        done
+        rm -rf "$t"
+        echo "$f | $c | Homebrew | $formula | $v | licence texts from the source archive $(basename "$tarball")" >>"$record"
+      fi
       ;;
     windows)
       p=$(origin "$f")
