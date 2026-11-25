@@ -368,6 +368,51 @@ fn resolve_sdk_json_tools_must_match_index() {
     assert_eq!(code(s.check_against(&i.packages[0])), "package: manifest");
 }
 
+/// Each field that sdk.json and the index entry both carry must agree.
+#[test]
+fn resolve_sdk_json_must_agree_with_index_field_by_field() {
+    let i = index::parse(INDEX).unwrap();
+    let e = &i.packages[0];
+    let s = sdk_json::parse(SDK).unwrap();
+    s.check_against(e).unwrap();
+    let req = |name: &str, abi: &str| Requirement {
+        name: name.to_owned(),
+        abi: Abi::parse(abi).unwrap(),
+    };
+
+    let mut x = s.clone();
+    x.name = "other".to_owned();
+    assert_eq!(code(x.check_against(e)), "package: manifest", "name");
+
+    let mut x = s.clone();
+    x.version = Version::parse("1.3.1").unwrap();
+    assert_eq!(code(x.check_against(e)), "package: manifest", "version");
+
+    let mut x = s.clone();
+    x.abi = None;
+    assert_eq!(code(x.check_against(e)), "package: manifest", "abi");
+
+    // An archive that needs a package its index entry does not name.
+    let mut x = s.clone();
+    x.requires = vec![req("reel", "1.0")];
+    assert_eq!(code(x.check_against(e)), "package: manifest", "requires");
+    // The other way round, and the same name at another ABI.
+    let mut ie = e.clone();
+    ie.requires = vec![req("reel", "1.0")];
+    assert_eq!(code(s.check_against(&ie)), "package: manifest");
+    let mut x = s.clone();
+    x.requires = vec![req("reel", "1.1")];
+    assert_eq!(code(x.check_against(&ie)), "package: manifest");
+    // The same set in another order agrees.
+    ie.requires = vec![req("reel", "1.0"), req("templates", "1.0")];
+    x.requires = vec![req("templates", "1.0"), req("reel", "1.0")];
+    x.check_against(&ie).unwrap();
+
+    let mut x = s.clone();
+    x.tools.reverse();
+    assert_eq!(code(x.check_against(e)), "package: manifest", "tools");
+}
+
 // The lock.
 
 fn no_requires(_: &lock::LockedPackage) -> Vec<Requirement> {

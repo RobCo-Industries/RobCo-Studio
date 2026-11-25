@@ -292,21 +292,72 @@ pub fn parse(text: &str) -> Result<SdkJson, Error> {
 }
 
 impl SdkJson {
-    /// Checks an installed `sdk.json` against its index entry: the same
-    /// name, version and `tools`. A difference fails with
-    /// `package: manifest`.
+    /// Checks an installed `sdk.json` against its index entry. Every field
+    /// both carry must agree: name, version, `abi`, `requires` and `tools`.
+    /// A difference fails with `package: manifest`.
+    ///
+    /// Both structs are taken apart with no `..`, so a field added to
+    /// either one later does not compile until it is placed here.
     pub fn check_against(&self, entry: &IndexPackage) -> Result<(), Error> {
-        if self.name != entry.name || self.version != entry.version {
+        let SdkJson {
+            name,
+            version,
+            abi,
+            requires,
+            tools,
+            // Only in sdk.json: the index has no such field.
+            built_from: _,
+            formats: _,
+            firmware: _,
+            licences: _,
+            files: _,
+        } = self;
+        let IndexPackage {
+            name: index_name,
+            version: index_version,
+            abi: index_abi,
+            requires: index_requires,
+            tools: index_tools,
+            // Only in the index: they describe the archive, which sdk.json
+            // is inside of.
+            url: _,
+            size: _,
+            sha256: _,
+        } = entry;
+        let differ = |field: &str| {
+            Err(Error::PackageManifest(format!(
+                "the `{field}` of sdk.json differs from that of the index entry of {index_name} {index_version}"
+            )))
+        };
+        // "`name`: The package name. Equals the name in the file name and in
+        // the index." "`version`: ... Equals the version in the file name
+        // and in the index."
+        if name != index_name || version != index_version {
             return Err(Error::PackageManifest(format!(
-                "sdk.json names {} {}, and the index names {} {}",
-                self.name, self.version, entry.name, entry.version
+                "sdk.json names {name} {version}, and the index names {index_name} {index_version}"
             )));
         }
-        if self.tools != entry.tools {
-            return Err(Error::PackageManifest(format!(
-                "the `tools` of sdk.json differ from those of the index entry of {} {}",
-                entry.name, entry.version
-            )));
+        // The index `abi`: "As in sdk.json".
+        if abi != index_abi {
+            return differ("abi");
+        }
+        // The index `requires`: "As in sdk.json". The resolver builds the
+        // lock from the index's, so an archive that needs another package
+        // would build without it. The spec gives `requires` no order, so
+        // they compare as sets.
+        let mut a = requires.clone();
+        let mut b = index_requires.clone();
+        a.sort();
+        a.dedup();
+        b.sort();
+        b.dedup();
+        if a != b {
+            return differ("requires");
+        }
+        // "`tools` of an installed `sdk.json` differs from `tools` of its
+        // index entry: Fails the install with `package: manifest`."
+        if tools != index_tools {
+            return differ("tools");
         }
         Ok(())
     }
