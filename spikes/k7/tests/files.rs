@@ -14,6 +14,12 @@ fn temp(name: &str, bytes: &[u8]) -> PathBuf {
 
 /// Open through the Open button, type at the end, save through the Save button.
 fn open_edit_save(name: &str, bytes: &[u8], typed: &str) -> (Vec<u8>, Editor) {
+    let ev = (!typed.is_empty()).then(|| egui::Event::Text(typed.into()));
+    open_input_save(name, bytes, ev)
+}
+
+/// Open through the Open button, send `ev` at the end, save through Save.
+fn open_input_save(name: &str, bytes: &[u8], ev: Option<egui::Event>) -> (Vec<u8>, Editor) {
     let p = temp(name, bytes);
     let mut ed = Editor::new(String::new());
     ed.path = p.display().to_string();
@@ -24,11 +30,11 @@ fn open_edit_save(name: &str, bytes: &[u8], typed: &str) -> (Vec<u8>, Editor) {
     h.run();
     assert!(!h.state().is_dirty());
     assert!(h.query_by_label("saved").is_some());
-    if !typed.is_empty() {
+    if let Some(ev) = ev {
         let end = h.state().text.chars().count();
         h.state_mut().pending_sel = Some((end, end));
         h.run();
-        h.event(egui::Event::Text(typed.into()));
+        h.event(ev);
         h.run();
         assert!(h.state().is_dirty());
         assert!(h.query_by_label("modified").is_some());
@@ -204,4 +210,90 @@ fn close_with_edits_is_cancelled_until_discard() {
     h.step();
     h.step();
     assert!(cmds(&h).contains(&ViewportCommand::Close), "{:?}", cmds(&h));
+}
+
+#[test]
+fn lone_cr_refused() {
+    let p = temp("cr.c", b"a\rb\n");
+    let mut ed = Editor::new("kept\n".into());
+    ed.open(&p);
+    assert_eq!(ed.text, "kept\n");
+    assert!(ed.message.contains("CR without LF"), "{}", ed.message);
+    std::fs::remove_file(&p).unwrap();
+}
+
+#[test]
+fn paste_crlf_into_crlf_document() {
+    let paste = egui::Event::Paste("x;\r\ny;\r\n".into());
+    let (out, ed) = open_input_save("paste-crlf.c", b"a;\r\n", Some(paste));
+    assert_eq!(out, b"a;\r\nx;\r\ny;\r\n");
+    assert!(!ed.text.contains('\r'));
+}
+
+#[test]
+fn paste_crlf_and_cr_into_lf_document() {
+    let paste = egui::Event::Paste("x;\r\ny;\rz;".into());
+    let (out, _) = open_input_save("paste-lf.c", b"a;\n", Some(paste));
+    assert_eq!(out, b"a;\nx;\ny;\nz;");
+}
+
+/// A new buffer with typed text, asked to open `b`.
+fn untitled_then_open(b: &std::path::Path) -> Harness<'static, Editor> {
+    let mut h = ui_harness(Editor::new(String::new()));
+    h.state_mut().pending_sel = Some((0, 0));
+    h.run();
+    h.event(egui::Event::Text("typed".into()));
+    h.run();
+    assert!(h.state().is_dirty());
+    h.state_mut().path = b.display().to_string();
+    h.get_by_label("Open").click();
+    h.run();
+    h
+}
+
+#[test]
+fn untitled_save_first_never_writes_the_file_being_opened() {
+    let b = temp("untitled-b.c", b"bbb\n");
+    let mut h = untitled_then_open(&b);
+    assert!(h.state().confirm.is_some());
+    assert!(
+        h.query_by_label("Save first").is_none(),
+        "no file to save to"
+    );
+    // The model refuses it too, and keeps the question and the edits.
+    h.state_mut().resolve(k7_editor::Choice::Save);
+    h.run();
+    assert_eq!(std::fs::read(&b).unwrap(), b"bbb\n");
+    assert_eq!(h.state().text, "typed");
+    assert!(h.state().confirm.is_some());
+    // Plain Save has no file either.
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(std::fs::read(&b).unwrap(), b"bbb\n");
+    assert!(h.state().is_dirty());
+}
+
+#[test]
+fn save_as_asks_before_overwrite() {
+    let b = temp("saveas-b.c", b"bbb\n");
+    let mut h = ui_harness(Editor::new(String::new()));
+    h.state_mut().pending_sel = Some((0, 0));
+    h.run();
+    h.event(egui::Event::Text("typed".into()));
+    h.run();
+    h.state_mut().save_as_path = b.display().to_string();
+    h.get_by_label("Save as").click();
+    h.run();
+    assert_eq!(std::fs::read(&b).unwrap(), b"bbb\n", "not before an answer");
+    h.get_by_label("Keep the file").click();
+    h.run();
+    assert_eq!(std::fs::read(&b).unwrap(), b"bbb\n");
+    assert!(h.state().is_dirty());
+    h.get_by_label("Save as").click();
+    h.run();
+    h.get_by_label("Overwrite").click();
+    h.run();
+    assert_eq!(std::fs::read(&b).unwrap(), b"typed");
+    assert!(!h.state().is_dirty());
+    assert_eq!(h.state().doc_path.as_deref(), Some(b.as_path()));
 }

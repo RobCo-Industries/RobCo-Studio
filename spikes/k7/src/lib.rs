@@ -34,10 +34,14 @@ pub struct Editor {
     /// The text as last opened or saved, to compute the dirty mark.
     saved: String,
     pub crlf: bool,
-    /// The path field. It is what Open reads, not where Save writes.
+    /// The "File" field. Open reads it and nothing else does.
     pub path: String,
-    /// The file the buffer came from, where Save writes. Empty for a new buffer.
-    pub doc_path: String,
+    /// The document's own file, the only place Save writes. None for a new buffer.
+    pub doc_path: Option<PathBuf>,
+    /// The "Save as" field: a destination given for that purpose only.
+    pub save_as_path: String,
+    /// Save as would replace this existing file; the view asks first.
+    pub overwrite: Option<PathBuf>,
     /// Set when an action would lose unsaved edits; the view asks about it.
     pub confirm: Option<Replace>,
     /// Set once the user agreed to close with unsaved edits.
@@ -70,12 +74,15 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(text: String) -> Self {
+        let text = file::to_lf(&text).into_owned();
         Self {
             saved: text.clone(),
             text,
             crlf: false,
             path: String::new(),
-            doc_path: String::new(),
+            doc_path: None,
+            save_as_path: String::new(),
+            overwrite: None,
             confirm: None,
             close_allowed: false,
             doc_gen: 0,
@@ -132,6 +139,11 @@ impl Editor {
                 return;
             }
             Choice::Save => {
+                if self.doc_path.is_none() {
+                    // Never offered in the view; keep the edits and the question.
+                    self.confirm = Some(what);
+                    return;
+                }
                 self.save();
                 if self.is_dirty() {
                     return;
@@ -155,7 +167,7 @@ impl Editor {
                     self.saved = text;
                     self.crlf = crlf;
                     self.path = path.display().to_string();
-                    self.doc_path = self.path.clone();
+                    self.doc_path = Some(path);
                     // State that belongs to the old document.
                     self.doc_gen += 1;
                     self.cursor = None;
@@ -169,15 +181,41 @@ impl Editor {
         }
     }
 
+    /// Write the buffer to the document's own file. A new buffer has none.
     pub fn save(&mut self) {
-        if self.doc_path.is_empty() {
-            self.doc_path = self.path.clone();
+        match self.doc_path.clone() {
+            Some(p) => self.write_to(p),
+            None => self.message = "Not saved: a new buffer needs Save as.".into(),
         }
+    }
+
+    /// Write to `path`, which becomes the document's file. Ask first if it exists.
+    pub fn save_as(&mut self, path: impl Into<PathBuf>) {
+        let path = path.into();
+        if path.as_os_str().is_empty() {
+            self.message = "Not saved: give a file for Save as.".into();
+        } else if path.exists() && self.doc_path.as_ref() != Some(&path) {
+            self.message = format!("{} exists. Overwrite it?", path.display());
+            self.overwrite = Some(path);
+        } else {
+            self.write_to(path);
+        }
+    }
+
+    /// Answer "overwrite the existing file?".
+    pub fn resolve_overwrite(&mut self, yes: bool) {
+        match self.overwrite.take() {
+            Some(p) if yes => self.write_to(p),
+            _ => self.message.clear(),
+        }
+    }
+
+    fn write_to(&mut self, path: PathBuf) {
         let bytes = file::encode(&self.text, self.crlf);
-        match std::fs::write(&self.doc_path, bytes) {
+        match std::fs::write(&path, bytes) {
             Ok(()) => {
                 self.saved = self.text.clone();
-                self.path = self.doc_path.clone();
+                self.doc_path = Some(path);
                 self.message = "Saved.".into();
             }
             Err(e) => self.message = format!("Not saved: {e}."),
@@ -322,17 +360,38 @@ impl Editor {
                 }
             }
         });
+        ui.horizontal(|ui| {
+            let l = ui.label("Save as file").id;
+            ui.add(egui::TextEdit::singleline(&mut self.save_as_path).desired_width(220.0))
+                .labelled_by(l);
+            if ui.button("Save as").clicked() {
+                let p = self.save_as_path.clone();
+                self.save_as(p);
+            }
+        });
         if !self.message.is_empty() {
             ui.label(&self.message);
         }
+        if self.overwrite.is_some() {
+            ui.horizontal(|ui| {
+                if ui.button("Overwrite").clicked() {
+                    self.resolve_overwrite(true);
+                }
+                if ui.button("Keep the file").clicked() {
+                    self.resolve_overwrite(false);
+                }
+            });
+        }
         if self.confirm.is_some() {
+            // A new buffer has no file to save to: Cancel, then Save as.
+            let can_save = self.doc_path.is_some();
             ui.horizontal(|ui| {
                 for (name, c) in [
                     ("Save first", Choice::Save),
                     ("Discard edits", Choice::Discard),
                     ("Cancel", Choice::Cancel),
                 ] {
-                    if ui.button(name).clicked() {
+                    if (c != Choice::Save || can_save) && ui.button(name).clicked() {
                         self.resolve(c);
                     }
                 }
@@ -385,6 +444,33 @@ impl Editor {
                 None => row_h * line as f32,
             };
             area = area.vertical_scroll_offset(y);
+        }
+
+        // Text enters the buffer by these events. Make it LF before TextEdit sees it,
+        // so the cursor and the undo history agree with the stored text.
+        if focused {
+            ui.input_mut(|i| {
+                for e in &mut i.events {
+                    let s = match e {
+                        egui::Event::Paste(s)
+                        | egui::Event::Text(s)
+                        | egui::Event::Ime(egui::ImeEvent::Commit(s)) => s,
+                        egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                            data: Some(egui::accesskit::ActionData::Value(s)),
+                            ..
+                        }) => {
+                            if s.contains('\r') {
+                                *s = file::to_lf(s).into_owned().into();
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    if s.contains('\r') {
+                        *s = file::to_lf(s).into_owned();
+                    }
+                }
+            });
         }
 
         // Moved out so the layouter closure can borrow `self` mutably.
@@ -456,6 +542,10 @@ impl Editor {
                 }
             });
         });
+        // Backstop for a door not listed above: no CR may stay in the buffer.
+        if text.contains('\r') {
+            text = file::to_lf(&text).into_owned();
+        }
         self.text = text;
     }
 }
