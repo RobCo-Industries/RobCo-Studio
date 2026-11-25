@@ -14,4 +14,5 @@ All notable changes to this project are listed here. The format follows [Keep a 
 
 ### Changed
 
+- A `project.title` in `robco.toml` with a control character, below U+0020 or U+007F, fails with `manifest: title`.
 - Spike K1 pins RobCo-Core `c6b6482`, where the racy canary case is fixed, and no longer retries any case.

@@ -5,7 +5,7 @@
 //! The rules are the "robco.toml", "Kinds" and "Errors" sections of
 //! `docs/spec/STUDIO_PROJECT.md` in RobCo-Core, with "Source order", and
 //! "Order of checks" of `docs/spec/STUDIO_CLI.md`, read at commit
-//! `223e8cd`. The manifest is TOML 1.1, as the `toml` crate parses it.
+//! `e004c73`. The manifest is TOML 1.1, as the `toml` crate parses it.
 //!
 //! This module is pure: text in, a checked [`Manifest`] or a
 //! [`ManifestError`] out. It reads no file. Three checks need the project
@@ -503,6 +503,11 @@ fn check_title(title: &str) -> Result<(), ManifestError> {
     }
     if title.contains('\0') {
         return Err(ManifestError::Title("holds a NUL".into()));
+    }
+    // STUDIO_PROJECT.md, table of TOML 1.1 forms: no key takes a control
+    // character, so a title with `\e` fails `manifest: title`.
+    if title.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err(ManifestError::Title("holds a control character".into()));
     }
     if title.len() > MAX_TITLE {
         return Err(ManifestError::Title(format!(

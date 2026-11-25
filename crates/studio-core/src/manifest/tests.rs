@@ -244,6 +244,14 @@ fn code_title() {
         "title",
         "holds a NUL",
     );
+    for c in ["\\t", "\\n", "\\u001F", "\\u007F"] {
+        check(
+            err(&with("[target]", &format!("title = \"a{c}\"\n[target]"))),
+            "title",
+            "holds a control character",
+        );
+    }
+    assert!(parse(with("[target]", "title = \"a ~\"\n[target]").as_bytes()).is_ok());
     let long = "x".repeat(65);
     check(
         err(&with("[target]", &format!("title = \"{long}\"\n[target]"))),
@@ -538,10 +546,9 @@ fn toml_1_1_forms() {
     let first = parse(EXAMPLE).unwrap();
     let new = parse(include_bytes!("../../tests/manifest/toml11.toml")).unwrap();
     assert_eq!(new, first);
-    // \e parses. The spec says the title then fails its own rule, but the
-    // title rule refuses only non-ASCII and NUL: see the report.
+    // \e parses, then the title fails its own rule.
     let text = BASE.replace("name = \"PIPES\"", "name = \"PIPES\"\ntitle = \"\\e\"");
-    assert_eq!(parse(text.as_bytes()).unwrap().project.title, "\u{1b}");
+    check(err(&text), "title", "holds a control character");
     // A time without seconds parses and then fails as a type.
     let text = BASE.replace("abi = \"1.3\"", "abi = 08:30");
     check(err(&text), "type", "target.abi: expected string");
