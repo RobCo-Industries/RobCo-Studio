@@ -90,7 +90,7 @@ jobs:
 
       - name: Direct build, cured
         run: |
-          python spikes/k2/build.py --deitrix deitrix-lf --gcc-bin "$GCC_BIN" --out out-cured --prefix-map --ar-d > hashes/cured.txt
+          python spikes/k2/build.py --deitrix deitrix-lf --gcc-bin "$GCC_BIN" --out out-cured --prefix-map --ar-d --no-ident --strip-elf > hashes/cured.txt
           cat hashes/cured.txt
 
       - name: Make build in the same checkout as the raw build
@@ -106,7 +106,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q gcc-arm-none-eabi
           arm-none-eabi-gcc --version | head -1
-          python spikes/k2/build.py --deitrix deitrix-lf --gcc-bin /usr/bin --out out-distro --prefix-map --ar-d > hashes/distro.txt
+          python spikes/k2/build.py --deitrix deitrix-lf --gcc-bin /usr/bin --out out-distro --prefix-map --ar-d --no-ident --strip-elf > hashes/distro.txt
           cat hashes/distro.txt
 
       - uses: actions/upload-artifact@v4

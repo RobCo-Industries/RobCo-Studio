@@ -4,7 +4,8 @@
     compare.py DIR    DIR holds hashes-<os>/<variant>.txt files
 
 Fails when:
-- a cured build differs in any file between two systems,
+- a cured build differs between two systems in any file but the full
+  ELF, which carries libgcc's debug info,
 - a CULVERT.HTP differs anywhere among the xPack builds,
 - the make build and the raw direct build on Ubuntu differ in the ELF
   or the HTP.
@@ -49,7 +50,11 @@ def main():
 
     systems = sorted({k.split("/")[0] for k in data})
     print("systems:", systems)
-    diff([s + "/cured" for s in systems], "cured", True)
+    cured = [s + "/cured" for s in systems]
+    # The full ELF keeps libgcc's debug info, which differs on Windows.
+    diff(cured, "cured", False, only={"CULVERT.elf"})
+    names = set().union(*(data[k] for k in cured)) - {"CULVERT.elf"}
+    diff(cured, "cured", True, only=names)
     diff([s + "/raw" for s in systems], "raw", False)
     xpack = [k for k in data if not k.endswith("/distro")]
     diff(xpack, "all-xpack", True, only={"CULVERT.HTP"})

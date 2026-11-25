@@ -6,6 +6,7 @@ same input order, the same seal. Prints the SHA-256 of every object, of
 libpip.a, of the ELF and of the sealed CULVERT.HTP.
 
     build.py --deitrix DIR --gcc-bin DIR --out DIR [--prefix-map] [--ar-d]
+                              [--no-ident] [--strip-elf]
     build.py --hash-only DIR    hash the outputs of a make build
 
 Commands run in holotapes/culvert with relative paths, as make does.
@@ -68,6 +69,10 @@ def main():
                     help="add -ffile-prefix-map=<cwd>=. to every compile")
     ap.add_argument("--ar-d", action="store_true",
                     help="build libpip.a with ar rcsD: zero dates and ids")
+    ap.add_argument("--no-ident", action="store_true",
+                    help="add -fno-ident: no .comment naming the host arch")
+    ap.add_argument("--strip-elf", action="store_true",
+                    help="also write CULVERT.nodebug.elf, without debug info")
     ap.add_argument("--hash-only")
     a = ap.parse_args()
     if a.hash_only:
@@ -92,6 +97,8 @@ def main():
             if os.name == "nt":
                 extra.append("-ffile-prefix-map=%s=%s"
                              % (src.replace("\\", "/"), dst))
+    if a.no_ident:
+        extra.append("-fno-ident")
     cflags = BASE + extra
     libflags = LIBFLAGS + extra
     lib = os.path.join(out, "libpip")
@@ -127,6 +134,11 @@ def main():
                         "-Wl,--gc-sections", "-Wl,--no-warn-rwx-segments",
                         "-Wl,-Map," + os.path.join(out, "CULVERT.map"),
                         "-o", elf, crt0] + objs + [libpip, "-lgcc"], cwd)
+
+    if a.strip_elf:
+        # libgcc.a in the Windows archive carries debug info, the others not.
+        run([objcopy, "--strip-debug", elf,
+             os.path.join(out, "CULVERT.nodebug.elf")], cwd)
 
     htp = os.path.join(out, "CULVERT.HTP")
     tmp = htp + ".tmp"
