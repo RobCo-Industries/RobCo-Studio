@@ -70,24 +70,31 @@ jobs:
         run: |
           lsblk -o NAME,TYPE,SIZE,RM,HOTPLUG,TRAN,MOUNTPOINTS
           ./target/debug/k6 list
-      - name: Refuse the system disk without opening it
+      - name: Refuse the system disks without opening them
         run: |
-          sys=$(lsblk -nrpo PKNAME,MOUNTPOINT | awk '$2=="/" {print $1; exit}')
-          test -n "$sys"
-          echo "system disk: $sys"
+          # Hosted runners differ: root may sit on a partition, or on device-mapper
+          # over several disks. Walk up from the root source and keep every disk.
+          lsblk -po NAME,TYPE,PKNAME,TRAN,RM,HOTPLUG,MOUNTPOINT
+          src=$(findmnt -nvo SOURCE /)
+          echo "root source: $src"
+          mapfile -t disks < <(lsblk -nrpso NAME,TYPE "$src" | awk '$2=="disk" {print $1}' | sort -u)
+          if [ "${#disks[@]}" -eq 0 ]; then echo "::error::no disk found under the root source $src"; exit 1; fi
           ./target/debug/k6 make-image --out card.img --size-mib 60 --seed 6
-          set +e
-          sudo strace -f -e trace=open,openat -o trace.txt \
-            ./target/debug/k6 write --device "$sys" --image card.img --allow-virtual > out.txt 2> err.txt
-          code=$?
-          set -e
-          cat out.txt err.txt
-          test "$code" -eq 3
-          grep -q "^REFUSED $sys" out.txt
-          grep -q HoldsRunningSystem out.txt
-          grep -c openat trace.txt
-          if grep -F "\"$sys" trace.txt | grep -E 'O_WRONLY|O_RDWR'; then echo "::error::the system disk was opened for writing"; exit 1; fi
-          if grep -q "opening" err.txt; then echo "::error::the writer reached the open"; exit 1; fi
+          for sys in "${disks[@]}"; do
+            echo "system disk: $sys"
+            set +e
+            sudo strace -f -e trace=open,openat -o trace.txt \
+              ./target/debug/k6 write --device "$sys" --image card.img --allow-virtual > out.txt 2> err.txt
+            code=$?
+            set -e
+            cat out.txt err.txt
+            test "$code" -eq 3
+            grep -q "^REFUSED $sys\$" out.txt
+            grep -q HoldsRunningSystem out.txt
+            grep -c openat trace.txt
+            if grep -F "\"$sys" trace.txt | grep -E 'O_WRONLY|O_RDWR'; then echo "::error::the system disk was opened for writing"; exit 1; fi
+            if grep -q "opening" err.txt; then echo "::error::the writer reached the open"; exit 1; fi
+          done
       - name: Create a 64 MiB loop device
         run: |
           truncate -s 64M "$RUNNER_TEMP/k6disk.img"
