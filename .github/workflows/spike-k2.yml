@@ -1,0 +1,132 @@
+name: spike-k2
+
+on:
+  push:
+    branches: [spike-k2]
+  pull_request:
+    paths:
+      - spikes/k2/**
+      - .github/workflows/spike-k2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-k2-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  XPACK_VERSION: 15.2.1-1.1
+  DEITRIX_REF: 1af21f18bb6fd28617bd23b7b489e9485fc14fd4
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: ubuntu
+            archive: linux-x64.tar.gz
+            sha: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6
+          - os: macos-latest
+            name: macos
+            archive: darwin-arm64.tar.gz
+            sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870
+          - os: windows-latest
+            name: windows
+            archive: win32-x64.zip
+            sha: bae6a3d1667697ce750c3b13d6d26d80973ecedc2cc87bf04869e83447fd93ea
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download the xPack compiler and check its SHA-256
+        run: |
+          f="xpack-arm-none-eabi-gcc-${XPACK_VERSION}-${{ matrix.archive }}"
+          curl -fsSL -o "$f" "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v${XPACK_VERSION}/$f"
+          python -c "import hashlib,sys; h=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest(); print(h); sys.exit(h!=sys.argv[2])" "$f" "${{ matrix.sha }}"
+          mkdir xpack
+          python -c "import shutil,sys; shutil.unpack_archive(sys.argv[1], 'xpack')" "$f"
+          echo "GCC_BIN=$PWD/xpack/xpack-arm-none-eabi-gcc-${XPACK_VERSION}/bin" >> "$GITHUB_ENV"
+
+      - name: Show the runner's line-ending setting
+        run: git config --show-origin --list | grep -i autocrlf || echo "core.autocrlf unset"
+
+      # Checkout 1: the runner's git defaults (CRLF on Windows).
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/Deitrix
+          ref: ${{ env.DEITRIX_REF }}
+          submodules: recursive
+          path: deitrix-default
+          persist-credentials: false
+
+      - name: Turn line-ending conversion off
+        run: git config --global core.autocrlf false
+
+      # Checkout 2: bytes as committed.
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/Deitrix
+          ref: ${{ env.DEITRIX_REF }}
+          submodules: recursive
+          path: deitrix-lf
+          persist-credentials: false
+
+      - name: Direct build, raw
+        run: |
+          mkdir -p hashes
+          python spikes/k2/build.py --deitrix deitrix-default --gcc-bin "$GCC_BIN" --out out-raw > hashes/raw.txt
+          cat hashes/raw.txt
+
+      - name: Direct build, cured
+        run: |
+          python spikes/k2/build.py --deitrix deitrix-lf --gcc-bin "$GCC_BIN" --out out-cured --prefix-map --ar-d --no-ident --strip-elf > hashes/cured.txt
+          cat hashes/cured.txt
+
+      - name: Make build in the same checkout as the raw build
+        if: matrix.name == 'ubuntu'
+        run: |
+          make -C deitrix-default/holotapes/culvert BUILD="$PWD/out-make" CROSS="$GCC_BIN/arm-none-eabi-"
+          python spikes/k2/build.py --hash-only out-make > hashes/make.txt
+          cat hashes/make.txt
+
+      - name: Direct build with Ubuntu's arm-none-eabi-gcc
+        if: matrix.name == 'ubuntu'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-arm-none-eabi
+          arm-none-eabi-gcc --version | head -1
+          python spikes/k2/build.py --deitrix deitrix-lf --gcc-bin /usr/bin --out out-distro --prefix-map --ar-d --no-ident --strip-elf > hashes/distro.txt
+          cat hashes/distro.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hashes-${{ matrix.name }}
+          path: hashes/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: out-cured-${{ matrix.name }}
+          path: out-cured/
+
+  compare:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: hashes-*
+      - name: Compare the three systems
+        run: python3 spikes/k2/compare.py all
