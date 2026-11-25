@@ -2,7 +2,7 @@
 # Spike K1: build QEMU 10.1.2 for arm and aarch64, then pack it.
 # Usage: build-qemu.sh <linux|macos|windows> <out-dir>
 # Runs in CI only. Writes <out-dir>/qemu/ and <out-dir>/report.txt.
-set -euo pipefail
+set -euxo pipefail
 
 os=$1
 out=$(mkdir -p "$2" && cd "$2" && pwd)
@@ -21,7 +21,9 @@ if command -v sha256sum >/dev/null; then
 else
   echo "${sha}  qemu.tar.xz" | shasum -a 256 -c -
 fi
-tar xf qemu.tar.xz
+# Firmware sources and CI tooling hold symlinks Windows cannot make.
+# The build needs neither.
+tar xf qemu.tar.xz --exclude="qemu-${ver}/roms" --exclude="qemu-${ver}/tests/lcitool"
 cd "qemu-${ver}"
 
 configure=(./configure
@@ -60,6 +62,14 @@ cp "$work/qemu.tar.xz" "$out/qemu-${ver}.tar.xz"
     windows) ldd "$dist/bin/qemu-system-arm.exe" ;;
   esac
 } >"$report"
+
+# Drop debug symbols. Release users do not need them.
+unstripped=$(du -sk "$dist/bin" | cut -f1)
+case $os in
+  macos) strip -x "$dist"/bin/* ;;
+  *) strip "$dist"/bin/* ;;
+esac
+echo "binaries before strip (du -sk, KiB): $unstripped" >>"$report"
 
 # Pack the libraries that do not come with the system next to the binaries.
 case $os in
