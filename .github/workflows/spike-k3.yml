@@ -1,0 +1,120 @@
+name: spike-k3
+
+# Spike K3: RobCo-Core's host C built through Cargo on three systems, and a
+# card image written from Rust, read by mtools and booted in QEMU.
+
+on:
+  push:
+    branches: [spike-k3]
+  pull_request:
+    paths:
+      - spikes/k3/**
+      - .github/workflows/spike-k3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-k3-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  ROBCO_CORE_SHA: c8220b2731b90d0446db636a4dc986a3ce1035cb
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-cc
+            os: ubuntu-latest
+            cc: ""
+          - name: macos-cc
+            os: macos-latest
+            cc: ""
+          - name: windows-clang
+            os: windows-latest
+            cc: clang
+          - name: windows-clang-cl
+            os: windows-latest
+            cc: clang-cl
+          - name: windows-msvc
+            os: windows-latest
+            cc: ""
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ env.ROBCO_CORE_SHA }}
+          path: robco-core
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/k3
+          key: ${{ matrix.name }}
+      - name: Show the C compiler
+        if: matrix.cc != ''
+        run: |
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          ${{ matrix.cc }} --version
+      - name: Build and test
+        working-directory: spikes/k3
+        run: |
+          export ROBCO_CORE_DIR="$GITHUB_WORKSPACE/robco-core"
+          export K3_CARD_OUT="$RUNNER_TEMP/card/k3-card.img"
+          mkdir -p "$RUNNER_TEMP/card"
+          cargo build --locked --tests -vv > "$RUNNER_TEMP/build.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/build.log"; exit 1; }
+          grep -E 'k3: C compiler|warning:' "$RUNNER_TEMP/build.log"
+          cargo test --locked -- --nocapture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k3-card-${{ matrix.name }}
+          path: ${{ runner.temp }}/card
+          if-no-files-found: error
+
+  card:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [ubuntu-cc, macos-cc, windows-clang]
+    name: card (${{ matrix.name }})
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/robco-industries/robco-ci:ba6372158e4b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ env.ROBCO_CORE_SHA }}
+          path: robco-core
+      - uses: actions/download-artifact@v4
+        with:
+          name: k3-card-${{ matrix.name }}
+          path: card
+      - name: Read the card with mtools
+        run: spikes/k3/scripts/check_card.sh card/k3-card.img
+      - name: Build the storage example
+        run: make -s -C robco-core/examples/storage
+      - name: Boot the card in QEMU
+        run: python3 -I spikes/k3/scripts/boot_card.py robco-core robco-core/examples/storage/build/storage.img card/k3-card.img
