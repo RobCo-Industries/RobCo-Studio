@@ -1576,3 +1576,1421 @@ fn resolve_case_pairs_beyond_ascii() {
     let e = with(&["ſdk.json"]).unwrap_err();
     assert!(e.to_string().contains("names the manifest"), "{e}");
 }
+
+// The field tables, row by row. Each case changes one value of a spec
+// example and names the place the error must start with. `None` removes
+// the value.
+
+/// The example with the value at the JSON pointer `ptr` set to `to`, or
+/// removed when `to` is `None`.
+fn edit_json(base: &str, ptr: &str, to: Option<Value>) -> String {
+    let mut v: Value = serde_json::from_str(base).unwrap();
+    let (parent, key) = ptr.rsplit_once('/').unwrap();
+    let p = v.pointer_mut(parent).unwrap();
+    match (p, to) {
+        (Value::Object(o), Some(to)) => {
+            o.insert(key.to_owned(), to);
+        }
+        (Value::Object(o), None) => {
+            o.remove(key).unwrap();
+        }
+        (Value::Array(a), Some(to)) => a[key.parse::<usize>().unwrap()] = to,
+        (Value::Array(a), None) => {
+            a.remove(key.parse::<usize>().unwrap());
+        }
+        _ => panic!("{ptr}"),
+    }
+    v.to_string()
+}
+
+fn j(s: &str) -> Option<Value> {
+    Some(serde_json::from_str(s).unwrap())
+}
+
+const PIPOS_TOOLS: &str = r#"[{"name": "gcc", "version": "1"}, {"name": "qemu", "version": "2"}]"#;
+
+#[test]
+fn resolve_index_field_table_rows() {
+    let long = format!("\"{}\"", "a".repeat(33));
+    let long_version = format!("\"{}\"", "1".repeat(65));
+    let upper = format!("\"{}\"", H.to_uppercase().replace('0', "A"));
+    let short = format!("\"{}\"", &H[1..]);
+    let bad: Vec<(&str, Option<Value>, &str, &str)> = vec![
+        // Top.
+        ("/format", None, "index: format", ""),
+        ("/format", j("0"), "index: format", ""),
+        ("/format", j("2"), "index: format", ""),
+        ("/format", j("1.0"), "index: format", ""),
+        ("/packages", None, "index: entry", "packages is missing"),
+        (
+            "/packages",
+            j("{}"),
+            "index: entry",
+            "packages is not an array",
+        ),
+        ("/tools", None, "index: entry", "tools is missing"),
+        ("/tools", j("1"), "index: entry", "tools is not an array"),
+        (
+            "/packages/0",
+            j("1"),
+            "index: entry",
+            "packages[0] is not an object",
+        ),
+        (
+            "/tools/0",
+            j("\"gcc\""),
+            "index: entry",
+            "tools[0] is not an object",
+        ),
+        // packages[].name
+        (
+            "/packages/0/name",
+            None,
+            "index: entry",
+            "packages[0].name is missing",
+        ),
+        (
+            "/packages/0/name",
+            j("7"),
+            "index: entry",
+            "packages[0].name",
+        ),
+        (
+            "/packages/0/name",
+            j("\"\""),
+            "index: entry",
+            "packages[0].name",
+        ),
+        (
+            "/packages/0/name",
+            j("\"1pipos\""),
+            "index: entry",
+            "packages[0].name",
+        ),
+        (
+            "/packages/0/name",
+            j("\"pi_pos\""),
+            "index: entry",
+            "packages[0].name",
+        ),
+        (
+            "/packages/0/name",
+            j(&long),
+            "index: entry",
+            "packages[0].name",
+        ),
+        // packages[].version
+        (
+            "/packages/0/version",
+            None,
+            "index: entry",
+            "packages[0].version is missing",
+        ),
+        (
+            "/packages/0/version",
+            j("130"),
+            "index: entry",
+            "packages[0].version",
+        ),
+        (
+            "/packages/0/version",
+            j("\"1.3\""),
+            "index: entry",
+            "packages[0].version",
+        ),
+        (
+            "/packages/0/version",
+            j("\"1.3.0.0\""),
+            "index: entry",
+            "packages[0].version",
+        ),
+        (
+            "/packages/0/version",
+            j("\"1.3.00\""),
+            "index: entry",
+            "packages[0].version",
+        ),
+        (
+            "/packages/0/version",
+            j("\"1.3.65536\""),
+            "index: entry",
+            "packages[0].version",
+        ),
+        (
+            "/packages/0/version",
+            j("\"1.3.+0\""),
+            "index: entry",
+            "packages[0].version",
+        ),
+        // packages[].abi
+        ("/packages/0/abi", None, "index: entry", "packages[0].abi"),
+        (
+            "/packages/0/abi",
+            j("13"),
+            "index: entry",
+            "packages[0].abi",
+        ),
+        (
+            "/packages/0/abi",
+            j("\"1.03\""),
+            "index: entry",
+            "packages[0].abi",
+        ),
+        (
+            "/packages/0/abi",
+            j("\"1.3.0\""),
+            "index: entry",
+            "packages[0].abi",
+        ),
+        (
+            "/packages/0/abi",
+            j("\"1.4\""),
+            "index: entry",
+            "packages[0].abi",
+        ),
+        (
+            "/packages/1/abi",
+            j("\"0.1\""),
+            "index: entry",
+            "packages[1].abi",
+        ),
+        // packages[].requires
+        (
+            "/packages/0/requires",
+            j("{}"),
+            "index: entry",
+            "packages[0].requires is not an array",
+        ),
+        (
+            "/packages/0/requires",
+            j("[1]"),
+            "index: entry",
+            "packages[0].requires[0] is not an object",
+        ),
+        (
+            "/packages/0/requires",
+            j(r#"[{"abi": "1.0"}]"#),
+            "index: entry",
+            "packages[0].requires[0].name",
+        ),
+        (
+            "/packages/0/requires",
+            j(r#"[{"name": "Gfx", "abi": "1.0"}]"#),
+            "index: entry",
+            "packages[0].requires[0].name",
+        ),
+        (
+            "/packages/0/requires",
+            j(r#"[{"name": "gfx"}]"#),
+            "index: entry",
+            "packages[0].requires[0].abi",
+        ),
+        (
+            "/packages/0/requires",
+            j(r#"[{"name": "gfx", "abi": "1"}]"#),
+            "index: entry",
+            "packages[0].requires[0].abi",
+        ),
+        (
+            "/packages/0/requires",
+            j(r#"[{"name": "gfx", "abi": "1.00"}]"#),
+            "index: entry",
+            "packages[0].requires[0].abi",
+        ),
+        // packages[].tools
+        (
+            "/packages/0/tools",
+            None,
+            "index: entry",
+            "packages[0].tools is missing",
+        ),
+        (
+            "/packages/0/tools",
+            j("{}"),
+            "index: entry",
+            "packages[0].tools is not an array",
+        ),
+        (
+            "/packages/0/tools",
+            j("[]"),
+            "index: entry",
+            "packages[0].tools",
+        ),
+        (
+            "/packages/0/tools",
+            j(r#"[{"name": "qemu", "version": "2"}, {"name": "gcc", "version": "1"}]"#),
+            "index: entry",
+            "packages[0].tools[0].name",
+        ),
+        (
+            "/packages/0/tools/0",
+            j("1"),
+            "index: entry",
+            "packages[0].tools[0] is not an object",
+        ),
+        (
+            "/packages/0/tools/0",
+            j(r#"{"name": "gcc"}"#),
+            "index: entry",
+            "packages[0].tools[0].version",
+        ),
+        (
+            "/packages/0/tools/0",
+            j(r#"{"name": "gcc", "version": ""}"#),
+            "index: entry",
+            "packages[0].tools[0].version",
+        ),
+        (
+            "/packages/0/tools/0",
+            j(r#"{"name": "gcc", "version": "a b"}"#),
+            "index: entry",
+            "packages[0].tools[0].version",
+        ),
+        (
+            "/packages/1/tools",
+            j(PIPOS_TOOLS),
+            "index: entry",
+            "packages[1].tools",
+        ),
+        // packages[].formats
+        (
+            "/packages/0/formats",
+            None,
+            "index: entry",
+            "packages[0].formats is missing",
+        ),
+        (
+            "/packages/0/formats",
+            j("[]"),
+            "index: entry",
+            "packages[0].formats is not an object",
+        ),
+        (
+            "/packages/0/formats/boot",
+            None,
+            "index: entry",
+            "packages[0].formats.boot is missing",
+        ),
+        (
+            "/packages/0/formats/boot",
+            j("0"),
+            "index: entry",
+            "packages[0].formats.boot",
+        ),
+        (
+            "/packages/0/formats/boot",
+            j("-1"),
+            "index: entry",
+            "packages[0].formats.boot",
+        ),
+        (
+            "/packages/0/formats/boot",
+            j("1.5"),
+            "index: entry",
+            "packages[0].formats.boot",
+        ),
+        (
+            "/packages/0/formats/boot",
+            j("\"1\""),
+            "index: entry",
+            "packages[0].formats.boot",
+        ),
+        (
+            "/packages/1/formats/project",
+            None,
+            "index: entry",
+            "packages[1].formats.project is missing",
+        ),
+        // packages[].url
+        (
+            "/packages/0/url",
+            None,
+            "index: entry",
+            "packages[0].url is missing",
+        ),
+        ("/packages/0/url", j("7"), "index: entry", "packages[0].url"),
+        (
+            "/packages/0/url",
+            j("\"http://x/p.zip\""),
+            "index: entry",
+            "packages[0].url",
+        ),
+        (
+            "/packages/0/url",
+            j("\"https://\""),
+            "index: entry",
+            "packages[0].url",
+        ),
+        (
+            "/packages/0/url",
+            j("\"/abs/p.zip\""),
+            "index: entry",
+            "packages[0].url",
+        ),
+        (
+            "/packages/0/url",
+            j("\"C:/p.zip\""),
+            "index: entry",
+            "packages[0].url",
+        ),
+        (
+            "/packages/0/url",
+            j("\"a/../p.zip\""),
+            "index: entry",
+            "packages[0].url",
+        ),
+        (
+            "/packages/0/url",
+            j("\"a\\\\p.zip\""),
+            "index: entry",
+            "packages[0].url",
+        ),
+        (
+            "/packages/0/url",
+            j("\"\""),
+            "index: entry",
+            "packages[0].url",
+        ),
+        // packages[].size
+        (
+            "/packages/0/size",
+            None,
+            "index: entry",
+            "packages[0].size is missing",
+        ),
+        (
+            "/packages/0/size",
+            j("-1"),
+            "index: entry",
+            "packages[0].size",
+        ),
+        (
+            "/packages/0/size",
+            j("1.5"),
+            "index: entry",
+            "packages[0].size",
+        ),
+        (
+            "/packages/0/size",
+            j("\"1\""),
+            "index: entry",
+            "packages[0].size",
+        ),
+        // packages[].sha256
+        (
+            "/packages/0/sha256",
+            None,
+            "index: entry",
+            "packages[0].sha256 is missing",
+        ),
+        (
+            "/packages/0/sha256",
+            j(&upper),
+            "index: entry",
+            "packages[0].sha256",
+        ),
+        (
+            "/packages/0/sha256",
+            j(&short),
+            "index: entry",
+            "packages[0].sha256",
+        ),
+        (
+            "/packages/0/sha256",
+            j("7"),
+            "index: entry",
+            "packages[0].sha256",
+        ),
+        // tools[].name
+        (
+            "/tools/0/name",
+            None,
+            "index: entry",
+            "tools[0].name is missing",
+        ),
+        ("/tools/0/name", j("7"), "index: entry", "tools[0].name"),
+        // tools[].version
+        (
+            "/tools/0/version",
+            None,
+            "index: entry",
+            "tools[0].version is missing",
+        ),
+        (
+            "/tools/0/version",
+            j("1"),
+            "index: entry",
+            "tools[0].version",
+        ),
+        (
+            "/tools/0/version",
+            j("\"\""),
+            "index: entry",
+            "tools[0].version",
+        ),
+        (
+            "/tools/0/version",
+            j(&long_version),
+            "index: entry",
+            "tools[0].version",
+        ),
+        (
+            "/tools/0/version",
+            j(r#""a\"b""#),
+            "index: entry",
+            "tools[0].version",
+        ),
+        (
+            "/tools/0/version",
+            j(r#""a\\b""#),
+            "index: entry",
+            "tools[0].version",
+        ),
+        (
+            "/tools/0/version",
+            j("\"1.0\u{e9}\""),
+            "index: entry",
+            "tools[0].version",
+        ),
+        // tools[].archives
+        (
+            "/tools/0/archives",
+            None,
+            "index: entry",
+            "tools[0].archives is missing",
+        ),
+        (
+            "/tools/0/archives",
+            j("[]"),
+            "index: entry",
+            "tools[0].archives is not an object",
+        ),
+        (
+            "/tools/0/archives/Linux",
+            j("{}"),
+            "index: entry",
+            "tools[0].archives.Linux",
+        ),
+        (
+            "/tools/0/archives/linux_x64",
+            j("{}"),
+            "index: entry",
+            "tools[0].archives.linux_x64",
+        ),
+        (
+            "/tools/0/archives/linux-x64",
+            j("1"),
+            "index: entry",
+            "tools[0].archives.linux-x64 is not an object",
+        ),
+        // An archive object.
+        (
+            "/tools/0/archives/linux-x64/url",
+            None,
+            "index: entry",
+            "tools[0].archives.linux-x64.url is missing",
+        ),
+        (
+            "/tools/0/archives/linux-x64/url",
+            j("\"ftp://x\""),
+            "index: entry",
+            "tools[0].archives.linux-x64.url",
+        ),
+        (
+            "/tools/0/archives/linux-x64/size",
+            None,
+            "index: entry",
+            "tools[0].archives.linux-x64.size is missing",
+        ),
+        (
+            "/tools/0/archives/linux-x64/size",
+            j("-1"),
+            "index: entry",
+            "tools[0].archives.linux-x64.size",
+        ),
+        (
+            "/tools/0/archives/linux-x64/sha256",
+            None,
+            "index: entry",
+            "tools[0].archives.linux-x64.sha256 is missing",
+        ),
+        (
+            "/tools/0/archives/linux-x64/sha256",
+            j(&upper),
+            "index: entry",
+            "tools[0].archives.linux-x64.sha256",
+        ),
+        (
+            "/tools/0/archives/linux-x64/root",
+            None,
+            "index: entry",
+            "tools[0].archives.linux-x64.root is missing",
+        ),
+        (
+            "/tools/0/archives/linux-x64/root",
+            j("1"),
+            "index: entry",
+            "tools[0].archives.linux-x64.root",
+        ),
+    ];
+    for (ptr, to, want, place) in bad {
+        let shown = format!("{ptr} = {to:?}");
+        let e = parse_index(&edit_json(INDEX, ptr, to)).unwrap_err();
+        assert_eq!(e.code(), want, "{shown}: {e}");
+        assert!(
+            e.to_string().starts_with(&format!("{want}: {place}")),
+            "{shown}: {e}"
+        );
+    }
+    // Values the tables allow, and unknown keys, which are ignored.
+    let good: Vec<(&str, Option<Value>)> = vec![
+        ("/when", j("1")),
+        ("/packages/0/when", j("1")),
+        ("/packages/0/requires", None),
+        (
+            "/packages/0/requires",
+            j(r#"[{"name": "gfx", "abi": "0.0", "x": 1}]"#),
+        ),
+        ("/packages/0/tools/0/x", j("1")),
+        ("/packages/0/formats/sound", j("1")),
+        ("/packages/0/formats/boot", j("2")),
+        ("/packages/0/size", j("0")),
+        ("/packages/1/version", j("\"65535.65535.65535\"")),
+        ("/packages/0/version", j("\"1.3.65535\"")),
+        ("/tools/0/when", j("1")),
+        ("/tools/0/archives/linux-x64/when", j("1")),
+        (
+            "/tools/0/archives/freebsd-x64",
+            j(
+                r#"{"url": "https://x", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000001", "root": ""}"#,
+            ),
+        ),
+        ("/tools/0/archives/linux-x64/root", j("\"\"")),
+        (
+            "/tools/0",
+            j(r#"{"name": "gdb", "version": 7, "archives": []}"#),
+        ),
+    ];
+    for (ptr, to) in good {
+        let shown = format!("{ptr} = {to:?}");
+        let r = parse_index(&edit_json(INDEX, ptr, to));
+        assert!(r.is_ok(), "{shown}: {r:?}");
+    }
+}
+
+#[test]
+fn resolve_sdk_json_field_table_rows() {
+    let upper = format!("\"{}\"", H.to_uppercase().replace('0', "A"));
+    let fw_files = "/firmware/files";
+    let bad: Vec<(&str, Option<Value>, &str, &str)> = vec![
+        // format and formats come first.
+        ("/format", None, "package: format", ""),
+        ("/format", j("0"), "package: format", ""),
+        ("/format", j("2"), "package: format", ""),
+        (
+            "/formats/boot",
+            j("0"),
+            "package: format",
+            "sdk.json: formats.boot",
+        ),
+        (
+            "/formats/boot",
+            j("-1"),
+            "package: format",
+            "sdk.json: formats.boot",
+        ),
+        ("/formats/boot", j("2"), "package: format", ""),
+        ("/formats/sound", j("1"), "package: format", ""),
+        (
+            "/formats",
+            None,
+            "package: manifest",
+            "sdk.json: formats is missing",
+        ),
+        (
+            "/formats",
+            j("[]"),
+            "package: manifest",
+            "sdk.json: formats is not an object",
+        ),
+        (
+            "/formats/boot",
+            None,
+            "package: manifest",
+            "sdk.json: formats.boot is missing",
+        ),
+        // name
+        (
+            "/name",
+            None,
+            "package: manifest",
+            "sdk.json: name is missing",
+        ),
+        ("/name", j("7"), "package: manifest", "sdk.json: name"),
+        (
+            "/name",
+            j("\"Pipos\""),
+            "package: manifest",
+            "sdk.json: name",
+        ),
+        ("/name", j("\"-a\""), "package: manifest", "sdk.json: name"),
+        // version
+        (
+            "/version",
+            None,
+            "package: manifest",
+            "sdk.json: version is missing",
+        ),
+        (
+            "/version",
+            j("\"1.3\""),
+            "package: manifest",
+            "sdk.json: version",
+        ),
+        (
+            "/version",
+            j("\"1.3.65536\""),
+            "package: manifest",
+            "sdk.json: version",
+        ),
+        (
+            "/version",
+            j("\"01.3.0\""),
+            "package: manifest",
+            "sdk.json: version",
+        ),
+        // abi
+        ("/abi", None, "package: manifest", "sdk.json: abi"),
+        ("/abi", j("1.3"), "package: manifest", "sdk.json: abi"),
+        ("/abi", j("\"1.03\""), "package: manifest", "sdk.json: abi"),
+        ("/abi", j("\"1.4\""), "package: manifest", "sdk.json: abi"),
+        // built_from
+        (
+            "/built_from",
+            None,
+            "package: manifest",
+            "sdk.json: built_from is missing",
+        ),
+        (
+            "/built_from",
+            j("{}"),
+            "package: manifest",
+            "sdk.json: built_from is not an array",
+        ),
+        (
+            "/built_from/0",
+            j("1"),
+            "package: manifest",
+            "sdk.json: built_from[0]. is not an object",
+        ),
+        (
+            "/built_from/0/repo",
+            None,
+            "package: manifest",
+            "sdk.json: built_from[0].repo is missing",
+        ),
+        (
+            "/built_from/0/repo",
+            j("7"),
+            "package: manifest",
+            "sdk.json: built_from[0].repo",
+        ),
+        (
+            "/built_from/0/commit",
+            None,
+            "package: manifest",
+            "sdk.json: built_from[0].commit is missing",
+        ),
+        (
+            "/built_from/0/commit",
+            j("\"A111111111111111111111111111111111111111\""),
+            "package: manifest",
+            "sdk.json: built_from[0].commit",
+        ),
+        (
+            "/built_from/0/commit",
+            j("\"111111111111111111111111111111111111111\""),
+            "package: manifest",
+            "sdk.json: built_from[0].commit",
+        ),
+        // requires
+        (
+            "/requires",
+            j("{}"),
+            "package: manifest",
+            "sdk.json: requires is not an array",
+        ),
+        (
+            "/requires",
+            j("[1]"),
+            "package: manifest",
+            "sdk.json: requires[0] is not an object",
+        ),
+        (
+            "/requires",
+            j(r#"[{"name": "Gfx", "abi": "1.0"}]"#),
+            "package: manifest",
+            "sdk.json: requires[0].name",
+        ),
+        (
+            "/requires",
+            j(r#"[{"name": "gfx", "abi": "1.0.0"}]"#),
+            "package: manifest",
+            "sdk.json: requires[0].abi",
+        ),
+        // tools
+        (
+            "/tools",
+            None,
+            "package: manifest",
+            "sdk.json: tools is missing",
+        ),
+        ("/tools", j("[]"), "package: manifest", "sdk.json: tools"),
+        (
+            "/tools",
+            j(r#"[{"name": "gcc", "version": "1"}]"#),
+            "package: manifest",
+            "sdk.json: tools",
+        ),
+        (
+            "/tools/1/name",
+            j("\"gdb\""),
+            "package: manifest",
+            "sdk.json: tools[1].name",
+        ),
+        (
+            "/tools/1/version",
+            None,
+            "package: manifest",
+            "sdk.json: tools[1].version",
+        ),
+        (
+            "/tools/1/version",
+            j("\"10 1\""),
+            "package: manifest",
+            "sdk.json: tools[1].version",
+        ),
+        // firmware
+        (
+            "/firmware",
+            None,
+            "package: manifest",
+            "sdk.json: firmware is missing",
+        ),
+        (
+            "/firmware",
+            j("[]"),
+            "package: manifest",
+            "sdk.json: firmware is not an object",
+        ),
+        (
+            "/firmware/repo",
+            None,
+            "package: manifest",
+            "sdk.json: firmware.repo is missing",
+        ),
+        (
+            "/firmware/repo",
+            j("\"raspberrypi/linux\""),
+            "package: manifest",
+            "sdk.json: firmware.repo",
+        ),
+        (
+            "/firmware/tag",
+            None,
+            "package: manifest",
+            "sdk.json: firmware.tag is missing",
+        ),
+        (
+            "/firmware/tag",
+            j("1"),
+            "package: manifest",
+            "sdk.json: firmware.tag is not a string",
+        ),
+        (
+            "/firmware/commit",
+            None,
+            "package: manifest",
+            "sdk.json: firmware.commit is missing",
+        ),
+        (
+            "/firmware/commit",
+            j("\"6F0881CBA8BEA8EC24956A5718714730E9936EC5\""),
+            "package: manifest",
+            "sdk.json: firmware.commit",
+        ),
+        (
+            "/firmware/base_url",
+            None,
+            "package: manifest",
+            "sdk.json: firmware.base_url is missing",
+        ),
+        (
+            "/firmware/base_url",
+            j("1"),
+            "package: manifest",
+            "sdk.json: firmware.base_url is not a string",
+        ),
+        (
+            fw_files,
+            None,
+            "package: manifest",
+            "sdk.json: firmware.files is missing",
+        ),
+        (
+            fw_files,
+            j("{}"),
+            "package: manifest",
+            "sdk.json: firmware.files is not an array",
+        ),
+        (
+            "/firmware/files/0",
+            j("1"),
+            "package: manifest",
+            "sdk.json: firmware.files[0]. is not an object",
+        ),
+        (
+            "/firmware/files/0/name",
+            j("\"kernel.img\""),
+            "package: manifest",
+            "sdk.json: firmware.files[0].name",
+        ),
+        (
+            "/firmware/files/1/name",
+            j("\"bootcode.bin\""),
+            "package: manifest",
+            "sdk.json: firmware.files[1].name",
+        ),
+        (
+            "/firmware/files/2",
+            None,
+            "package: manifest",
+            "sdk.json: firmware.files lacks fixup.dat",
+        ),
+        (
+            "/firmware/files/0/sha256",
+            None,
+            "package: manifest",
+            "sdk.json: firmware.files[0].sha256 is missing",
+        ),
+        (
+            "/firmware/files/0/sha256",
+            j(&upper),
+            "package: manifest",
+            "sdk.json: firmware.files[0].sha256",
+        ),
+        // licences
+        (
+            "/licences",
+            None,
+            "package: manifest",
+            "sdk.json: licences is missing",
+        ),
+        (
+            "/licences",
+            j("{}"),
+            "package: manifest",
+            "sdk.json: licences is not an array",
+        ),
+        (
+            "/licences/0",
+            j("1"),
+            "package: manifest",
+            "sdk.json: licences[0]. is not an object",
+        ),
+        (
+            "/licences/0/paths",
+            None,
+            "package: manifest",
+            "sdk.json: licences[0].paths is missing",
+        ),
+        (
+            "/licences/0/paths",
+            j("\"\""),
+            "package: manifest",
+            "sdk.json: licences[0].paths is not an array",
+        ),
+        (
+            "/licences/0/paths",
+            j("[1]"),
+            "package: manifest",
+            "sdk.json: licences[0].paths",
+        ),
+        (
+            "/licences/0/spdx",
+            None,
+            "package: manifest",
+            "sdk.json: licences[0].spdx is missing",
+        ),
+        (
+            "/licences/0/spdx",
+            j("1"),
+            "package: manifest",
+            "sdk.json: licences[0].spdx is not a string",
+        ),
+        // files
+        (
+            "/files",
+            None,
+            "package: manifest",
+            "sdk.json: files is missing",
+        ),
+        (
+            "/files",
+            j("{}"),
+            "package: manifest",
+            "sdk.json: files is not an array",
+        ),
+        (
+            "/files/0",
+            j("1"),
+            "package: manifest",
+            "sdk.json: files[0]. is not an object",
+        ),
+        (
+            "/files/0/path",
+            None,
+            "package: manifest",
+            "sdk.json: files[0].path is missing",
+        ),
+        (
+            "/files/0/path",
+            j("1"),
+            "package: manifest",
+            "sdk.json: files[0].path is not a string",
+        ),
+        (
+            "/files/0/path",
+            j("\"/LICENSES/MIT.txt\""),
+            "package: manifest",
+            "sdk.json: files[0].path",
+        ),
+        (
+            "/files/0/path",
+            j("\"A/./MIT.txt\""),
+            "package: manifest",
+            "sdk.json: files[0].path",
+        ),
+        (
+            "/files/0/path",
+            j("\"A\\\\MIT.txt\""),
+            "package: manifest",
+            "sdk.json: files[0].path",
+        ),
+        (
+            "/files/0/path",
+            j("\"C:MIT.txt\""),
+            "package: manifest",
+            "sdk.json: files[0].path",
+        ),
+        (
+            "/files/0/size",
+            None,
+            "package: manifest",
+            "sdk.json: files[0].size is missing",
+        ),
+        (
+            "/files/0/size",
+            j("-1"),
+            "package: manifest",
+            "sdk.json: files[0].size",
+        ),
+        (
+            "/files/0/size",
+            j("1.5"),
+            "package: manifest",
+            "sdk.json: files[0].size",
+        ),
+        (
+            "/files/0/sha256",
+            None,
+            "package: manifest",
+            "sdk.json: files[0].sha256 is missing",
+        ),
+        (
+            "/files/0/sha256",
+            j(&upper),
+            "package: manifest",
+            "sdk.json: files[0].sha256",
+        ),
+        (
+            "/files/1/path",
+            j("\"LICENSES/MIT.txt\""),
+            "package: manifest",
+            "sdk.json: files[1].path",
+        ),
+        (
+            "/files/1/path",
+            j("\"A.txt\""),
+            "package: manifest",
+            "sdk.json: files[1].path",
+        ),
+        (
+            "/files/1/path",
+            j("\"licenses/mit.txt\""),
+            "package: manifest",
+            "sdk.json: files[1].path",
+        ),
+        (
+            "/files/1/path",
+            j("\"sdk.json\""),
+            "package: manifest",
+            "sdk.json: files[1].path",
+        ),
+    ];
+    for (ptr, to, want, place) in bad {
+        let shown = format!("{ptr} = {to:?}");
+        let e = sdk_json::parse(edit_json(SDK, ptr, to).as_bytes()).unwrap_err();
+        assert_eq!(e.code(), want, "{shown}: {e}");
+        assert!(
+            e.to_string().starts_with(&format!("{want}: {place}")),
+            "{shown}: {e}"
+        );
+    }
+    // Which package carries which field: templates and any other package.
+    let tpl: Vec<(&str, Option<Value>, &str)> = vec![
+        ("/abi", j("\"0.1\""), "sdk.json: abi"),
+        ("/tools", j(PIPOS_TOOLS), "sdk.json: tools"),
+        ("/firmware", j("{}"), "sdk.json: firmware"),
+        (
+            "/formats/scenario",
+            None,
+            "sdk.json: formats.scenario is missing",
+        ),
+    ];
+    for (ptr, to, place) in tpl {
+        let e = sdk_json::parse(edit_json(SDK_TEMPLATES, ptr, to).as_bytes()).unwrap_err();
+        assert_eq!(e.code(), "package: manifest", "{ptr}");
+        assert!(
+            e.to_string()
+                .starts_with(&format!("package: manifest: {place}")),
+            "{ptr}: {e}"
+        );
+    }
+    let other = edit_json(SDK, "/name", j("\"gfx\""));
+    let e = sdk_json::parse(other.as_bytes()).unwrap_err();
+    assert!(
+        e.to_string()
+            .starts_with("package: manifest: sdk.json: tools"),
+        "{e}"
+    );
+    let other = edit_json(&other, "/tools", None);
+    let p = sdk_json::parse(other.as_bytes()).unwrap();
+    assert!(p.abi.is_some() && p.firmware.is_some());
+    let other = edit_json(&edit_json(&other, "/abi", None), "/firmware", None);
+    let p = sdk_json::parse(other.as_bytes()).unwrap();
+    assert!(p.abi.is_none() && p.firmware.is_none());
+    // Values the tables allow, and unknown keys, which are ignored.
+    let good: Vec<(&str, Option<Value>)> = vec![
+        ("/when", j("1")),
+        ("/built_from/0/when", j("1")),
+        ("/requires", None),
+        ("/requires", j(r#"[{"name": "gfx", "abi": "1.0", "x": 1}]"#)),
+        ("/tools/0/when", j("1")),
+        ("/firmware/when", j("1")),
+        ("/firmware/files/0/when", j("1")),
+        ("/licences/0/when", j("1")),
+        ("/files/0/when", j("1")),
+        ("/files/0/size", j("0")),
+        ("/files", j("[]")),
+    ];
+    for (ptr, to) in good {
+        let shown = format!("{ptr} = {to:?}");
+        let r = sdk_json::parse(edit_json(SDK, ptr, to).as_bytes());
+        assert!(r.is_ok(), "{shown}: {r:?}");
+    }
+}
+
+#[test]
+fn resolve_lock_field_table_rows() {
+    let gcc_x64 =
+        "linux-x64 = \"0000000000000000000000000000000000000000000000000000000000000003\"";
+    let pkg_hash = format!("sha256 = \"{H}\"");
+    let long = format!("name = \"{}\"", "a".repeat(33));
+    let long_version = format!("version = \"{}\"", "1".repeat(65));
+    let upper = format!("sha256 = \"{}\"", H.replace('0', "A"));
+    let gcc_upper = gcc_x64.replace("000000000000000000", "AAAAAAAAAAAAAAAAAA");
+    let bad: Vec<(&str, String, &str, &str)> = vec![
+        // format
+        ("format = 1", "format = 0".into(), "lock: format", ""),
+        ("format = 1", "format = -1".into(), "lock: format", ""),
+        ("format = 1", "format = 2".into(), "lock: format", ""),
+        ("format = 1", "format = 1.0".into(), "lock: format", ""),
+        ("format = 1", "format = \"1\"".into(), "lock: format", ""),
+        ("format = 1\n", "".into(), "lock: format", ""),
+        // Unknown keys, at the top, in an entry or under one.
+        (
+            "format = 1",
+            "format = 1\nwhen = 1".into(),
+            "lock: unknown key",
+            "when",
+        ),
+        (
+            "format = 1",
+            "format = 1\n[extra]".into(),
+            "lock: unknown key",
+            "extra",
+        ),
+        (
+            &pkg_hash,
+            format!("{pkg_hash}\nabi = \"1.3\""),
+            "lock: unknown key",
+            "package.abi",
+        ),
+        (
+            "version = \"10.1.2\"",
+            "version = \"10.1.2\"\nhost = \"x\"".into(),
+            "lock: unknown key",
+            "tool.host",
+        ),
+        (
+            "version = \"10.1.2\"",
+            "version = \"10.1.2\"\n[tool.extra]".into(),
+            "lock: unknown key",
+            "tool.extra",
+        ),
+        // index
+        (
+            "index = \"https://example.invalid/robco/index.json\"\n",
+            "".into(),
+            "lock: entry",
+            "index is missing",
+        ),
+        (
+            "index = \"https://example.invalid/robco/index.json\"",
+            "index = []".into(),
+            "lock: entry",
+            "index is not a string",
+        ),
+        // [[package]]
+        (
+            "name = \"pipos\"\n",
+            "".into(),
+            "lock: entry",
+            "package.name is missing",
+        ),
+        (
+            "name = \"pipos\"",
+            "name = 1".into(),
+            "lock: entry",
+            "package.name is not a string",
+        ),
+        (
+            "name = \"pipos\"",
+            "name = \"\"".into(),
+            "lock: entry",
+            "package.name = \"\"",
+        ),
+        (
+            "name = \"pipos\"",
+            "name = \"9pipos\"".into(),
+            "lock: entry",
+            "package.name = \"9pipos\"",
+        ),
+        (
+            "name = \"pipos\"",
+            long.clone(),
+            "lock: entry",
+            "package.name = \"aaa",
+        ),
+        (
+            "version = \"1.3.0\"\n",
+            "".into(),
+            "lock: entry",
+            "package.version is missing",
+        ),
+        (
+            "version = \"1.3.0\"",
+            "version = \"1.3\"".into(),
+            "lock: entry",
+            "package.version = \"1.3\"",
+        ),
+        (
+            "version = \"1.3.0\"",
+            "version = \"1.3.65536\"".into(),
+            "lock: entry",
+            "package.version = \"1.3.65536\"",
+        ),
+        (
+            "version = \"1.3.0\"",
+            "version = \"1.3.00\"".into(),
+            "lock: entry",
+            "package.version = \"1.3.00\"",
+        ),
+        (
+            &pkg_hash,
+            "".into(),
+            "lock: entry",
+            "package.sha256 is missing",
+        ),
+        (&pkg_hash, upper.clone(), "lock: entry", "package.sha256 = "),
+        (
+            &pkg_hash,
+            "sha256 = \"01\"".into(),
+            "lock: entry",
+            "package.sha256 = \"01\"",
+        ),
+        (
+            &pkg_hash,
+            "sha256 = 1".into(),
+            "lock: entry",
+            "package.sha256 is not a string",
+        ),
+        // [[tool]]
+        (
+            "name = \"gcc\"\n",
+            "".into(),
+            "lock: entry",
+            "tool.name is missing",
+        ),
+        (
+            "name = \"gcc\"",
+            "name = 1".into(),
+            "lock: entry",
+            "tool.name is not a string",
+        ),
+        (
+            "name = \"gcc\"",
+            "name = \"GCC\"".into(),
+            "lock: entry",
+            "tool.name = \"GCC\"",
+        ),
+        (
+            "name = \"qemu\"",
+            "name = \"gcc\"".into(),
+            "lock: entry",
+            "tool.name = \"gcc\" is listed twice",
+        ),
+        (
+            "version = \"15.2.1-1.1\"\n",
+            "".into(),
+            "lock: entry",
+            "tool.version is missing",
+        ),
+        (
+            "version = \"15.2.1-1.1\"",
+            "version = 15".into(),
+            "lock: entry",
+            "tool.version is not a string",
+        ),
+        (
+            "version = \"15.2.1-1.1\"",
+            "version = \"\"".into(),
+            "lock: entry",
+            "tool.version = \"\"",
+        ),
+        (
+            "version = \"15.2.1-1.1\"",
+            long_version.clone(),
+            "lock: entry",
+            "tool.version = \"111",
+        ),
+        (
+            "version = \"15.2.1-1.1\"",
+            "version = \"a\\\"b\"".into(),
+            "lock: entry",
+            "tool.version = \"a\\\"b\"",
+        ),
+        (
+            "version = \"15.2.1-1.1\"",
+            "version = \"a\\\\b\"".into(),
+            "lock: entry",
+            "tool.version = \"a\\\\b\"",
+        ),
+        (
+            "version = \"15.2.1-1.1\"",
+            "version = \"15.\u{e9}\"".into(),
+            "lock: entry",
+            "tool.version = \"15.",
+        ),
+        // [tool.archives]
+        (
+            gcc_x64,
+            gcc_upper.clone(),
+            "lock: entry",
+            "tool.archives.linux-x64 = ",
+        ),
+        (
+            gcc_x64,
+            "linux-x64 = \"\"".into(),
+            "lock: entry",
+            "tool.archives.linux-x64 = \"\"",
+        ),
+        (
+            gcc_x64,
+            gcc_x64.replace("linux-x64", "\"linux_x64\""),
+            "lock: entry",
+            "tool.archives.\"linux_x64\"",
+        ),
+        (
+            gcc_x64,
+            gcc_x64.replace("linux-x64", "\"\""),
+            "lock: entry",
+            "tool.archives.\"\"",
+        ),
+        (
+            gcc_x64,
+            format!("{gcc_x64}\nfreebsd-x64 = {{ sha256 = \"1\" }}"),
+            "lock: entry",
+            "tool.archives.freebsd-x64 is not a string",
+        ),
+    ];
+    for (from, to, want, detail) in bad {
+        let text = LOCK.replacen(from, &to, 1);
+        assert_ne!(text, LOCK, "{from}");
+        let e = lock_err(&text);
+        assert_eq!(e.code(), want, "{from} -> {to}: {e}");
+        assert!(
+            e.to_string().starts_with(&format!("{want}: {detail}")),
+            "{from} -> {to}: {e}"
+        );
+    }
+    // [[package]] and [[tool]] of another type.
+    for (text, detail) in [
+        ("package = 1", "package is not an array of tables"),
+        ("package = [1]", "package is not an array of tables"),
+        ("tool = 1", "tool is not an array of tables"),
+        ("tool = [[]]", "tool is not an array of tables"),
+        (
+            "[[tool]]\nname = \"gcc\"\nversion = \"1\"\narchives = 1",
+            "tool.archives is not a table",
+        ),
+    ] {
+        let e = lock_err(&format!("format = 1\nindex = \"x\"\n{text}\n"));
+        assert!(
+            e.to_string().starts_with(&format!("lock: entry: {detail}")),
+            "{e}"
+        );
+    }
+    // A missing [tool.archives].
+    let no_archives = "format = 1\nindex = \"x\"\n\n[[tool]]\nname = \"gcc\"\nversion = \"1\"\n";
+    assert!(
+        lock_err(no_archives)
+            .to_string()
+            .starts_with("lock: entry: tool.archives is missing")
+    );
+    // Values the tables allow: a host this tool does not know, any index
+    // string, the edges of the version range.
+    for (from, to) in [
+        (
+            gcc_x64.to_owned(),
+            format!("{gcc_x64}\nfreebsd-x64 = \"{H}\""),
+        ),
+        (
+            "index = \"https://example.invalid/robco/index.json\"".to_owned(),
+            "index = \"\"".to_owned(),
+        ),
+        (
+            "version = \"1.3.0\"".to_owned(),
+            "version = \"0.0.65535\"".to_owned(),
+        ),
+        (
+            "version = \"10.1.2\"".to_owned(),
+            format!("version = \"{}\"", "~".repeat(64)),
+        ),
+    ] {
+        let text = LOCK.replacen(&from, &to, 1);
+        assert_ne!(text, LOCK);
+        assert!(Lock::parse(text.as_bytes()).is_ok(), "{to}");
+    }
+}
