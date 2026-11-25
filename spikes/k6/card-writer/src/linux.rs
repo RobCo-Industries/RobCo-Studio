@@ -40,6 +40,22 @@ fn collect_mounts(dev: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Device-mapper and RAID children: LUKS, LVM, md. They hold the disk open with no
+/// mount point of their own, so each one counts as a volume in use.
+fn collect_holders(dev: &Value, out: &mut Vec<String>) {
+    if let Some(Value::Array(kids)) = dev.get("children") {
+        for k in kids {
+            let kind = as_str(k.get("type")).unwrap_or("");
+            if kind != "part"
+                && let Some(n) = as_str(k.get("name"))
+            {
+                out.push(format!("in use by {kind} {n}"));
+            }
+            collect_holders(k, out);
+        }
+    }
+}
+
 /// Parses the JSON `lsblk` printed with [`LSBLK_ARGS`].
 pub fn parse(text: &str) -> DiskList {
     let mut list = DiskList::default();
@@ -66,6 +82,7 @@ pub fn parse(text: &str) -> DiskList {
         }
         let mut mounts = Vec::new();
         collect_mounts(dev, &mut mounts);
+        collect_holders(dev, &mut mounts);
         mounts.sort();
         mounts.dedup();
         let holds = mounts.iter().any(|m| m == "/");
