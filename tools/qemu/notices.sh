@@ -5,7 +5,7 @@
 # steps 1, 2, 4 and 6. The release adds the sources, step 3.
 # Usage: notices.sh <linux|macos|windows> <out-dir>
 # Reads <out-dir>/build/ to find where each packed library came from.
-set -euo pipefail
+set -euxo pipefail
 
 os=$1
 out=$(cd "$2" && pwd)
@@ -105,7 +105,7 @@ for f in $(packed); do
       head=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("source") or {}).get("tap_git_head") or "unknown")' "$keg/INSTALL_RECEIPT.json")
       echo "$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p" >>"$record"
       cp "$keg/INSTALL_RECEIPT.json" "$lic/$c-INSTALL_RECEIPT.json"
-      for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT*; do
+      for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT* "$keg"/README.license* "$keg"/BSD-2-Clause "$keg"/GPL; do
         if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; fi
       done
       ;;
@@ -152,7 +152,7 @@ done
 [ -s "$dist/NOTICE" ] || { echo "FAIL: NOTICE is missing"; bad=1; }
 for f in $(packed); do
   c=$(component "$f")
-  n=$(cd "$lic" && ls | grep -E "^$c-" | grep -vE -- '-(INSTALL_RECEIPT\.json|pacman-Qi\.txt)$' | wc -l)
+  n=$(cd "$lic" && ls | { grep -E "^$c-" || true; } | { grep -vE -- '-(INSTALL_RECEIPT\.json|pacman-Qi\.txt)$' || true; } | wc -l)
   [ "$n" -gt 0 ] || { echo "FAIL: no licence file for $f ($c)"; bad=1; }
   grep -q "^$f | " "$record" || { echo "FAIL: $f is not in the record"; bad=1; }
 done
