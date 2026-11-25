@@ -7,13 +7,15 @@
 //! `robco` command and the window both call it, and every feature lands
 //! here with a test before the window shows it. Today it holds the version
 //! [`guard`], which starts a child process that dies with Studio, and
-//! [`manifest`], which reads `robco.toml`. It must never depend on a window or toolkit crate, nor on the
+//! [`manifest`], which reads `robco.toml`, and [`plan`], which lists the
+//! commands of a build. It must never depend on a window or toolkit crate, nor on the
 //! two programs. It holds no `unsafe` code.
 #![forbid(unsafe_code)]
 
 pub mod boot;
 pub mod guard;
 pub mod manifest;
+pub mod plan;
 
 /// The version of Studio, from `workspace.package.version` in the root
 /// `Cargo.toml`. Every program prints this one value.

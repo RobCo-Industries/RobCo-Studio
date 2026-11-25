@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "cflags": [
+    "-mcpu=arm1176jzf-s", "-marm", "-mfloat-abi=soft", "-mgeneral-regs-only",
+    "-mno-unaligned-access", "-std=gnu11", "-ffreestanding", "-nostdlib",
+    "-ffunction-sections", "-fdata-sections", "-fno-tree-loop-distribute-patterns",
+    "-O2", "-g", "-Wall", "-Wextra"
+  ],
+  "include_dirs": ["include"],
+  "ldflags": [
+    "-mcpu=arm1176jzf-s", "-marm", "-mfloat-abi=soft", "-nostdlib",
+    "-Wl,--gc-sections"
+  ],
+  "linker_scripts": {"holotape": "lib/holotape.ld", "rom": "lib/rom.ld"},
+  "crt0": "lib/crt0.S",
+  "crt0_defines": {
+    "holotape-game": ["PIP_IMG_MAGIC=\"ROBCO78\"", "PIP_IMG_SUBTYPE=0"],
+    "holotape-utility": ["PIP_IMG_MAGIC=\"ROBCO78\"", "PIP_IMG_SUBTYPE=1"],
+    "rom": ["PIP_IMG_MAGIC=\"ROM1\"", "PIP_IMG_SUBTYPE=0"]
+  },
+  "libs": ["lib/libpip.a"],
+  "system_libs": ["-lgcc"],
+  "abi_define": "PIPOS_ABI_TARGET"
+}
