@@ -148,7 +148,10 @@ echo "$2:"; cat "$2"
         self.sources = []
 
     def env(self):
-        return {"PATH": f"{self.bin}:" + os.environ.get("PATH", "/usr/bin:/bin")}
+        env = {"PATH": f"{self.bin}:" + os.environ.get("PATH", "/usr/bin:/bin")}
+        if "QEMU_RELEASE_URL" in os.environ:
+            env["QEMU_RELEASE_URL"] = os.environ["QEMU_RELEASE_URL"]
+        return env
 
     def fake_qemu(self, name):
         dist_bin = self.out / "qemu" / "bin"
@@ -228,6 +231,16 @@ esac
         self.assertNotIn("source archive", lines[1])
         notice = (self.out / "qemu" / "NOTICE").read_text()
         self.assertIn("QEMU 10.1.2 for Arm, as built by RobCo Studio from qemu-10.1.2.tar.xz", notice)
+        self.assertIn("This build was not published", notice)
+
+    def test_release_notice_names_the_release(self):
+        self.homebrew("1.3.1")
+        os.environ["QEMU_RELEASE_URL"] = "https://example.invalid/releases/tag/qemu-10.1.2-r1"
+        self.addCleanup(os.environ.pop, "QEMU_RELEASE_URL")
+        self.run_pack("macos")
+        notice = (self.out / "qemu" / "NOTICE").read_text()
+        self.assertIn("above, at https://example.invalid/releases/tag/qemu-10.1.2-r1", notice)
+        self.assertNotIn("not published", notice)
 
     def test_homebrew_two_kegs_packed_from_the_newer(self):
         self.homebrew("1.3.1")

@@ -3,13 +3,15 @@
 # into a package that pack.sh has just packed, then check that every packed
 # library has its licence. Follows the checklist in docs/THIRD_PARTY.md,
 # steps 1, 2, 4 and 6. The release adds the sources, step 3.
-# Usage: notices.sh <linux|macos|windows> <out-dir>
+# Usage: [QEMU_RELEASE_URL=<url>] notices.sh <linux|macos|windows> <out-dir>
 #        notices.sh --check <linux|macos|windows> <out-dir>
 # Reads <out-dir>/sources.txt, written by pack.sh, for the real path each
 # packed library was copied from, and asks the packager which package owns
 # that exact path. Reads QEMU's version from the packed program and its
 # licence files from the source archive in <out-dir>/build/.
 # --check runs only the final check on a package already written.
+# QEMU_RELEASE_URL, set by the workflow on a release tag, is the release
+# page the NOTICE names as the place of the sources.
 #
 # The record, licenses/packed-libraries.txt, has this format. Lines that
 # start with # are comments. Every other line describes one packed library,
@@ -431,7 +433,11 @@ done
   echo
   echo "Sources: the release that publishes this package carries QEMU's source"
   echo "archive, the build and packing scripts, and the sources of each library"
-  echo "above. This build was not published, so it names no release address."
+  if [ -n "${QEMU_RELEASE_URL:-}" ]; then
+    echo "above, at $QEMU_RELEASE_URL"
+  else
+    echo "above. This build was not published, so it names no release address."
+  fi
 } >"$dist/NOTICE"
 
 echo "NOTICE:"; cat "$dist/NOTICE"
