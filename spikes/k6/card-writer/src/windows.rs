@@ -13,7 +13,8 @@ $d = @(Get-Disk | ForEach-Object { [pscustomobject]@{
   LogicalSectorSize = $_.LogicalSectorSize } })
 $p = @(Get-Partition | ForEach-Object { [pscustomobject]@{
   DiskNumber = $_.DiskNumber; DriveLetter = "$($_.DriveLetter)"
-  IsBoot = $_.IsBoot; IsSystem = $_.IsSystem; AccessPaths = @($_.AccessPaths) } })
+  IsBoot = $_.IsBoot; IsSystem = $_.IsSystem; GptType = "$($_.GptType)"; MbrType = $_.MbrType
+  AccessPaths = @($_.AccessPaths) } })
 $w = @(Get-CimInstance Win32_DiskDrive | ForEach-Object { [pscustomobject]@{
   Index = $_.Index; MediaType = $_.MediaType } })
 ConvertTo-Json -Depth 4 -Compress -InputObject ([pscustomobject]@{
@@ -47,6 +48,13 @@ fn bus_of(n: Option<u64>, text: &str) -> (Bus, String) {
         (None, Some(b)) => (b, raw),
         _ => (Bus::Unknown, raw),
     }
+}
+
+/// The EFI system partition: GPT type c12a7328-f81f-11d2-ba4b-00a0c93ec93b or MBR type 0xEF.
+/// Only the active one carries IsSystem, so the type is checked too.
+fn is_esp(p: &Value) -> bool {
+    let gpt = as_str(p.get("GptType")).unwrap_or("").to_ascii_lowercase();
+    gpt.contains("c12a7328-f81f-11d2-ba4b-00a0c93ec93b") || as_u64(p.get("MbrType")) == Some(0xEF)
 }
 
 fn letter(v: Option<&Value>) -> Option<char> {
@@ -96,15 +104,34 @@ pub fn parse(text: &str) -> DiskList {
             .filter(|p| as_u64(p.get("DiskNumber")) == Some(n))
         {
             let l = letter(p.get("DriveLetter"));
+            // Every access path the system reports: a letter, a folder, or the volume GUID
+            // path. A volume with only a GUID path is still a live volume, so it is kept.
+            let paths: Vec<String> = as_list(p.get("AccessPaths"))
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|a| a.as_str().map(String::from))
+                .collect();
             let is_sys = as_bool(p.get("IsBoot")) == Some(true)
                 || as_bool(p.get("IsSystem")) == Some(true)
-                || (l.is_some() && l == sys_letter);
+                || (l.is_some() && l == sys_letter)
+                || is_esp(p);
+            // The name shown for this volume: its letter, else a folder, else its GUID path.
+            let name = match l {
+                Some(c) => Some(format!("{c}:")),
+                None => paths
+                    .iter()
+                    .find(|a| !a.starts_with("\\\\?\\"))
+                    .or(paths.first())
+                    .cloned(),
+            };
             if is_sys {
-                holds = Some(true);
-                system_volumes.push(match l {
-                    Some(c) => format!("{c}:"),
-                    None => "system partition".into(),
-                });
+                if as_bool(p.get("IsBoot")) == Some(true)
+                    || as_bool(p.get("IsSystem")) == Some(true)
+                    || (l.is_some() && l == sys_letter)
+                {
+                    holds = Some(true);
+                }
+                system_volumes.push(name.clone().unwrap_or_else(|| "system partition".into()));
             }
             if offline {
                 continue;
@@ -112,13 +139,19 @@ pub fn parse(text: &str) -> DiskList {
             if let Some(c) = l {
                 mounts.push(format!("{c}:"));
             }
-            for a in as_list(p.get("AccessPaths")).unwrap_or_default() {
-                if let Some(a) = a.as_str()
-                    && !a.starts_with("\\\\?\\")
-                    && !mounts.iter().any(|m| a.starts_with(m.as_str()))
-                {
-                    mounts.push(a.to_string());
+            let mut kept = false;
+            for a in &paths {
+                if !a.starts_with("\\\\?\\") && !mounts.iter().any(|m| a.starts_with(m.as_str())) {
+                    mounts.push(a.clone());
                 }
+                kept |= !a.starts_with("\\\\?\\");
+            }
+            // No letter and no folder: the GUID path is the volume's only access path.
+            if l.is_none()
+                && !kept
+                && let Some(g) = paths.first()
+            {
+                mounts.push(g.clone());
             }
         }
         let (bus, bus_raw) = bus_of(

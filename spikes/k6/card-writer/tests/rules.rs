@@ -79,6 +79,35 @@ fn linux_laptop() {
 }
 
 #[test]
+fn linux_unmounted_holders_are_in_use() {
+    // A card that is an active LVM member, and one that is an md RAID member. No mount point.
+    let text = r#"{"blockdevices": [
+      {"name": "/dev/nvme0n1", "type": "disk", "size": 512110190592, "rm": false, "hotplug": false, "tran": "nvme", "mountpoints": [null],
+       "children": [{"name": "/dev/nvme0n1p1", "type": "part", "mountpoints": ["/"]}]},
+      {"name": "/dev/sdb", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null],
+       "children": [{"name": "/dev/sdb1", "type": "part", "mountpoints": [null],
+         "children": [{"name": "/dev/mapper/vg-data", "type": "lvm", "mountpoints": [null]}]}]},
+      {"name": "/dev/sdc", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null],
+       "children": [{"name": "/dev/md0", "type": "raid1", "mountpoints": [null]}]}
+    ]}"#;
+    let l = linux::parse(text);
+    assert!(l.complete() && l.system_located, "{:?}", l.problems);
+    let p = Policy::default();
+    assert_eq!(
+        refusals(&l, "/dev/sdb", &p),
+        vec![Refusal::VolumesMounted(vec![
+            "in use by lvm /dev/mapper/vg-data".into()
+        ])]
+    );
+    assert_eq!(
+        refusals(&l, "/dev/sdc", &p),
+        vec![Refusal::VolumesMounted(vec![
+            "in use by raid1 /dev/md0".into()
+        ])]
+    );
+}
+
+#[test]
 fn linux_booted_from_usb() {
     let l = linux::parse(&fixture("linux-usb-boot.json"));
     let r = refusals(&l, "/dev/sda", &Policy::default());
@@ -223,6 +252,33 @@ fn windows_laptop() {
         refusals(&l, r"\\.\PhysicalDrive4 & del", &p),
         vec![Refusal::BadPath]
     );
+}
+
+#[test]
+fn windows_volumes_with_only_a_guid_path() {
+    let l = windows::parse(&fixture("windows-guid-only.json"));
+    assert!(l.complete() && l.system_located, "{:?}", l.problems);
+    let p = Policy::default();
+    // An EFI system partition with no letter, on a card reader. Not the active one.
+    let r = refusals(&l, r"\\.\PhysicalDrive1", &p);
+    assert!(
+        r.iter().any(|w| matches!(w, Refusal::MountedSystemVolume(v)
+            if v == &vec![r"\\?\Volume{00000000-0000-0000-0000-000000000011}\".to_string()])),
+        "{r:?}"
+    );
+    assert!(
+        r.iter().any(|w| matches!(w, Refusal::VolumesMounted(_))),
+        "{r:?}"
+    );
+    // A FAT data volume reachable only through its GUID path is still in use.
+    assert_eq!(
+        refusals(&l, r"\\.\PhysicalDrive2", &p),
+        vec![Refusal::VolumesMounted(vec![
+            r"\\?\Volume{00000000-0000-0000-0000-000000000012}\".into()
+        ])]
+    );
+    // A partition with no access path at all has no live volume.
+    approves(&l, r"\\.\PhysicalDrive3", &p);
 }
 
 #[test]
