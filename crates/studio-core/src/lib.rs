@@ -5,12 +5,13 @@
 //! This crate will hold projects, SDK install, builds, asset packing, card
 //! images, simulator sessions, the serial monitor and debug sessions. The
 //! `robco` command and the window both call it, and every feature lands
-//! here with a test before the window shows it. Today it holds only the
-//! version. It must never depend on a window or toolkit crate, nor on the
+//! here with a test before the window shows it. Today it holds the version
+//! and [`guard`], which starts a child process that dies with Studio. It must never depend on a window or toolkit crate, nor on the
 //! two programs. It holds no `unsafe` code.
 #![forbid(unsafe_code)]
 
 pub mod boot;
+pub mod guard;
 
 /// The version of Studio, from `workspace.package.version` in the root
 /// `Cargo.toml`. Every program prints this one value.
