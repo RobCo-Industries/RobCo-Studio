@@ -5,7 +5,7 @@ name: spike-k1
 
 on:
   push:
-    branches: [spike-k1, spikes-index]
+    branches: [spike-k1]
   pull_request:
     paths:
       - spikes/k1/**
