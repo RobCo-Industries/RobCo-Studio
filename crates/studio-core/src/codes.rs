@@ -115,7 +115,7 @@ mod tests {
     use crate::resolve::Error;
 
     /// The table of "Error codes", copied from the spec.
-    const TABLE: &str = include_str!("../tests/fixtures/error-codes.md");
+    const TABLE: &str = include_str!("../tests/fixtures/error-codes.txt");
 
     /// Each code of the copied table with its exit code.
     fn spec_table() -> Vec<(String, u8)> {
