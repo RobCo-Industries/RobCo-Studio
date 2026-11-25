@@ -19,6 +19,7 @@ import sys
 import tomllib
 
 ROOT = pathlib.Path.cwd()
+CORE_REMOTE = "origin"
 CORE_PATH = "external/robco-core"
 CORE_BRANCH = "main"
 
@@ -81,9 +82,12 @@ def check_core_submodule(errors):
     # fetch the whole history of main.
     shallow = git("rev-parse", "--is-shallow-repository", cwd=sub).stdout.strip() == "true"
     depth = ["--unshallow"] if shallow else []
-    fetch = git("fetch", "--quiet", *depth, "origin", CORE_BRANCH, cwd=sub)
+    fetch = git("fetch", "--quiet", *depth, CORE_REMOTE, CORE_BRANCH, cwd=sub)
     if fetch.returncode != 0:
-        errors.append(f"{CORE_PATH}: could not fetch {CORE_BRANCH}: {fetch.stderr.strip()}")
+        errors.append(f"{CORE_PATH}: could not tell whether {pinned} is on {CORE_BRANCH}: the fetch failed: {fetch.stderr.strip()}")
+        return
+    if git("rev-parse", "--is-shallow-repository", cwd=sub).stdout.strip() != "false":
+        errors.append(f"{CORE_PATH}: could not tell whether {pinned} is on {CORE_BRANCH}: the history is still shallow")
         return
     on_main = git("merge-base", "--is-ancestor", pinned, "FETCH_HEAD", cwd=sub)
     if on_main.returncode == 1:
