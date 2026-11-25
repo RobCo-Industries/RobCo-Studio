@@ -107,3 +107,226 @@ pub trait ErrorCode {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boot::BootError;
+    use crate::manifest::ManifestError;
+    use crate::resolve::Error;
+
+    /// The table of "Error codes", copied from the spec.
+    const TABLE: &str = include_str!("../tests/fixtures/error-codes.md");
+
+    /// Each code of the copied table with its exit code.
+    fn spec_table() -> Vec<(String, u8)> {
+        let mut out = Vec::new();
+        for row in TABLE.lines().skip(2) {
+            let cells: Vec<&str> = row.split('|').collect();
+            let exit: u8 = cells[2].trim().parse().unwrap();
+            for code in cells[1].split('`').skip(1).step_by(2) {
+                out.push((code.to_owned(), exit));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn codes_equal_the_spec_table() {
+        let spec = spec_table();
+        assert_eq!(spec.len(), CODES.len());
+        for (code, exit) in &spec {
+            assert_eq!(exit_code(code), Some(*exit), "{code}");
+        }
+        assert_eq!(exit_code("lock: io"), None);
+    }
+
+    fn s() -> String {
+        "x".to_owned()
+    }
+
+    /// One value of every variant. The `match` below has no wildcard, so a
+    /// new variant does not compile until it is listed here.
+    fn resolve_errors() -> Vec<Error> {
+        let all = vec![
+            Error::IndexRead(s()),
+            Error::IndexSyntax(s()),
+            Error::IndexFormat(s()),
+            Error::IndexEntry(s()),
+            Error::IndexDuplicate {
+                name: s(),
+                version: s(),
+            },
+            Error::IndexHost {
+                tool: s(),
+                version: s(),
+                host: s(),
+            },
+            Error::PackageFormat(s()),
+            Error::PackageManifest(s()),
+            Error::NoPackage(s()),
+            Error::NoTool {
+                name: s(),
+                version: s(),
+            },
+            Error::LockSyntax(s()),
+            Error::LockFormat(s()),
+            Error::LockUnknownKey(s()),
+            Error::LockEntry(s()),
+            Error::LockStale(s()),
+            Error::LockHash(s()),
+            Error::LockMissing(s()),
+            Error::LockTool {
+                name: s(),
+                locked: s(),
+                named: s(),
+            },
+            Error::IoRead {
+                path: s(),
+                reason: s(),
+            },
+            Error::IoWrite {
+                path: s(),
+                reason: s(),
+            },
+        ];
+        for e in &all {
+            match e {
+                Error::IndexRead(_)
+                | Error::IndexSyntax(_)
+                | Error::IndexFormat(_)
+                | Error::IndexEntry(_)
+                | Error::IndexDuplicate { .. }
+                | Error::IndexHost { .. }
+                | Error::PackageFormat(_)
+                | Error::PackageManifest(_)
+                | Error::NoPackage(_)
+                | Error::NoTool { .. }
+                | Error::LockSyntax(_)
+                | Error::LockFormat(_)
+                | Error::LockUnknownKey(_)
+                | Error::LockEntry(_)
+                | Error::LockStale(_)
+                | Error::LockHash(_)
+                | Error::LockMissing(_)
+                | Error::LockTool { .. }
+                | Error::IoRead { .. }
+                | Error::IoWrite { .. } => {}
+            }
+        }
+        all
+    }
+
+    fn manifest_errors() -> Vec<ManifestError> {
+        let all = vec![
+            ManifestError::Syntax {
+                line: 1,
+                message: s(),
+            },
+            ManifestError::Format(s()),
+            ManifestError::UnknownKey(s()),
+            ManifestError::Type {
+                key: s(),
+                expected: "string",
+            },
+            ManifestError::Missing(s()),
+            ManifestError::Name(s()),
+            ManifestError::Version(s()),
+            ManifestError::Title(s()),
+            ManifestError::Kind(s()),
+            ManifestError::Subtype(s()),
+            ManifestError::Platform(s()),
+            ManifestError::Abi(s()),
+            ManifestError::Path {
+                key: s(),
+                reason: s(),
+            },
+            ManifestError::Icon(s()),
+            ManifestError::Sources(s()),
+        ];
+        for e in &all {
+            match e {
+                ManifestError::Syntax { .. }
+                | ManifestError::Format(_)
+                | ManifestError::UnknownKey(_)
+                | ManifestError::Type { .. }
+                | ManifestError::Missing(_)
+                | ManifestError::Name(_)
+                | ManifestError::Version(_)
+                | ManifestError::Title(_)
+                | ManifestError::Kind(_)
+                | ManifestError::Subtype(_)
+                | ManifestError::Platform(_)
+                | ManifestError::Abi(_)
+                | ManifestError::Path { .. }
+                | ManifestError::Icon(_)
+                | ManifestError::Sources(_) => {}
+            }
+        }
+        all
+    }
+
+    fn boot_errors() -> Vec<BootError> {
+        let all = vec![
+            BootError::Json(s()),
+            BootError::Field(s()),
+            BootError::NewerFormat(2),
+            BootError::UnknownBoard(s()),
+            BootError::UnknownMode {
+                board: s(),
+                mode: s(),
+            },
+            BootError::PathNotUtf8(s()),
+            BootError::OlderFormat(0),
+            BootError::BadFormat,
+            BootError::UnknownDefaultMode { at: s(), mode: s() },
+            BootError::UnknownPlaceholder { at: s(), name: s() },
+            BootError::PlaceholderInName(s()),
+            BootError::MissingCard {
+                board: s(),
+                placeholder: s(),
+            },
+        ];
+        for e in &all {
+            match e {
+                BootError::Json(_)
+                | BootError::Field(_)
+                | BootError::NewerFormat(_)
+                | BootError::UnknownBoard(_)
+                | BootError::UnknownMode { .. }
+                | BootError::PathNotUtf8(_)
+                | BootError::OlderFormat(_)
+                | BootError::BadFormat
+                | BootError::UnknownDefaultMode { .. }
+                | BootError::UnknownPlaceholder { .. }
+                | BootError::PlaceholderInName(_)
+                | BootError::MissingCard { .. } => {}
+            }
+        }
+        all
+    }
+
+    fn check(e: &dyn ErrorCode, shown: String, spec: &[(String, u8)]) {
+        let code = e.error_code();
+        let row = spec.iter().find(|(c, _)| c == code);
+        assert!(row.is_some(), "{code} is not in the spec's table");
+        assert_eq!(Some(e.exit_code()), row.map(|(_, n)| *n), "{code}");
+        assert!(!shown.is_empty());
+    }
+
+    #[test]
+    fn every_error_has_a_code_of_the_table() {
+        let spec = spec_table();
+        for e in resolve_errors() {
+            check(&e, e.to_string(), &spec);
+            // The message of a resolve error starts with its code.
+            assert!(e.to_string().starts_with(e.code()), "{e}");
+        }
+        for e in manifest_errors() {
+            check(&e, e.to_string(), &spec);
+            assert!(e.to_string().starts_with(e.error_code()), "{e}");
+        }
+        for e in boot_errors() {
+            check(&e, e.to_string(), &spec);
+        }
+    }
+}
