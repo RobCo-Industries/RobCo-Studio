@@ -397,7 +397,8 @@ pub fn build_card(mib: usize, entries: &[Entry<'_>]) -> Result<Vec<u8>, Error> {
     let bytes = mib
         .checked_mul(1024 * 1024)
         .ok_or_else(|| Error::new("build_card", -1, "card too large for this system"))?;
-    let sectors = (bytes / SECTOR) as u64;
+    let sectors = u64::try_from(bytes / SECTOR)
+        .map_err(|_| Error::new("build_card", -1, "card size out of range"))?;
     let part_sectors = u32::try_from(sectors - PART_LBA)
         .map_err(|_| Error::new("build_card", -1, "card size out of range"))?;
     let mut img = vec![0u8; bytes];
@@ -448,14 +449,35 @@ fn write_file(what: &str, path: &CStr, d: &[u8]) -> Result<(), Error> {
     // before `f` goes out of scope.
     let (w, c) = unsafe {
         fs_check(what, ffi::fs_open(&mut f, path.as_ptr(), flags))?;
-        let w = ffi::fs_write(&mut f, d.as_ptr().cast(), d.len());
+        let w = write_loop(what, d, |chunk| {
+            ffi::fs_write(&mut f, chunk.as_ptr().cast(), chunk.len())
+        });
         (w, ffi::fs_close(&mut f))
     };
-    fs_check(what, w)?;
-    if usize::try_from(w).ok() != Some(d.len()) {
-        return Err(Error::new(what, w, "short write"));
-    }
+    w?;
     fs_check(what, c)
+}
+
+/// Writes all of `d` with `write`, which returns a byte count or a
+/// negative `FS_ERR_*` code. `fs_write` caps one call at `IO_MAX` bytes and
+/// returns a short count for more, so a short count is not an error: the
+/// loop goes on from there. It fails on a negative code, on a count of 0
+/// while bytes remain, and on a count larger than what was asked.
+fn write_loop(what: &str, d: &[u8], mut write: impl FnMut(&[u8]) -> c_int) -> Result<(), Error> {
+    let mut done = 0usize;
+    while let Some(rest) = d.get(done..).filter(|r| !r.is_empty()) {
+        let w = write(rest);
+        fs_check(what, w)?;
+        let n = usize::try_from(w).unwrap_or(0);
+        if n == 0 {
+            return Err(Error::new(what, w, "write made no progress"));
+        }
+        if n > rest.len() {
+            return Err(Error::new(what, w, "write reported more bytes than asked"));
+        }
+        done += n;
+    }
+    Ok(())
 }
 
 fn statvfs(vol: &CStr) -> Result<ffi::FsStatvfs, Error> {
@@ -484,13 +506,70 @@ pub fn read_back(img: &mut [u8], path: &str) -> Result<Vec<u8>, Error> {
         let mut st = ffi::FsStat::default();
         // SAFETY: `p` ends with NUL; `st` outlives the call.
         fs_check(path, unsafe { ffi::fs_stat(p.as_ptr(), &mut st) })?;
-        let mut buf = vec![0u8; st.size as usize];
+        let size = usize::try_from(st.size)
+            .map_err(|_| Error::new(path, -1, "file too large for this system"))?;
+        let mut buf = vec![0u8; size];
         let mut n = 0usize;
+        // One call is enough: `fs_read_file` loops on `fs_read` itself until
+        // `max` bytes, a 0 count or an error. It returns FS_ERR_TOOBIG when
+        // the file outgrew `buf`, and FS_OK with a short `n` when a read
+        // stopped early, which is checked below.
         // SAFETY: `buf` holds `buf.len()` bytes; `p` and `n` outlive the call.
         let rc =
             unsafe { ffi::fs_read_file(p.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), &mut n) };
         fs_check(path, rc)?;
-        buf.truncate(n);
+        if n != size {
+            return Err(Error::new(path, -1, "short read: the file ended early"));
+        }
         Ok(buf)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_loop_goes_on_after_short_writes() {
+        let d: Vec<u8> = (0..=255).collect();
+        let mut out = Vec::new();
+        let mut calls = 0;
+        write_loop("t", &d, |c| {
+            calls += 1;
+            let n = c.len().min(3);
+            out.extend_from_slice(&c[..n]);
+            c_int::try_from(n).unwrap()
+        })
+        .unwrap();
+        assert_eq!(out, d);
+        assert_eq!(calls, 86);
+    }
+
+    #[test]
+    fn write_loop_fails_when_no_progress() {
+        let e = write_loop("t", b"abc", |_| 0).unwrap_err();
+        assert_eq!(e.text, "write made no progress");
+    }
+
+    #[test]
+    fn write_loop_fails_on_an_error_code() {
+        let mut calls = 0;
+        let e = write_loop("t", &[0u8; 64], |_| {
+            calls += 1;
+            if calls == 3 { ffi_nospc() } else { 2 }
+        })
+        .unwrap_err();
+        assert_eq!(e.code, ffi_nospc());
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn write_loop_refuses_an_overcount_and_skips_empty_data() {
+        assert!(write_loop("t", b"ab", |_| 5).is_err());
+        write_loop("t", b"", |_| panic!("no call for empty data")).unwrap();
+    }
+
+    fn ffi_nospc() -> c_int {
+        -12
+    }
 }
