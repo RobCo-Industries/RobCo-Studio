@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Spike K1: build QEMU 10.1.2 for arm and aarch64, then pack it.
+# Usage: build-qemu.sh <linux|macos|windows> <out-dir>
+# Runs in CI only. Writes <out-dir>/qemu/ and <out-dir>/report.txt.
+set -euxo pipefail
+
+os=$1
+out=$(mkdir -p "$2" && cd "$2" && pwd)
+ver=10.1.2
+# The pin RobCo-Core's ci/Dockerfile checks. QEMU itself publishes a GPG
+# signature, not a SHA-256.
+sha=9d75f331c1a5cb9b6eb8fd9f64f563ec2eab346c822cb97f8b35cd82d3f11479
+work=$(mktemp -d)
+report=$out/report.txt
+dist=$out/qemu
+
+cd "$work"
+curl -fsSLo qemu.tar.xz "https://download.qemu.org/qemu-${ver}.tar.xz"
+if command -v sha256sum >/dev/null; then
+  echo "${sha}  qemu.tar.xz" | sha256sum -c -
+else
+  echo "${sha}  qemu.tar.xz" | shasum -a 256 -c -
+fi
+# Firmware sources and CI tooling hold symlinks Windows cannot make.
+# The build needs neither.
+tar xf qemu.tar.xz --exclude="qemu-${ver}/roms" --exclude="qemu-${ver}/tests/lcitool/libvirt-ci"
+cd "qemu-${ver}"
+
+configure=(./configure
+  --target-list=arm-softmmu,aarch64-softmmu
+  --without-default-features
+  --enable-fdt=system
+  --enable-pixman
+  --disable-docs
+  --disable-tools
+  --disable-guest-agent
+  --disable-slirp
+  --disable-werror)
+
+if [ "$os" = macos ]; then
+  # Homebrew's libfdt has no pkg-config file that meson finds.
+  brew=$(brew --prefix)
+  configure+=(--extra-cflags="-I$brew/include" --extra-ldflags="-L$brew/lib")
+fi
+
+jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
+start=$(date +%s)
+"${configure[@]}"
+# Only the two emulators: the unit tests do not link on MinGW in 10.1.2
+# (test-vmstate, qemu_ftruncate64) and Studio ships none of them.
+exe=""; sfx=""
+[ "$os" = windows ] && exe=.exe
+[ "$os" = macos ] && sfx=-unsigned
+ninja -C build -j"$jobs" "qemu-system-arm$sfx$exe" "qemu-system-aarch64$sfx$exe"
+secs=$(( $(date +%s) - start ))
+
+mkdir -p "$dist/bin" "$dist/lib"
+# On macOS the build leaves "-unsigned" binaries. make install signs them
+# with the HVF entitlement. TCG needs none, so an ad hoc signature follows.
+for t in arm aarch64; do cp "build/qemu-system-$t$sfx$exe" "$dist/bin/qemu-system-$t$exe"; done
+cp "$work/qemu.tar.xz" "$out/qemu-${ver}.tar.xz"
+
+{
+  echo "os: $os"
+  echo "configure: ${configure[*]}"
+  echo "build seconds (configure + ninja -j$jobs, two emulators): $secs"
+  echo "binary sizes:"
+  ls -l "$dist/bin"
+  echo "runtime libraries before packing:"
+  case $os in
+    linux) ldd "$dist/bin/qemu-system-arm" ;;
+    macos) otool -L "$dist/bin/qemu-system-arm" ;;
+    windows) ldd "$dist/bin/qemu-system-arm.exe" ;;
+  esac
+} >"$report"
+
+# Drop debug symbols. Release users do not need them.
+unstripped=$(du -sk "$dist/bin" | cut -f1)
+case $os in
+  macos) strip -x "$dist"/bin/* ;;
+  *) strip "$dist"/bin/* ;;
+esac
+echo "binaries before strip (du -sk, KiB): $unstripped" >>"$report"
+
+# Pack the libraries that do not come with the system next to the binaries.
+case $os in
+  linux)
+    # Not packed: the spike records what it would take. See docs/spikes/K1.md.
+    ;;
+  macos)
+    dylibbundler -of -b -x "$dist/bin/qemu-system-arm" -x "$dist/bin/qemu-system-aarch64" \
+      -d "$dist/lib" -p @executable_path/../lib/
+    # dylibbundler can add the same run path twice. dyld 26 aborts on that.
+    rp=@executable_path/../lib/
+    for b in "$dist"/bin/*; do
+      n=$(otool -l "$b" | grep -c "path $rp " || [ $? = 1 ])
+      while [ "$n" -gt 1 ]; do install_name_tool -delete_rpath "$rp" "$b"; n=$((n - 1)); done
+    done
+    for f in "$dist"/lib/*.dylib "$dist"/bin/*; do codesign --force -s - "$f"; done
+    "$dist/bin/qemu-system-arm" --version
+    { echo "runtime libraries after packing:"; otool -L "$dist/bin/qemu-system-arm"; } >>"$report"
+    ;;
+  windows)
+    for b in "$dist"/bin/*.exe; do
+      ldd "$b" | awk '$3 ~ /^\/ucrt64\// {print $3}'
+    done | sort -u | while read -r dll; do cp "$dll" "$dist/bin/"; done
+    { echo "runtime libraries after packing:"; ldd "$dist/bin/qemu-system-arm.exe"; } >>"$report"
+    ;;
+esac
+
+{
+  echo "packed files:"
+  ls -lR "$dist"
+  echo "packed size (du -sk, KiB): $(du -sk "$dist" | cut -f1)"
+} >>"$report"
+cat "$report"

@@ -1,0 +1,183 @@
+name: spike-k1
+
+# Spike K1: build QEMU 10.1.2 on the three hosted runners and run
+# RobCo-Core's canary suite against each build on a fresh runner.
+
+on:
+  push:
+    branches: [spike-k1]
+  pull_request:
+    paths:
+      - spikes/k1/**
+      - .github/workflows/spike-k1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-k1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ROBCO_CORE_SHA: c8220b2731b90d0446db636a4dc986a3ce1035cb
+  XPACK: https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v15.2.1-1.1
+  XPACK_NAME: xpack-arm-none-eabi-gcc-15.2.1-1.1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The canary verdict decides the spike's result, so its decision is
+  # tested first, then proven on a broken setup: no RobCo-Core checkout.
+  checker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests of canary.py
+        run: python -m unittest discover -s spikes/k1 -v
+      - name: Guard fails on a broken setup
+        run: |
+          python -m pip install pytest==8.4.2
+          set +e
+          python spikes/k1/canary.py guard > guard.log 2>&1
+          code=$?
+          set -e
+          cat guard.log
+          test "$code" -ne 0
+          grep -F "Verdict: fail" guard.log
+          grep -E "pytest exit code [2-5]" guard.log
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux }
+          - { os: macos-latest, name: macos }
+          - { os: windows-latest, name: windows }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # The build script pins the QEMU tarball's SHA-256, so its hash keys
+      # both the recipe and the source. A hit skips the tools and the build.
+      - name: Cached QEMU build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: qemu-${{ matrix.name }}-${{ hashFiles('spikes/k1/build-qemu.sh') }}
+      - name: Build tools (Linux)
+        if: matrix.name == 'linux' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ninja-build \
+            pkg-config python3-venv libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev
+      - name: Build tools (macOS)
+        if: matrix.name == 'macos' && steps.cache.outputs.cache-hit != 'true'
+        run: brew install glib pixman dtc ninja pkgconf dylibbundler
+      - name: Build tools (Windows)
+        if: matrix.name == 'windows' && steps.cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make tar xz curl diffutils bison flex git
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-pixman mingw-w64-ucrt-x86_64-dtc
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-python-pip
+      - name: Build QEMU
+        if: matrix.name != 'windows' && steps.cache.outputs.cache-hit != 'true'
+        run: bash spikes/k1/build-qemu.sh ${{ matrix.name }} out
+      - name: Build QEMU (MSYS2)
+        if: matrix.name == 'windows' && steps.cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        # QEMU's offline wheel folder is a file:// URL pip cannot read on
+        # Windows, so its test runner dependency comes from PyPI here.
+        run: |
+          python -m pip install --break-system-packages pycotap==1.3.1
+          bash spikes/k1/build-qemu.sh windows out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-${{ matrix.name }}
+          path: out/qemu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.name }}
+          path: out/report.txt
+
+  canary:
+    needs: [checker, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux, gcc: linux-x64.tar.gz, gcc_sha: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6 }
+          - { os: macos-latest, name: macos, gcc: darwin-arm64.tar.gz, gcc_sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870 }
+          - { os: windows-latest, name: windows, gcc: win32-x64.zip, gcc_sha: bae6a3d1667697ce750c3b13d6d26d80973ecedc2cc87bf04869e83447fd93ea }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ env.ROBCO_CORE_SHA }}
+          path: robco-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-${{ matrix.name }}
+          path: qemu
+      - name: QEMU runtime libraries (Linux, not packed)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglib2.0-0t64 libpixman-1-0 libfdt1 zlib1g
+      - name: xPack arm-none-eabi-gcc
+        run: |
+          mkdir -p "$RUNNER_TEMP/gcc" && cd "$RUNNER_TEMP/gcc"
+          f="$XPACK_NAME-${{ matrix.gcc }}"
+          curl -fsSLo "$f" "$XPACK/$f"
+          echo "${{ matrix.gcc_sha }}  $f" | sha256sum -c - 2>/dev/null \
+            || echo "${{ matrix.gcc_sha }}  $f" | shasum -a 256 -c -
+          case "$f" in *.zip) unzip -q "$f" ;; *) tar xzf "$f" ;; esac
+          echo "$RUNNER_TEMP/gcc/$XPACK_NAME/bin" >> "$GITHUB_PATH"
+      - name: Put QEMU on the path
+        run: |
+          chmod +x qemu/bin/*
+          echo "$GITHUB_WORKSPACE/qemu/bin" >> "$GITHUB_PATH"
+      - name: Check the build answers
+        run: |
+          qemu-system-arm --version
+          qemu-system-arm -M help | grep -E '^raspi(0|1ap|2b) '
+          qemu-system-aarch64 -M help | grep -E '^raspi3b '
+          arm-none-eabi-gcc --version | head -1
+      - name: Python test tools
+        run: python -m pip install -r robco-core/tests/requirements.txt
+      # First pass counts. Only the known race in RobCo-Core's
+      # test_v23_spi0_byte_rate[raspi3b] is retried, at most twice.
+      - name: Canary, harness unchanged (Linux, macOS)
+        if: matrix.name != 'windows'
+        run: python spikes/k1/canary.py ${{ matrix.name }}
+      - name: Canary, harness over TCP (Windows)
+        if: matrix.name == 'windows'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/spikes/k1;${{ github.workspace }}/robco-core/tests
+        run: python spikes/k1/canary.py windows -p k1_tcp
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-${{ matrix.name }}
+          path: canary*.xml
