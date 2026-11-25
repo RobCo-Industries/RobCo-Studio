@@ -14,14 +14,17 @@
 #   linux    apt-get source --download-only: the .dsc, the upstream
 #            archive and the debian archive with the rules and patches.
 #            Needs deb-src lines in apt's sources.
-#   macos    the formula file, brew cat, every download of brew fetch
-#            --build-from-source: the upstream archive and its patches,
-#            the keg's install receipt and brew info --json=v2.
+#   macos    the formula file from homebrew-core at the tap commit brew
+#            info names, the upstream archive and its patches, each
+#            checked against the SHA-256 Homebrew states, the keg's
+#            install receipt and brew info --json=v2. No brew command
+#            that turns on developer mode.
 #   windows  MSYS2's source package of the exact version, which holds
 #            the PKGBUILD, its patches and the upstream archive, and
 #            pacman -Qi.
 set -euo pipefail
 
+here=$(cd "$(dirname "$0")" && pwd)
 os=$1
 out=$(cd "$2" && pwd)
 record=$out/qemu/licenses/packed-libraries.txt
@@ -67,30 +70,11 @@ while IFS=$'\t' read -r pkg ver; do
       [ -f "$keg/INSTALL_RECEIPT.json" ] || { echo "$keg, the keg packed, is gone" >&2; exit 1; }
       cp "$keg/INSTALL_RECEIPT.json" "$d/INSTALL_RECEIPT.json"
       brew info --json=v2 --formula "$pkg" >"$d/brew-info.json"
-      # brew cat and brew fetch read the current formula, not the one the
-      # keg was built from. Its full version, revision included, must be
-      # the keg's, or the recipe and patches shipped are not the packed ones.
-      fver=$(python3 -c '
-import json, sys
-f = json.load(open(sys.argv[1]))["formulae"][0]
-v = f["versions"]["stable"]
-print(v + ("_%d" % f["revision"] if f.get("revision") else ""))' "$d/brew-info.json") \
-        || { echo "brew info gave no version for $pkg" >&2; exit 1; }
-      [ "$fver" = "$ver" ] || { echo "the formula of $pkg is $fver now, but the keg packed is $ver" >&2; exit 1; }
-      brew cat --formula "$pkg" >"$d/$pkg.rb"
-      [ -s "$d/$pkg.rb" ] || { echo "brew cat gave no formula for $pkg" >&2; exit 1; }
-      brew fetch --build-from-source --formula "$pkg" >"$d/brew-fetch.txt" 2>&1
-      main=$(brew --cache --build-from-source --formula "$pkg")
-      case $(basename "$main") in
-        *"${ver%_*}"*) ;;
-        *) echo "source $main of $pkg is not version $ver" >&2; exit 1 ;;
-      esac
-      files=$( { echo "$main"; sed -n -e 's/^Downloaded to: //p' -e 's/^Already downloaded: //p' "$d/brew-fetch.txt"; } | sort -u)
-      while IFS= read -r f; do
-        [ -f "$f" ] || { echo "brew fetch named $f, which is not a file" >&2; exit 1; }
-        cp "$f" "$d/$(basename "$f" | sed 's/^[0-9a-f]\{64\}--//')"
-      done <<<"$files"
-      rm "$d/brew-fetch.txt"
+      # Homebrew installs from its API and keeps no tap on disk, so brew
+      # cat cannot read the formula. brew_sources.py fetches it, the source
+      # archive and the patches, each checked against a hash brew info
+      # states, and fails unless the formula's full version is the keg's.
+      python3 "$here/brew_sources.py" "$d/brew-info.json" "$ver" "$d"
       ;;
     windows)
       desc=$(pacman -Qi "$pkg")
@@ -105,7 +89,10 @@ print(v + ("_%d" % f["revision"] if f.get("revision") else ""))' "$d/brew-info.j
       [ -n "$base" ] || { echo "$dbdesc names no package base" >&2; exit 1; }
       s=$base-$ver.src.tar.zst
       fetch "https://repo.msys2.org/mingw/sources/$s" "$d/$s"
-      tar tf "$d/$s" | grep -q '/PKGBUILD$' || { echo "$s holds no PKGBUILD" >&2; exit 1; }
+      # The listing is read whole before it is searched: a reader that stops
+      # early breaks zstd's pipe, and pipefail counts that as a failure.
+      names=$(tar tf "$d/$s") || { echo "cannot list $s" >&2; exit 1; }
+      grep -q '/PKGBUILD$' <<<"$names" || { echo "$s holds no PKGBUILD" >&2; exit 1; }
       ;;
     *) echo "unknown system: $os" >&2; exit 2 ;;
   esac
