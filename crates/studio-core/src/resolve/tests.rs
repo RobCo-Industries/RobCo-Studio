@@ -1321,3 +1321,21 @@ fn resolve_https_url_needs_a_rest_and_no_control_character() {
     );
     assert_eq!(code(parse_index(&text)), "index: entry");
 }
+
+#[test]
+fn resolve_sdk_json_file_path_keeps_the_archive_rules() {
+    for bad in [
+        "../MIT.txt",
+        "/MIT.txt",
+        "C:/MIT.txt",
+        "LICENSES//MIT.txt",
+        "LICENSES\\\\MIT.txt",
+        "LICENSES/\\u0000.txt",
+    ] {
+        let text = SDK.replacen("\"LICENSES/MIT.txt\"", &format!("\"{bad}\""), 1);
+        assert_ne!(text, SDK);
+        let e = sdk_json::parse(text.as_bytes()).unwrap_err();
+        assert_eq!(e.code(), "package: manifest", "{bad}");
+        assert!(e.to_string().contains("breaks the path rules"), "{e}");
+    }
+}

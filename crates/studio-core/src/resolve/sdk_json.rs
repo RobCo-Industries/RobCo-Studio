@@ -307,6 +307,13 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
                 .ok_or_else(|| bad(&format!("{at}size"), "is not a non-negative integer"))?,
             sha256: hash(e, &at, "sha256")?,
         };
+        // A path is an entry name, so it keeps the path rules of the archive.
+        if !index::is_archive_path(&f.path) {
+            return Err(bad(
+                &format!("{at}path = {:?}", f.path),
+                "breaks the path rules of the archive",
+            ));
+        }
         // Strictly ascending byte order: a path out of order or twice fails.
         if let Some(prev) = files.last()
             && prev.path.as_bytes() >= f.path.as_bytes()
