@@ -87,12 +87,31 @@ impl Approved {
     pub fn image_len(&self) -> u64 {
         self.image_len
     }
-    /// True when a second decision names the same disk, the same size and the same image
-    /// length. The writer decides again after it opens the disk and needs this to hold.
+    /// True when a second decision approves the same thing as this one. The writer decides
+    /// again after it opens the disk and needs this to hold.
+    ///
+    /// Every field is compared, each for a reason. The destructuring has no `..`, so a new
+    /// field does not compile until it is added here with its reason.
+    /// Fields the rules read but `Approved` does not carry, such as the bus, removable,
+    /// mounts and the system flags, are checked by the second `decide` itself: it must
+    /// pass again before `same_as` is asked.
     pub fn same_as(&self, other: &Approved) -> bool {
-        same_path(&self.path, &other.path)
-            && self.size == other.size
-            && self.image_len == other.image_len
+        let Approved {
+            // The disk the writer opened: another path is another disk.
+            path,
+            // The writer checks the image fits, and on Linux compares it with the open
+            // device. A card of another size under the same path is another card.
+            size,
+            // The writer pads every write and the read-back to this sector size. A disk
+            // with another sector size takes partial sectors or writes past the image.
+            block_size,
+            // The writer writes and compares exactly this many bytes.
+            image_len,
+        } = self;
+        same_path(path, &other.path)
+            && *size == other.size
+            && *block_size == other.block_size
+            && *image_len == other.image_len
     }
 }
 
@@ -219,5 +238,63 @@ pub fn decide(
         })
     } else {
         Err(why)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base() -> Approved {
+        Approved {
+            path: r"\\.\PhysicalDrive4".into(),
+            size: 31_914_983_424,
+            block_size: 512,
+            image_len: 64 << 20,
+        }
+    }
+
+    /// One approval per field, the same as `base` except for that field. The match has no
+    /// `..`, so a new field breaks this test until it gets its own changed copy.
+    #[test]
+    fn same_as_compares_every_field() {
+        let a = base();
+        assert!(a.same_as(&base()));
+        let Approved {
+            path: _,
+            size: _,
+            block_size: _,
+            image_len: _,
+        } = &a;
+        let changed = [
+            Approved {
+                path: r"\\.\PhysicalDrive5".into(),
+                ..base()
+            },
+            Approved {
+                size: a.size + 512,
+                ..base()
+            },
+            Approved {
+                block_size: 4096,
+                ..base()
+            },
+            Approved {
+                image_len: a.image_len + 512,
+                ..base()
+            },
+        ];
+        for c in &changed {
+            assert!(!a.same_as(c), "{c:?} passed as the same disk");
+        }
+    }
+
+    #[test]
+    fn same_as_ignores_path_case_on_windows() {
+        let b = Approved {
+            path: r"\\.\physicaldrive4".into(),
+            ..base()
+        };
+        assert!(base().same_as(&b));
     }
 }
