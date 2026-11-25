@@ -69,7 +69,7 @@ texts() {
 
 # Phrases only the full text of a licence holds: its title line and a line
 # from near its end. A file that names a licence and points elsewhere holds
-# neither. Compared ignoring case and line breaks.
+# neither. Compared ignoring case, line breaks and C comment stars.
 markers() {
   case $1 in
     LGPL-2.1) printf '%s\n' "GNU LESSER GENERAL PUBLIC LICENSE" "Version 2.1, February 1999" "That's all there is to it!" ;;
@@ -94,7 +94,7 @@ has_text() {
   want=$(markers "$id") || return 1
   for f in "$@"; do
     [ -f "$f" ] || continue
-    n=$(tr -s ' \t\r\n' ' ' <"$f")
+    n=$(tr '\t\r\n*' '    ' <"$f" | tr -s ' ')
     ok=1
     while IFS= read -r m; do
       grep -qiF -- "$m" <<<"$n" || { ok=0; break; }
