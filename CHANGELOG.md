@@ -15,4 +15,5 @@ All notable changes to this project are listed here. The format follows [Keep a 
 
 ### Changed
 
+- `external/robco-core` moves from `c6b6482` to `e004c73`, which holds the final specs in `docs/spec/`. No file that `studio-sys` compiles or includes changed.
 - Spike K1 pins RobCo-Core `c6b6482`, where the racy canary case is fixed, and no longer retries any case.
