@@ -1,0 +1,5 @@
+{"blockdevices": [
+  {"name": "/dev/sda", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null], "vendor": "Generic", "model": "SD Card Reader", "log-sec": 512},
+  {"name": "/dev/vda", "type": "disk", "size": 85899345920, "rm": false, "hotplug": false, "tran": null, "mountpoints": [null], "log-sec": 512,
+   "children": [{"name": "/dev/vda1", "type": "part", "mountpoints": ["/var/lib/overlay"]}]}
+]}

@@ -1,0 +1,13 @@
+{"root": {"DeviceIdentifier": "disk5s1s1", "ParentWholeDisk": "disk5", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk4s2"}], "MountPoint": "/"},
+ "list": {
+  "WholeDisks": ["disk0", "disk4", "disk5"],
+  "AllDisksAndPartitions": [
+   {"DeviceIdentifier": "disk0", "Size": 1000555581440, "Partitions": [{"DeviceIdentifier": "disk0s2"}]},
+   {"DeviceIdentifier": "disk4", "Size": 62914560000, "Partitions": [{"DeviceIdentifier": "disk4s1"}, {"DeviceIdentifier": "disk4s2"}]},
+   {"DeviceIdentifier": "disk5", "APFSPhysicalStores": [{"DeviceIdentifier": "disk4s2"}], "APFSVolumes": [{"DeviceIdentifier": "disk5s1s1", "MountPoint": "/"}]}
+  ]},
+ "info": {
+  "disk0": {"DeviceNode": "/dev/disk0", "TotalSize": 1000555581440, "Internal": true, "Removable": false, "RemovableMedia": false, "BusProtocol": "Apple Fabric", "DeviceBlockSize": 4096},
+  "disk4": {"DeviceNode": "/dev/disk4", "TotalSize": 62914560000, "Internal": false, "Removable": true, "RemovableMedia": true, "BusProtocol": "USB", "MediaName": "USB Stick", "DeviceBlockSize": 512},
+  "disk5": {"DeviceNode": "/dev/disk5", "TotalSize": 62000000000, "Internal": false, "Removable": true, "RemovableMedia": true, "BusProtocol": "USB", "IORegistryEntryName": "AppleAPFSMedia", "DeviceBlockSize": 4096}
+ }}

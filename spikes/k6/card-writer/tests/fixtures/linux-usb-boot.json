@@ -1,0 +1,5 @@
+{"blockdevices": [
+  {"name": "/dev/sda", "type": "disk", "size": 62914560000, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null], "vendor": "Example", "model": "Live Stick", "log-sec": 512,
+   "children": [{"name": "/dev/sda1", "type": "part", "mountpoints": ["/boot/efi"]}, {"name": "/dev/sda2", "type": "part", "mountpoints": ["/"]}]},
+  {"name": "/dev/sdb", "type": "disk", "size": 31914983424, "rm": true, "hotplug": true, "tran": "usb", "mountpoints": [null], "vendor": "Generic", "model": "SD Card Reader", "log-sec": 512}
+]}

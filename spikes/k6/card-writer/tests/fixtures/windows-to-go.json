@@ -1,0 +1,4 @@
+{"SystemDrive": "C:",
+ "Disks": {"Number": 1, "FriendlyName": "Example USB Stick", "Size": 62914560000, "BusType": 7, "BusTypeText": "USB", "IsBoot": false, "IsSystem": false, "IsOffline": false, "LogicalSectorSize": 512},
+ "Partitions": {"DiskNumber": 1, "DriveLetter": "C", "IsBoot": false, "IsSystem": false, "AccessPaths": ["C:\\"]},
+ "Drives": {"Index": 1, "MediaType": "Removable Media"}}

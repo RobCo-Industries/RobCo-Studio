@@ -1,0 +1,10 @@
+{"SystemDrive": "C:",
+ "Disks": [
+  {"Number": 0, "FriendlyName": "Example SSD", "Size": 256060514304, "BusType": 11, "BusTypeText": "SATA", "IsBoot": true, "IsSystem": true, "IsOffline": false},
+  {"Number": 1, "FriendlyName": "Reader A", "Size": 31914983424, "BusType": 7, "BusTypeText": "SATA", "IsBoot": false, "IsSystem": false, "IsOffline": false},
+  {"Number": 2, "FriendlyName": "Reader B", "Size": 31914983424, "BusType": 7, "BusTypeText": "USB", "IsBoot": null, "IsSystem": null, "IsOffline": false},
+  {"Number": 3, "FriendlyName": "Reader C", "Size": null, "BusType": 7, "BusTypeText": "USB", "IsBoot": false, "IsSystem": false, "IsOffline": false},
+  {"Number": 4, "FriendlyName": "Reader D", "Size": 31914983424, "BusType": 7, "BusTypeText": "USB", "IsBoot": false, "IsSystem": false, "IsOffline": false}
+ ],
+ "Partitions": [{"DiskNumber": 0, "DriveLetter": "C", "IsBoot": true, "IsSystem": false, "AccessPaths": ["C:\\"]}],
+ "Drives": [{"Index": 0, "MediaType": "Fixed hard disk media"}, {"Index": 1, "MediaType": "Removable Media"}, {"Index": 2, "MediaType": "Removable Media"}, {"Index": 3, "MediaType": "Removable Media"}]}

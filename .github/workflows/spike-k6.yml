@@ -1,0 +1,258 @@
+name: spike-k6
+
+# Spike K6: list disks, refuse the system disk, write and read back a virtual disk.
+# Every write goes to a virtual disk this job creates. Hosted runners give sudo and
+# administrator rights, used here only.
+
+on:
+  push:
+    branches: [spike-k6]
+  pull_request:
+    paths:
+      - spikes/k6/**
+      - .github/workflows/spike-k6.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-k6-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+defaults:
+  run:
+    shell: bash
+    working-directory: spikes/k6
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/k6
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Refusal rules on recorded lists
+        run: cargo test --locked
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/k6
+      - name: Build
+        run: cargo build --locked
+      - name: Tools
+        run: |
+          command -v strace >/dev/null || sudo apt-get install -y strace
+          command -v mkfs.vfat >/dev/null || sudo apt-get install -y dosfstools
+      - name: Disk list
+        run: |
+          lsblk -o NAME,TYPE,SIZE,RM,HOTPLUG,TRAN,MOUNTPOINTS
+          ./target/debug/k6 list
+      - name: Refuse the system disk without opening it
+        run: |
+          sys=$(lsblk -nrpo PKNAME,MOUNTPOINT | awk '$2=="/" {print $1; exit}')
+          test -n "$sys"
+          echo "system disk: $sys"
+          ./target/debug/k6 make-image --out card.img --size-mib 60 --seed 6
+          set +e
+          sudo strace -f -e trace=open,openat -o trace.txt \
+            ./target/debug/k6 write --device "$sys" --image card.img --allow-virtual > out.txt 2> err.txt
+          code=$?
+          set -e
+          cat out.txt err.txt
+          test "$code" -eq 3
+          grep -q "^REFUSED $sys" out.txt
+          grep -q HoldsRunningSystem out.txt
+          grep -c openat trace.txt
+          if grep -F "\"$sys" trace.txt | grep -E 'O_WRONLY|O_RDWR'; then echo "::error::the system disk was opened for writing"; exit 1; fi
+          if grep -q "opening" err.txt; then echo "::error::the writer reached the open"; exit 1; fi
+      - name: Create a 64 MiB loop device
+        run: |
+          truncate -s 64M "$RUNNER_TEMP/k6disk.img"
+          dev=$(sudo losetup --find --show "$RUNNER_TEMP/k6disk.img")
+          echo "K6_DEV=$dev" >> "$GITHUB_ENV"
+          echo "loop device: $dev"
+      - name: Refuse it without the CI switch, and while mounted
+        run: |
+          set +e
+          ./target/debug/k6 check --device "$K6_DEV"; a=$?
+          sudo mkfs.vfat "$K6_DEV" >/dev/null
+          sudo mkdir -p /mnt/k6 && sudo mount "$K6_DEV" /mnt/k6
+          ./target/debug/k6 check --device "$K6_DEV" --allow-virtual | tee out.txt; b=$?
+          sudo umount /mnt/k6
+          set -e
+          test "$a" -eq 3
+          test "$b" -eq 3
+          grep -q VolumesMounted out.txt
+      - name: Write and read back
+        run: |
+          sudo ./target/debug/k6 write --device "$K6_DEV" --image card.img --allow-virtual | tee out.txt
+          grep -q "READ-BACK OK" out.txt
+          sudo cmp -n "$(stat -c %s card.img)" card.img "$K6_DEV"
+          ./target/debug/k6 make-image --out other.img --size-mib 60 --seed 7
+          set +e
+          sudo ./target/debug/k6 verify --device "$K6_DEV" --image other.img; code=$?
+          set -e
+          test "$code" -eq 4
+      - name: Detach and delete
+        if: always()
+        run: |
+          if [ -n "${K6_DEV:-}" ]; then sudo losetup -d "$K6_DEV"; fi
+          rm -f "$RUNNER_TEMP/k6disk.img"
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/k6
+      - name: Build
+        run: cargo build --locked
+      - name: Disk list
+        run: |
+          diskutil list
+          ./target/debug/k6 list
+      - name: Refuse the system disks without opening them
+        run: |
+          ./target/debug/k6 make-image --out card.img --size-mib 60 --seed 6
+          container=$(diskutil info -plist / | plutil -extract ParentWholeDisk raw -)
+          store=$(diskutil info -plist / | plutil -extract APFSPhysicalStores.0.APFSPhysicalStore raw -)
+          physical=$(echo "$store" | sed -E 's/^(disk[0-9]+).*/\1/')
+          for d in "$container" "$physical"; do
+            echo "system disk: /dev/$d"
+            set +e
+            sudo ./target/debug/k6 write --device "/dev/$d" --image card.img --allow-virtual > out.txt 2> err.txt
+            code=$?
+            set -e
+            cat out.txt err.txt
+            test "$code" -eq 3
+            grep -q "^REFUSED /dev/$d" out.txt
+            grep -q HoldsRunningSystem out.txt
+            if grep -q "opening" err.txt; then echo "::error::the writer reached the open"; exit 1; fi
+          done
+      - name: Create and attach a 64 MiB disk image without mounting it
+        run: |
+          mkfile -n 64m "$RUNNER_TEMP/k6disk.img"
+          dev=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount "$RUNNER_TEMP/k6disk.img" | awk 'NR==1 {print $1}')
+          test -n "$dev"
+          echo "K6_DEV=$dev" >> "$GITHUB_ENV"
+          diskutil info "$dev"
+      - name: Refuse it without the CI switch
+        run: |
+          set +e
+          ./target/debug/k6 check --device "$K6_DEV"; code=$?
+          set -e
+          test "$code" -eq 3
+      - name: Write and read back
+        run: |
+          sudo ./target/debug/k6 write --device "$K6_DEV" --image card.img --allow-virtual | tee out.txt
+          grep -q "READ-BACK OK" out.txt
+          sudo cmp -n "$(stat -f %z card.img)" card.img "/dev/r${K6_DEV#/dev/}"
+          ./target/debug/k6 make-image --out other.img --size-mib 60 --seed 7
+          set +e
+          sudo ./target/debug/k6 verify --device "$K6_DEV" --image other.img; code=$?
+          set -e
+          test "$code" -eq 4
+      - name: Detach and delete
+        if: always()
+        run: |
+          if [ -n "${K6_DEV:-}" ]; then hdiutil detach "$K6_DEV" -force; fi
+          rm -f "$RUNNER_TEMP/k6disk.img"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/k6
+      - name: Build
+        run: cargo build --locked
+      - name: Disk list
+        shell: pwsh
+        run: |
+          Get-Disk | Format-Table Number, FriendlyName, Size, BusType, IsBoot, IsSystem, IsOffline
+          ./target/debug/k6.exe list
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Refuse the system disk without opening it
+        shell: pwsh
+        run: |
+          ./target/debug/k6.exe make-image --out card.img --size-mib 60 --seed 6
+          $n = (Get-Partition -DriveLetter $env:SystemDrive[0]).DiskNumber
+          $sys = "\\.\PhysicalDrive$n"
+          "system disk: $sys"
+          $out = ./target/debug/k6.exe write --device $sys --image card.img --allow-virtual 2>&1
+          $code = $LASTEXITCODE
+          $out
+          if ($code -ne 3) { "::error::exit $code"; exit 1 }
+          if (-not ($out -match '^REFUSED')) { exit 1 }
+          if (-not ($out -match 'HoldsRunningSystem')) { exit 1 }
+          if ($out -match 'opening') { "::error::the writer reached the open"; exit 1 }
+          exit 0
+      - name: Create and attach a 64 MiB VHD
+        shell: pwsh
+        run: |
+          $vhd = Join-Path $env:RUNNER_TEMP 'k6disk.vhd'
+          "create vdisk file=`"$vhd`" maximum=64 type=fixed", "select vdisk file=`"$vhd`"", "attach vdisk" |
+            Set-Content -Encoding ascii dp.txt
+          diskpart /s dp.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $disk = Get-DiskImage -ImagePath $vhd | Get-Disk
+          $disk | Format-List Number, FriendlyName, Size, BusType, IsOffline, IsReadOnly, PartitionStyle
+          if ($disk.IsReadOnly) { Set-Disk -Number $disk.Number -IsReadOnly $false }
+          if ($disk.IsOffline) { Set-Disk -Number $disk.Number -IsOffline $false }
+          "K6_VHD=$vhd" >> $env:GITHUB_ENV
+          "K6_DEV=\\.\PhysicalDrive$($disk.Number)" >> $env:GITHUB_ENV
+      - name: Refuse it without the CI switch
+        shell: pwsh
+        run: |
+          ./target/debug/k6.exe check --device $env:K6_DEV
+          if ($LASTEXITCODE -ne 3) { exit 1 }
+          exit 0
+      - name: Write and read back
+        shell: pwsh
+        run: |
+          $out = ./target/debug/k6.exe write --device $env:K6_DEV --image card.img --allow-virtual 2>&1
+          $code = $LASTEXITCODE
+          $out
+          if ($code -ne 0 -or -not ($out -match 'READ-BACK OK')) { exit 1 }
+          ./target/debug/k6.exe make-image --out other.img --size-mib 60 --seed 7
+          ./target/debug/k6.exe verify --device $env:K6_DEV --image other.img
+          if ($LASTEXITCODE -ne 4) { exit 1 }
+          exit 0
+      - name: Detach and delete
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:K6_VHD) {
+            "select vdisk file=`"$env:K6_VHD`"", "detach vdisk" | Set-Content -Encoding ascii dp2.txt
+            diskpart /s dp2.txt
+            Remove-Item -Force $env:K6_VHD
+          }
