@@ -157,9 +157,10 @@ pub fn parse_value(v: &Value) -> DiskList {
             as_bool(i.get("RemovableMedia")),
             as_bool(i.get("Removable")),
         ) {
-            (Some(true), _) | (_, Some(true)) => Some(true),
-            (Some(false), Some(false)) | (Some(false), None) | (None, Some(false)) => Some(false),
-            (None, None) => None,
+            // The two must agree when both are there; if they differ, it is unknown.
+            (Some(a), Some(b)) if a == b => Some(a),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            _ => None,
         };
         let synthesized = stores.contains_key(id)
             || as_str(i.get("IORegistryEntryName")) == Some("AppleAPFSMedia");

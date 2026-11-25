@@ -53,10 +53,11 @@ fn linux_laptop() {
     approves(&l, "/dev/sdb", &p);
     // A partition is not a whole disk.
     assert_eq!(refusals(&l, "/dev/sdb1", &p), vec![Refusal::NotInList]);
-    // A 1 TB USB SSD: over the cap.
+    // A 1 TB USB SSD: over the cap. RM=0 and HOTPLUG=1 disagree, so removable is unknown.
     assert!(matches!(
         refusals(&l, "/dev/sdc", &p)[..],
-        [Refusal::TooLarge { .. }]
+        [Refusal::RemovableUnknown, Refusal::TooLarge { .. }]
+            | [Refusal::TooLarge { .. }, Refusal::RemovableUnknown]
     ));
     // The built-in reader reports RM=0, so it is refused. A known gap.
     assert_eq!(
@@ -491,4 +492,21 @@ fn a_sector_size_past_u32_is_not_truncated() {
     v["Disks"]["LogicalSectorSize"] = 4_294_967_808u64.into();
     let l = windows::parse(&v.to_string());
     assert_eq!(l.disks[0].block_size, None);
+}
+
+#[test]
+fn windows_bus_number_and_text_must_agree() {
+    let l = windows::parse(&fixture("windows-bus-disagree.json"));
+    assert!(l.complete() && l.system_located, "{:?}", l.problems);
+    let p = Policy::default();
+    // Number 0, reserved 42, SATA 11, and an unparsable number, each with text USB.
+    for n in [1, 2, 3, 5] {
+        let dev = format!(r"\\.\PhysicalDrive{n}");
+        assert!(
+            matches!(refusals(&l, &dev, &p)[..], [Refusal::BusUnknown(_)]),
+            "{dev}"
+        );
+    }
+    // No number at all: the text decides.
+    approves(&l, r"\\.\PhysicalDrive4", &p);
 }

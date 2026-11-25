@@ -24,16 +24,24 @@ ConvertTo-Json -Depth 4 -Compress -InputObject ([pscustomobject]@{
 /// MSFT_Disk BusType values, from Microsoft's MSFT_Disk page: 0 Unknown, 1 SCSI, 2 ATAPI,
 /// 3 ATA, 4 1394, 5 SSA, 6 Fibre Channel, 7 USB, 8 RAID, 9 iSCSI, 10 SAS, 11 SATA, 12 SD,
 /// 13 MMC, 14 Virtual (reserved for system use), 15 File Backed Virtual, 16 Storage Spaces,
-/// 17 NVMe. 18 and up are reserved. Every documented value has a class on purpose. Value 0,
-/// a reserved value and any text not in this list land in `Unknown`, which is refused.
-fn bus_of(n: Option<u64>, text: &str) -> (Bus, String) {
-    let by_num = match n {
-        Some(7) => Some(Bus::Usb),
-        Some(12) | Some(13) => Some(Bus::Sd),
+/// 17 NVMe. 18 and up are reserved. Every documented value has a class on purpose.
+///
+/// The rule: the two sources must not disagree.
+/// - A number that is present decides. If it is 0, reserved or unparsable, the bus is
+///   unknown, whatever the text says.
+/// - If both map to a known class, they must map to the same one, or the bus is unknown.
+/// - The text alone is used only when the number is missing.
+/// - Unknown is refused.
+///
+/// `n` is `None` when the number is missing, `Some(None)` when present but unparsable.
+fn bus_of(n: Option<Option<u64>>, text: &str) -> (Bus, String) {
+    let by_num = |n: u64| match n {
+        7 => Bus::Usb,
+        12 | 13 => Bus::Sd,
         // 14 is the Virtual bus some virtual disks report; 15 is a VHD.
-        Some(14) | Some(15) => Some(Bus::Virtual),
-        Some(1..=6) | Some(8..=11) | Some(16) | Some(17) => Some(Bus::Internal),
-        _ => None,
+        14 | 15 => Bus::Virtual,
+        1..=6 | 8..=11 | 16 | 17 => Bus::Internal,
+        _ => Bus::Unknown,
     };
     let by_text = match text {
         "USB" => Some(Bus::Usb),
@@ -44,16 +52,20 @@ fn bus_of(n: Option<u64>, text: &str) -> (Bus, String) {
         _ => None,
     };
     let raw = match n {
-        Some(n) => format!("{text} ({n})"),
+        Some(Some(n)) => format!("{text} ({n})"),
+        Some(None) => format!("{text} (unreadable number)"),
         None => text.to_string(),
     };
-    // Both must agree when both are there.
-    match (by_num, by_text) {
-        (Some(a), Some(b)) if a == b => (a, raw),
-        (Some(a), None) => (a, raw),
-        (None, Some(b)) => (b, raw),
-        _ => (Bus::Unknown, raw),
-    }
+    let bus = match n {
+        None => by_text.unwrap_or(Bus::Unknown),
+        Some(None) => Bus::Unknown,
+        Some(Some(n)) => match (by_num(n), by_text) {
+            (Bus::Unknown, _) => Bus::Unknown,
+            (a, Some(b)) if a != b => Bus::Unknown,
+            (a, _) => a,
+        },
+    };
+    (bus, raw)
 }
 
 /// The EFI system partition: GPT type c12a7328-f81f-11d2-ba4b-00a0c93ec93b or MBR type 0xEF.
@@ -160,10 +172,12 @@ pub fn parse(text: &str) -> DiskList {
                 mounts.push(g.clone());
             }
         }
-        let (bus, bus_raw) = bus_of(
-            as_u64(d.get("BusType")),
-            as_str(d.get("BusTypeText")).unwrap_or(""),
-        );
+        // A missing or null number is missing; any other value must parse.
+        let num = match d.get("BusType") {
+            None | Some(Value::Null) => None,
+            v => Some(as_u64(v)),
+        };
+        let (bus, bus_raw) = bus_of(num, as_str(d.get("BusTypeText")).unwrap_or(""));
         let media = drives
             .iter()
             .find(|w| as_u64(w.get("Index")) == Some(n))

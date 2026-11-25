@@ -106,9 +106,9 @@ pub fn parse(text: &str) -> DiskList {
         };
         let rm = as_bool(dev.get("rm"));
         let hotplug = as_bool(dev.get("hotplug"));
+        // RM and HOTPLUG must agree; if they differ, removable is unknown.
         let removable = match (rm, hotplug) {
-            (Some(true), _) | (_, Some(true)) => Some(true),
-            (Some(false), Some(false)) => Some(false),
+            (Some(a), Some(b)) if a == b => Some(a),
             _ => None,
         };
         let vendor = as_str(dev.get("vendor")).unwrap_or("").trim();
