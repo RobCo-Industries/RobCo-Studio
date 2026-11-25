@@ -13,9 +13,13 @@ set -euo pipefail
 # glibc and the kernel's vDSO: the only libraries Linux may take from the
 # system.
 glibc="ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libresolv.so.2 libutil.so.1"
-# The libraries the Linux build needs beyond glibc: glib, pcre2, pixman,
-# libfdt, zlib and libatomic. Each must load from the package.
-six="libglib-2.0.so.0 libpcre2-8.so.0 libpixman-1.so.0 libfdt.so.1 libz.so.1 libatomic.so.1"
+# The libraries the Linux build needs beyond glibc. Each must load from
+# the package. On Ubuntu 24.04 they are glib, pcre2, pixman, libfdt, zlib
+# and libatomic. On 22.04 glib uses the older pcre and nothing needs
+# libatomic, so the check names every one it knows and requires the four
+# both share, plus every library the package holds.
+known="libglib-2.0.so.0 libpcre.so.3 libpcre2-8.so.0 libpixman-1.so.0 libfdt.so.1 libz.so.1 libatomic.so.1"
+required="libglib-2.0.so.0 libpixman-1.so.0 libfdt.so.1 libz.so.1"
 
 if [ "${1:-}" = --system ]; then
   for so in $glibc; do [ "$2" = "$so" ] && exit 0; done
@@ -30,8 +34,8 @@ bad=0
 
 case $os in
   linux)
-    echo "Libraries of the six present on this system (ldconfig -p):"
-    for so in $six; do
+    echo "Libraries the package may carry, as this system has them (ldconfig -p):"
+    for so in $known; do
       if ldconfig -p | awk -v s="$so" '$1 == s {f = 1} END {exit !f}'; then echo "  $so: present"; else echo "  $so: absent"; fi
     done
     for b in "$bin"/qemu-system-*; do
@@ -49,7 +53,7 @@ case $os in
           echo "FAIL: $so loads from $path, outside the package"; bad=1
         fi
       done <"$t"
-      for so in $six; do
+      for so in $required $(cd "$lib" && ls); do
         if ! grep -qF "$so => " "$t"; then
           echo "FAIL: $(basename "$b") does not load $so"; bad=1
         fi
