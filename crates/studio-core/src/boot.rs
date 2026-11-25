@@ -140,6 +140,8 @@ pub enum BootError {
         /// The text from the `{` to the next `}`, or to the end.
         name: String,
     },
+    /// A name field, `qemu` or `machine`, holds a `{`. Holds the field's path.
+    PlaceholderInName(String),
     /// A board's arguments use `{sd}` and no SD image was given.
     MissingCard {
         /// The board.
@@ -175,6 +177,10 @@ impl fmt::Display for BootError {
             Self::UnknownPlaceholder { at, name } => write!(
                 f,
                 "boot.json: `{at}` holds the unknown placeholder `{name}`; the known ones are {{stub}}, {{image}} and {{sd}}"
+            ),
+            Self::PlaceholderInName(at) => write!(
+                f,
+                "boot.json: `{at}` holds a `{{`, and placeholders are not allowed there: it is a name, not a path"
             ),
             Self::MissingCard { board, placeholder } => write!(
                 f,
@@ -219,6 +225,11 @@ pub fn parse(text: &str) -> Result<BootFile, BootError> {
         let qemu = text("qemu")?;
         let machine = text("machine")?;
         let default_mode = text("default_mode")?;
+        for (key, value) in [("qemu", &qemu), ("machine", &machine)] {
+            if value.contains('{') {
+                return Err(BootError::PlaceholderInName(format!("{at}.{key}")));
+            }
+        }
         let modes_value = entry
             .get("modes")
             .and_then(Value::as_object)
@@ -780,6 +791,26 @@ mod tests {
                 placeholder: "{sd}".into()
             }
         );
+    }
+
+    #[test]
+    fn a_placeholder_in_a_name_fails_at_parse() {
+        for (from, to, at) in [
+            (
+                "\"qemu\": \"qemu-system-arm\"",
+                "\"qemu\": \"{stub}\"",
+                "boards.raspi0.qemu",
+            ),
+            (
+                "\"machine\": \"raspi0\"",
+                "\"machine\": \"{image}\"",
+                "boards.raspi0.machine",
+            ),
+        ] {
+            let e = parse(&FIXTURE.replacen(from, to, 1)).unwrap_err();
+            assert_eq!(e, BootError::PlaceholderInName(at.into()));
+            assert!(e.to_string().contains(at));
+        }
     }
 
     #[test]
