@@ -77,7 +77,11 @@ def check_core_submodule(errors):
         errors.append(f"{CORE_PATH}: checked out {head.stdout.strip()}, HEAD records {pinned}")
         return
     sub = ROOT / CORE_PATH
-    fetch = git("fetch", "--quiet", "origin", CORE_BRANCH, cwd=sub)
+    # A shallow clone, as CI's checkout makes, cannot tell an ancestor:
+    # fetch the whole history of main.
+    shallow = git("rev-parse", "--is-shallow-repository", cwd=sub).stdout.strip() == "true"
+    depth = ["--unshallow"] if shallow else []
+    fetch = git("fetch", "--quiet", *depth, "origin", CORE_BRANCH, cwd=sub)
     if fetch.returncode != 0:
         errors.append(f"{CORE_PATH}: could not fetch {CORE_BRANCH}: {fetch.stderr.strip()}")
         return
