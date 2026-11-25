@@ -32,9 +32,6 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         toolkit: [egui, gpui]
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: spikes/k4/${{ matrix.toolkit }}
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
@@ -51,22 +48,28 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfontconfig-dev libfreetype-dev libvulkan-dev
       - name: Count packages in the lock file
+        working-directory: spikes/k4/${{ matrix.toolkit }}
         run: echo "lock packages: $(grep -c '^name = ' Cargo.lock)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Fetch crates
+        working-directory: spikes/k4/${{ matrix.toolkit }}
         run: cargo fetch --locked
       - name: Clean debug build
+        working-directory: spikes/k4/${{ matrix.toolkit }}
         run: |
           start=$(date +%s)
           cargo build --locked
           echo "clean debug build: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Headless test
+        working-directory: spikes/k4/${{ matrix.toolkit }}
         run: cargo test --locked
       - name: Clean release build
+        working-directory: spikes/k4/${{ matrix.toolkit }}
         run: |
           start=$(date +%s)
           cargo build --release --locked
           echo "clean release build: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Release program size
+        working-directory: spikes/k4/${{ matrix.toolkit }}
         run: |
           bin=target/release/k4-${{ matrix.toolkit }}
           if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
