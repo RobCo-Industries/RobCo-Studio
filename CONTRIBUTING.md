@@ -49,4 +49,6 @@ Work on a branch from `main`. Open one pull request per milestone. A pull reques
 
 Studio is GPL-3.0-or-later. Nothing that ends up inside a user's tape, app or card image lives in this repository: no runtime, no template, no code skeleton. Those live in [RobCo Reel](https://github.com/RobCo-Industries/RobCo-Reel) under MIT. If a file you add would be copied or linked into a user's work, it belongs there.
 
+<!-- REUSE-IgnoreStart -->
 Each source file starts with an SPDX line: `// SPDX-License-Identifier: GPL-3.0-or-later`. Contributions come in under the repository's licence. `REUSE.toml` covers files that cannot hold a comment, and CI runs `reuse lint` on every file.
+<!-- REUSE-IgnoreEnd -->
