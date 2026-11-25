@@ -1,0 +1,39 @@
+# Architecture
+
+Studio is a core library with a command line, and a window that calls the same library. The core has no window dependency. Every feature lands in the core with a command and a test before the window shows it.
+
+Today every crate is a shell. This page shows where code will go.
+
+## Crates
+
+The build arrows go one way: the two low libraries, then the core, then the two programs.
+
+```mermaid
+flowchart TB
+    ROBCO["robco<br/>the command"] --> CORE
+    WIN["robco-studio<br/>the window"] --> CORE
+    CORE["studio-core<br/>no window dependency"] --> SYS
+    CORE --> DISK
+    SYS["studio-sys<br/>RobCo-Core's C"]
+    DISK["studio-disk<br/>raw disks"]
+```
+
+### studio-sys
+
+A library that will compile a fixed list of RobCo-Core's C files and expose them through hand-written declarations and safe wrappers: image sealing and checks, CRC-32, INI and FAT through FatFs. No C is linked yet. A spike decides how it gets in. It depends on no other crate of the workspace. `unsafe` is allowed here, because calling C needs it.
+
+### studio-disk
+
+A library that will list disks and read and write raw blocks on each system, refuse a system disk, and run as an elevated helper. It is empty today. It depends on no other crate of the workspace. `unsafe` is allowed here, because raw disk access calls system interfaces.
+
+### studio-core
+
+The headless product. It will hold projects, SDK install, builds, asset packing, card images, simulator sessions, the serial monitor and debug sessions. Today it holds the version, which comes from `workspace.package.version` in the root `Cargo.toml`. It never depends on a window or toolkit crate. `unsafe` is forbidden.
+
+### robco
+
+The command. It will parse arguments and print JSON events, and leave all work to the core. Today it answers `robco --version` and `robco version`. `unsafe` is forbidden.
+
+### robco-studio
+
+The window. It will draw views and editors through a thin layer of our own over the toolkit, and hold no logic a test cannot reach through the core. Today it prints its version and opens no window. `unsafe` is forbidden.

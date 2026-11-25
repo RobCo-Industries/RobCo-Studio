@@ -1,0 +1,16 @@
+[package]
+name = "studio-core"
+description = "The headless core of RobCo Studio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+studio-sys.workspace = true
+studio-disk.workspace = true
+
+[lints]
+workspace = true

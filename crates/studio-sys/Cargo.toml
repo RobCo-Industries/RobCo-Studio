@@ -1,0 +1,12 @@
+[package]
+name = "studio-sys"
+description = "RobCo-Core's C, linked into RobCo Studio, with a thin Rust binding."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
