@@ -1,0 +1,105 @@
+name: spike-k5
+
+# Spike K5: frame rate of QMP screendump, and QEMU's VNC server for
+# comparison. Builds and tests the poller on three systems, then runs the
+# benchmark on Linux in the suite's container, which has QEMU.
+
+on:
+  push:
+    branches: [spike-k5]
+  pull_request:
+    paths:
+      - spikes/k5/**
+      - .github/workflows/spike-k5.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-k5-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  ROBCO_CORE_SHA: 73a6cb2a67b30912f496a58583609d3b90c35ad1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/k5
+      - name: Format
+        working-directory: spikes/k5
+        run: cargo fmt --check
+      - name: Clippy
+        working-directory: spikes/k5
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Unit tests
+        working-directory: spikes/k5
+        run: cargo test --locked
+      - name: Release build
+        working-directory: spikes/k5
+        run: cargo build --locked --release
+
+  bench:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/robco-industries/robco-ci:ba6372158e4b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ env.ROBCO_CORE_SHA }}
+          path: robco-core
+      - name: Install Rust if the container has none
+        run: |
+          if ! command -v cargo >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Tools
+        run: |
+          qemu-system-arm --version | head -n 1
+          qemu-system-aarch64 --version | head -n 1
+          arm-none-eabi-gcc --version | head -n 1
+          echo "cpus: $(getconf _NPROCESSORS_ONLN)"
+      - name: Benchmark
+        run: spikes/k5/bench.sh robco-core "$RUNNER_TEMP/k5-linux.txt"
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo '```'
+            cat "$RUNNER_TEMP/k5-linux.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: k5-linux
+          path: ${{ runner.temp }}/k5-linux.txt
+          if-no-files-found: error
