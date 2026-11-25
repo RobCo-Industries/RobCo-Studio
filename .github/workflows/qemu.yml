@@ -5,6 +5,8 @@ name: qemu
 # Artifacts stay on the run: this workflow publishes nothing.
 
 on:
+  push:
+    branches: [s1-qemu-linux]
   pull_request:
     paths:
       - tools/qemu/**
@@ -128,6 +130,9 @@ jobs:
           cat reject.log
           test "$code" -eq 1
           grep -F "outside the package" reject.log
+      - name: Licence text of pcre as packed (Linux)
+        if: matrix.name == 'linux'
+        run: cat out/qemu/licenses/pcre-copyright
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-${{ matrix.name }}
@@ -193,6 +198,22 @@ jobs:
         run: |
           test -z "${LD_LIBRARY_PATH:-}${DYLD_LIBRARY_PATH:-}"
           bash tools/qemu/check-libs.sh ${{ matrix.name }} qemu
+      # This image has its own zlib and pcre. Without the package's copy,
+      # each loads from the system, and the check must say so.
+      - name: Library check fails when zlib or pcre loads from the system (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          for so in libz.so.1 libpcre.so.3; do
+            rm -rf "$RUNNER_TEMP/broken" && cp -r qemu "$RUNNER_TEMP/broken"
+            rm "$RUNNER_TEMP/broken/lib/$so"
+            set +e
+            bash tools/qemu/check-libs.sh linux "$RUNNER_TEMP/broken" > broken.log 2>&1
+            code=$?
+            set -e
+            cat broken.log
+            test "$code" -eq 1
+            grep -E "FAIL: $so loads from /(usr/)?lib/x86_64-linux-gnu/" broken.log
+          done
       - name: Package contents
         run: |
           ls -lR qemu
