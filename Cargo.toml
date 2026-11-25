@@ -7,6 +7,9 @@ members = [
     "crates/robco",
     "crates/robco-studio",
 ]
+# Each spike is its own small workspace with its own lock file, so a trial
+# dependency never reaches the programs or their licence check.
+exclude = ["spikes"]
 
 [workspace.package]
 version = "0.0.0"
