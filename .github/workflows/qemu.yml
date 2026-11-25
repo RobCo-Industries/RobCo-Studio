@@ -10,8 +10,6 @@ on:
       - tools/qemu/**
       - .github/workflows/qemu.yml
   workflow_dispatch:
-  push:
-    branches: [s1-qemu-linux]
 
 permissions:
   contents: read
