@@ -1,6 +1,6 @@
 # Third-party terms
 
-Studio downloads a compiler built by the xPack project from Arm's sources. Studio publishes its own builds of QEMU. On macOS and Windows some libraries are packed beside them. This page records the terms those binaries come under, and what Studio must do to respect them.
+Studio downloads a compiler built by the xPack project from Arm's sources. Studio publishes its own builds of QEMU. On each system some libraries are packed beside them. This page records the terms those binaries come under, and what Studio must do to respect them.
 
 **This is not legal advice.** Nobody who wrote this page has legal training. The page quotes what the licences and the projects' own pages say, with links, and states what seems to follow for Studio. Each point marked **Needs legal review** waits for a person with legal training. Nothing here is proven right in law.
 
@@ -45,19 +45,20 @@ Every source below was read on 2026-11-25. Where a source could not be reached, 
 
 ## Libraries packed with QEMU
 
-The list comes from the [QEMU build trial](spikes/K1.md) and its script, [`spikes/k1/build-qemu.sh`](../spikes/k1/build-qemu.sh). What each system's archive holds today:
+The list comes from the pack reports of [`tools/qemu/pack.sh`](../tools/qemu/pack.sh), as the [QEMU workflow](../.github/workflows/qemu.yml) builds it. What each system's archive holds today:
 
-| System | Packed in the archive | Where | Runtime dependencies from the system |
-|---|---|---|---|
-| macOS | glib, pcre2, intl, pixman, libfdt | `lib/` | macOS's own libraries |
-| Windows | glib, pcre2, intl, iconv, pixman, libfdt, zlib, winpthread | `bin/`, beside the `.exe` files | Windows's own libraries |
-| Linux | none | | glib, pcre2, pixman, libfdt, zlib, libatomic and glibc, from the user's packages |
+| System | Packager | Packed in the archive | Where | Runtime dependencies from the system |
+|---|---|---|---|---|
+| macOS | Homebrew | glib, pcre2, intl, pixman, libfdt | `lib/` | macOS's own libraries, zlib and iconv among them |
+| Windows | MSYS2 | glib, pcre2, intl, iconv, pixman, libfdt, zlib, winpthread | `bin/`, beside the `.exe` files | Windows's own libraries |
+| Linux | Ubuntu 22.04 | glib, pcre 8, pixman, libfdt, zlib | `lib/`, found through the run path `$ORIGIN/../lib` | glibc only |
 
-The Linux archive does not run without the apt packages. Work under way plans to pack glib, pcre2, pixman, libfdt, zlib and libatomic into `lib/` on Linux too, with glibc left to the system. That is a plan, not a fact yet. The checklist's duties for a library begin when an archive really carries it: today none on Linux.
+The Linux archive is built on Ubuntu 22.04. There glib uses pcre 8, `libpcre.so.3`, and not pcre2, and nothing needs libatomic. A build on 24.04 would carry pcre2 and libatomic instead of pcre 8. The archive's `licenses/packed-libraries.txt` records the exact package of each file.
 
 | Library | Licence | Binary terms, quoted | Source read |
 |---|---|---|---|
 | glib | LGPL 2.1 or later | Section 4: object code must "accompany it with the complete corresponding machine-readable source code". Section 6: "give prominent notice with each copy of the work that the Library is used in it" and "supply a copy of this License". | [glib `COPYING`](https://github.com/GNOME/glib/blob/main/COPYING), [LGPL 2.1 text](https://github.com/GNOME/glib/blob/main/LICENSES/LGPL-2.1-or-later.txt). gitlab.gnome.org refused the fetch. |
+| pcre 8, Linux only | BSD-3-Clause | "Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution." | The `copyright` file of Ubuntu's `libpcre3` 8.39 package, as packed. It is the packager's copy of the upstream `LICENCE`, and its heading still says "Release 7". The upstream 8.39 archive was not read. |
 | pcre2 | BSD-3-Clause WITH PCRE2-exception | "Redistributions in binary form must reproduce the above copyright notices", the conditions and the disclaimer. | [LICENCE.md](https://github.com/PCRE2Project/pcre2/blob/master/LICENCE.md) |
 | pixman | MIT | The notice "shall be included in all copies or substantial portions of the Software." | [COPYING](https://cgit.freedesktop.org/pixman/tree/COPYING) |
 | libfdt | GPL or 2-clause BSD, the user's choice | "it may be used either under the terms of the GPL, or under the terms of the 2-clause BSD license". Under BSD, binaries carry the notice. | [README.license](https://github.com/dgibson/dtc/blob/main/README.license) |
@@ -65,7 +66,7 @@ The Linux archive does not run without the apt packages. Work under way plans to
 | intl, from gettext | LGPL 2.1 | Same duties as glib. | [intl `COPYING.LIB`](https://github.com/autotools-mirror/gettext/blob/master/gettext-runtime/intl/COPYING.LIB), a mirror. The gettext manual's licence page refused the fetch. |
 | iconv | LGPL, version not stated on the page | "The `libiconv` and `libcharset` libraries and their header files are under LGPL." | [libiconv](https://www.gnu.org/software/libiconv/) |
 | winpthread | MIT, plus a 3-clause BSD part | "Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution." | [COPYING](https://github.com/mingw-w64/mingw-w64/blob/master/mingw-w64-libraries/winpthreads/COPYING), a mirror |
-| libatomic | GPL 3 or later with the GCC Runtime Library Exception 3.1 | See the compiler table. | [libatomic_i.h](https://github.com/gcc-mirror/gcc/blob/master/libatomic/libatomic_i.h) |
+| libatomic, packed by no archive today | GPL 3 or later with the GCC Runtime Library Exception 3.1 | See the compiler table. | [libatomic_i.h](https://github.com/gcc-mirror/gcc/blob/master/libatomic/libatomic_i.h) |
 
 ## Checklist for each QEMU release
 
@@ -73,7 +74,7 @@ Whoever builds a release follows this list. Each archive is one host's build. Ea
 
 1. Inside each archive, a `licenses/` folder with:
    - QEMU's `COPYING` and `LICENSE`, copied from the source tree it was built from.
-   - For each library packed in that archive: its licence file, copied from the exact source version packed, named after the library, such as `licenses/glib-COPYING`. The Linux archive has none today. glib and intl carry the LGPL 2.1 text. libatomic carries GPL version 3 and the runtime exception text.
+   - For each library packed in that archive: its licence file, copied from the exact source version packed, named after the library, such as `licenses/glib-COPYING`. The archive holds the full text of every licence that applies to each library, not only a file that names it. On Linux the packager's `copyright` file, such as `licenses/glib-copyright`, is the notice. It often names a licence and points to its text under `/usr/share/common-licenses/`, so the packer copies each text it points to, once, as `licenses/text-<name>`, such as `licenses/text-LGPL-2.1`. On macOS and Windows, a text the Homebrew keg or the MSYS2 package does not install is taken from the library's source archive of the same version. glib and intl carry the LGPL 2.1 text. libatomic carries GPL version 3 and the runtime exception text.
 2. Inside each archive, a `NOTICE` file that says, in plain words: this is QEMU 10.1.2 under GPL version 2; it uses glib and the other packed libraries, listed by name, version and licence; and where the sources are, by release URL.
 3. In the same release, beside the binaries:
    - QEMU's official `qemu-10.1.2.tar.xz`, unchanged, with its SHA-256.
@@ -84,9 +85,9 @@ Whoever builds a release follows this list. Each archive is one host's build. Ea
 4. The release build records, at the moment it packs, what it packed, and puts that record in the archive's `licenses/` folder and in the release:
    - **Homebrew.** Each installed formula has an `INSTALL_RECEIPT.json` in its keg. Homebrew's [`tab.rb`](https://github.com/Homebrew/brew/blob/main/Library/Homebrew/tab.rb) writes a `source` entry with `tap_git_head`, the homebrew-core commit at install. The build copies that receipt and `brew info --json=v2 --installed` output for each packed library. The recipe is the formula file in [homebrew-core](https://github.com/Homebrew/homebrew-core) at that commit, with any patches it names. **Not confirmed**: that `tap_git_head` is the commit that built the bottle rather than the one the user's tap was at on install. Homebrew's docs pages do not describe the receipt.
    - **MSYS2.** `pacman -Qi` gives each installed package's exact version. The recipe is the `PKGBUILD` and its patch files in [MINGW-packages](https://github.com/msys2/MINGW-packages). MSYS2 also publishes a source package per version, such as `mingw-w64-<name>-<version>.src.tar.zst`, in [repo.msys2.org/mingw/sources](https://repo.msys2.org/mingw/sources/). The build saves the `pacman -Qi` output and ships the matching source package. **Not confirmed**: that each source package holds the `PKGBUILD`, its patches and the upstream archive. The directory lists them, but none was opened. Finding the MINGW-packages commit for a given version would otherwise mean searching its history.
-   - apt joins once Linux packs libraries.
+   - **Ubuntu.** `dpkg -S` names the package that owns each packed file, and `dpkg-query -W -f '${Version} ${source:Package} ${source:Version}'` gives its exact version and its source package. The recipe and the patches are the source package itself: its `.dsc`, the upstream archive and the `debian` archive, which hold the rules file and the patches. A person fetches them with `apt-get source <source>=<version>` on a system with `deb-src` lines, or from the package's page at `https://launchpad.net/ubuntu/+source/<source>/<version>`. **Not confirmed**: that every packed version is still on Launchpad and in the archive. Ubuntu replaces security updates in place, so an older version may only stay on Launchpad. Neither route was tried.
 5. Keep each release's sources up for as long as its binaries are up. GPL version 2's three-year term applies to the written offer, which this route does not use.
-6. Before publishing, check that each archive has its `licenses/` folder and `NOTICE`, and that each library file packed has a licence file: on macOS each `.dylib` in `lib/`, on Windows each `.dll` in `bin/`.
+6. Before publishing, check that each archive has its `licenses/` folder and `NOTICE`, and that for each library file packed, on Linux and macOS each file in `lib/`, on Windows each `.dll` in `bin/`, `licenses/packed-libraries.txt` names its licences and `licenses/` holds the full text of each. `tools/qemu/notices.sh --check` does this. It takes the list of libraries from the files in the package and the licences of each from its own table, and checks the record against both. A library it does not know fails the check.
 
 ## What the SDK manager shows before a download
 

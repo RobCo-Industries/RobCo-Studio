@@ -1,0 +1,282 @@
+name: qemu
+
+# Build QEMU for the three hosts with tools/qemu, pack it, and run
+# RobCo-Core's canary suite against each package on a fresh runner.
+# Artifacts stay on the run: this workflow publishes nothing.
+
+on:
+  pull_request:
+    paths:
+      - tools/qemu/**
+      - .github/workflows/qemu.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qemu-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Change together with EXPECTED in tools/qemu/canary.py.
+  ROBCO_CORE_SHA: c6b6482ff4b5cee7dda4bdc3845b4dd2edd9bb91
+  XPACK: https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v15.2.1-1.1
+  XPACK_NAME: xpack-arm-none-eabi-gcc-15.2.1-1.1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The canary verdict decides the result, so its decision is tested
+  # first, then proven on a broken setup: no RobCo-Core checkout.
+  checker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests of canary.py
+        run: python -m unittest discover -s tools/qemu -v
+      - name: Guard fails on a broken setup
+        run: |
+          python -m pip install pytest==8.4.2
+          set +e
+          python tools/qemu/canary.py guard > guard.log 2>&1
+          code=$?
+          set -e
+          cat guard.log
+          test "$code" -ne 0
+          grep -F "Verdict: fail" guard.log
+          grep -E "pytest exit code [2-5]" guard.log
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest hosted Ubuntu: its glibc is the oldest the package runs on.
+          - { os: ubuntu-22.04, name: linux }
+          - { os: macos-latest, name: macos }
+          - { os: windows-latest, name: windows }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # build.sh pins the QEMU tarball's SHA-256, so its hash keys both the
+      # recipe and the source. Packing is not in the key: a change to it
+      # packs the cached build again.
+      - name: Cached QEMU build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out/build
+          key: qemu-build-${{ matrix.os }}-${{ hashFiles('tools/qemu/build.sh') }}
+      # The packing step needs the libraries even when the build is cached.
+      - name: Build tools (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ninja-build \
+            pkg-config python3-venv libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev patchelf
+      - name: Build tools (macOS)
+        if: matrix.name == 'macos'
+        run: brew install glib pixman dtc ninja pkgconf dylibbundler
+      - name: Build tools (Windows)
+        if: matrix.name == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make tar xz curl diffutils bison flex git
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-pixman mingw-w64-ucrt-x86_64-dtc
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-python-pip
+      - name: Build QEMU
+        if: matrix.name != 'windows' && steps.cache.outputs.cache-hit != 'true'
+        run: bash tools/qemu/build.sh ${{ matrix.name }} out
+      - name: Build QEMU (MSYS2)
+        if: matrix.name == 'windows' && steps.cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        # QEMU's offline wheel folder is a file:// URL pip cannot read on
+        # Windows, so its test runner dependency comes from PyPI here.
+        run: |
+          python -m pip install --break-system-packages pycotap==1.3.1
+          bash tools/qemu/build.sh windows out
+      - name: Pack
+        if: matrix.name != 'windows'
+        run: bash tools/qemu/pack.sh ${{ matrix.name }} out
+      - name: Pack (MSYS2)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: bash tools/qemu/pack.sh windows out
+      # The library check must be able to fail: the unpacked build loads
+      # the system's libraries, so the check must reject it.
+      - name: Library check rejects the unpacked build (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          set +e
+          bash tools/qemu/check-libs.sh linux out/qemu out/build > reject.log 2>&1
+          code=$?
+          set -e
+          cat reject.log
+          test "$code" -eq 1
+          grep -F "outside the package" reject.log
+      - name: Licence text of pcre as packed (Linux)
+        if: matrix.name == 'linux'
+        run: cat out/qemu/licenses/pcre-copyright
+      # The licence check must tell a full text from a file that only points
+      # to one: without the LGPL text, glib's copyright file is not enough.
+      - name: Licence check fails without the LGPL text (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          rm -rf broken && mkdir broken && cp -r out/qemu broken/qemu
+          rm broken/qemu/licenses/text-LGPL-2.1
+          set +e
+          bash tools/qemu/notices.sh --check linux broken > nolgpl.log 2>&1
+          code=$?
+          set -e
+          grep -v '^+' nolgpl.log
+          test "$code" -eq 1
+          grep -F "FAIL: no full LGPL-2.1 text in licenses/ for libglib-2.0.so.0 (glib)" nolgpl.log
+      # The check must not trust the record: on the real package, a record
+      # that leaves out a licence and a library nobody listed both fail.
+      - name: Licence check fails on a short record and an unknown library (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          rm -rf broken && mkdir broken && cp -r out/qemu broken/qemu
+          sed -i 's/licence texts: GPL-2.0 BSD-2-Clause$/licence texts: GPL-2.0/' broken/qemu/licenses/packed-libraries.txt
+          cp broken/qemu/lib/libz.so.1 broken/qemu/lib/libnew.so.3
+          set +e
+          bash tools/qemu/notices.sh --check linux broken > short.log 2>&1
+          code=$?
+          set -e
+          grep -v '^+' short.log
+          test "$code" -eq 1
+          grep -F "FAIL: the record names licence texts 'GPL-2.0' for libfdt.so.1 (libfdt), but GPL-2.0 BSD-2-Clause apply" short.log
+          grep -F "FAIL: libnew.so.3 is a packed library this script does not know" short.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-${{ matrix.name }}
+          path: out/qemu
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.name }}
+          path: out/report.txt
+
+  canary:
+    needs: [checker, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A bare image of the oldest supported Ubuntu, with only what the
+          # canary needs: none of the hosted runner's libraries.
+          - { os: ubuntu-latest, name: linux, container: "ubuntu:22.04", gcc: linux-x64.tar.gz, gcc_sha: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6 }
+          - { os: macos-latest, name: macos, container: "", gcc: darwin-arm64.tar.gz, gcc_sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870 }
+          - { os: windows-latest, name: windows, container: "", gcc: win32-x64.zip, gcc_sha: bae6a3d1667697ce750c3b13d6d26d80973ecedc2cc87bf04869e83447fd93ea }
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 45
+    steps:
+      - name: Test tools (Linux container)
+        if: matrix.name == 'linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl make procps python3 python3-pip
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ env.ROBCO_CORE_SHA }}
+          path: robco-core
+      - uses: actions/setup-python@v5
+        if: matrix.name != 'linux'
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-${{ matrix.name }}
+          path: qemu
+      - name: xPack arm-none-eabi-gcc
+        run: |
+          mkdir -p "$RUNNER_TEMP/gcc" && cd "$RUNNER_TEMP/gcc"
+          f="$XPACK_NAME-${{ matrix.gcc }}"
+          curl -fsSLo "$f" "$XPACK/$f"
+          echo "${{ matrix.gcc_sha }}  $f" | sha256sum -c - 2>/dev/null \
+            || echo "${{ matrix.gcc_sha }}  $f" | shasum -a 256 -c -
+          case "$f" in *.zip) unzip -q "$f" ;; *) tar xzf "$f" ;; esac
+          echo "$RUNNER_TEMP/gcc/$XPACK_NAME/bin" >> "$GITHUB_PATH"
+      - name: Put QEMU on the path
+        run: |
+          chmod +x qemu/bin/*
+          echo "$GITHUB_WORKSPACE/qemu/bin" >> "$GITHUB_PATH"
+      - name: Libraries load from the package (Linux, macOS)
+        if: matrix.name != 'windows'
+        run: |
+          test -z "${LD_LIBRARY_PATH:-}${DYLD_LIBRARY_PATH:-}"
+          bash tools/qemu/check-libs.sh ${{ matrix.name }} qemu
+      # A package missing one of its libraries shows it two ways: the
+      # library loads from the system, or it is not found at all. This image
+      # has zlib and pcre but not pixman, so both ways run here. Either one
+      # is accepted, so an image update cannot break the test, but the check
+      # must exit 1 and every FAIL line must name the removed library.
+      - name: Library check fails when a packed library is removed (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          for so in libz.so.1 libpcre.so.3 libpixman-1.so.0; do
+            rm -rf "$RUNNER_TEMP/broken" && cp -r qemu "$RUNNER_TEMP/broken"
+            rm "$RUNNER_TEMP/broken/lib/$so"
+            set +e
+            bash tools/qemu/check-libs.sh linux "$RUNNER_TEMP/broken" > broken.log 2>&1
+            code=$?
+            set -e
+            cat broken.log
+            test "$code" -eq 1
+            grep '^FAIL' broken.log > fail.log
+            test -s fail.log
+            ok="^FAIL: $so (loads from /(usr/)?lib/x86_64-linux-gnu/[^ ]+, outside the package|not found, neither in the package nor on the system)\$"
+            if grep -vE "$ok" fail.log; then
+              echo "unexpected FAIL lines above for $so"; exit 1
+            fi
+          done
+      - name: Package contents
+        run: |
+          ls -lR qemu
+          du -sk qemu
+      - name: Check the build answers
+        run: |
+          qemu-system-arm --version
+          qemu-system-arm -M help | grep -E '^raspi(0|1ap|2b) '
+          qemu-system-aarch64 -M help | grep -E '^raspi3b '
+          arm-none-eabi-gcc --version | head -1
+      - name: Python test tools
+        run: |
+          py=python; command -v python >/dev/null || py=python3
+          echo "PY=$py" >> "$GITHUB_ENV"
+          $py --version
+          $py -m pip install -r robco-core/tests/requirements.txt
+      # One pass, no retry: any failed case fails the job.
+      - name: Canary, harness unchanged (Linux, macOS)
+        if: matrix.name != 'windows'
+        run: $PY tools/qemu/canary.py ${{ matrix.name }}
+      - name: Canary, harness over TCP (Windows)
+        if: matrix.name == 'windows'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tools/qemu;${{ github.workspace }}/robco-core/tests
+        run: $PY tools/qemu/canary.py windows -p qemu_tcp
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-${{ matrix.name }}
+          path: canary*.xml
