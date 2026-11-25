@@ -46,23 +46,24 @@ fi
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
 start=$(date +%s)
 "${configure[@]}"
-make -j"$jobs"
+# Only the two emulators: the unit tests do not link on MinGW in 10.1.2
+# (test-vmstate, qemu_ftruncate64) and Studio ships none of them.
+exe=""; sfx=""
+[ "$os" = windows ] && exe=.exe
+[ "$os" = macos ] && sfx=-unsigned
+ninja -C build -j"$jobs" "qemu-system-arm$sfx$exe" "qemu-system-aarch64$sfx$exe"
 secs=$(( $(date +%s) - start ))
 
-exe=""
-[ "$os" = windows ] && exe=.exe
 mkdir -p "$dist/bin" "$dist/lib"
 # On macOS the build leaves "-unsigned" binaries. make install signs them
 # with the HVF entitlement. TCG needs none, so an ad hoc signature follows.
-sfx=""
-[ "$os" = macos ] && sfx=-unsigned
 for t in arm aarch64; do cp "build/qemu-system-$t$sfx$exe" "$dist/bin/qemu-system-$t$exe"; done
 cp "$work/qemu.tar.xz" "$out/qemu-${ver}.tar.xz"
 
 {
   echo "os: $os"
   echo "configure: ${configure[*]}"
-  echo "build seconds (configure + make -j$jobs): $secs"
+  echo "build seconds (configure + ninja -j$jobs, two emulators): $secs"
   echo "binary sizes:"
   ls -l "$dist/bin"
   echo "runtime libraries before packing:"
