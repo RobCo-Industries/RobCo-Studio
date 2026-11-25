@@ -5,7 +5,7 @@
 //! same bytes on every system. `STUDIO_SYS_CARD_OUT` names a file to save
 //! it to, with the expected tree beside it, for `scripts/check_card.sh`.
 
-use studio_sys::{Entry, build_card, read_back};
+use studio_sys::{Entry, build_card, card_layout, card_types, read_back};
 
 /// The first 16 hex digits of the card's SHA-256, the same on Ubuntu,
 /// macOS and Windows.
@@ -163,4 +163,55 @@ fn card_written_from_rust() {
 fn bad_card_sizes_are_refused() {
     assert!(build_card(0, &[]).is_err());
     assert!(build_card(1, &[]).is_err());
+}
+
+#[test]
+fn card_layout_follows_the_suite_table() {
+    // Each edge of each range, and one size just outside it.
+    for (mib, part, fat, cluster) in [
+        (4, 0x0E, 16, 512),
+        (32, 0x0E, 16, 512),
+        (64, 0x0C, 32, 0),
+        (32768, 0x0C, 32, 0),
+    ] {
+        let l = card_layout(mib).unwrap();
+        assert_eq!(
+            (l.mib, l.part_type, l.fat_type, l.cluster_bytes),
+            (mib, part, fat, cluster),
+            "{mib} MiB"
+        );
+    }
+    for mib in [0, 1, 2, 3, 5, 31, 33, 34, 48, 63, 65, 32767, 32769, 65536] {
+        let e = card_layout(mib).unwrap_err();
+        assert!(
+            e.to_string().contains("power of 2 from 4 to 32768"),
+            "{mib}: {e}"
+        );
+    }
+}
+
+#[test]
+fn sizes_the_suite_refuses_fail_before_allocating() {
+    // Sizes that used to make FAT12 under a FAT16 type, or too many
+    // clusters for FAT16, and sizes no memory could hold.
+    for mib in [2, 3, 34, 48, 63, usize::MAX, 1 << 40] {
+        assert!(build_card(mib, &[]).is_err(), "{mib} MiB");
+    }
+}
+
+#[test]
+fn built_cards_have_the_declared_fat_type() {
+    for (mib, part, fat) in [(4, 0x0E, 16), (32, 0x0E, 16), (64, 0x0C, 32)] {
+        let mut img = build_card(
+            mib,
+            &[Entry {
+                path: "A.TXT",
+                data: Some(b"a"),
+            }],
+        )
+        .unwrap();
+        assert_eq!(img.len(), mib << 20);
+        assert_eq!(card_types(&mut img).unwrap(), (part, fat), "{mib} MiB");
+        assert_eq!(read_back(&mut img, "A.TXT").unwrap(), b"a");
+    }
 }

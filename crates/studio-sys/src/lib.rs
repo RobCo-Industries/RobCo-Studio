@@ -328,28 +328,83 @@ fn with_volume<T>(
     }
 }
 
+/// The smallest card [`build_card`] makes, in MiB.
+pub const CARD_MIN_MIB: usize = 4;
+/// The largest card [`build_card`] makes, in MiB.
+pub const CARD_MAX_MIB: usize = 32768;
+/// The smallest FAT32 card, in MiB. Smaller cards are FAT16.
+pub const CARD_FAT32_MIN_MIB: usize = 64;
+
+/// How [`build_card`] lays out a card of a given size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardLayout {
+    /// Size of the image in MiB.
+    pub mib: usize,
+    /// MBR partition type: 0x0E for FAT16, 0x0C for FAT32.
+    pub part_type: u8,
+    /// The FAT type the volume must have: 16 or 32.
+    pub fat_type: u8,
+    /// Bytes per cluster, 0 to let FatFs choose.
+    pub cluster_bytes: u32,
+}
+
+/// The layout of a card of `mib` MiB, the rules of RobCo-Core's
+/// `tools/mksdimage.sh`. The card size is a power of 2 from 4 to 32768
+/// MiB, the sizes that tool writes; the caller rounds up, as it does.
+///
+/// | Size | Type | Partition | Cluster |
+/// |---|---|---|---|
+/// | 4 to 32 MiB | FAT16 | 0x0E | 512 bytes |
+/// | 64 to 32768 MiB | FAT32 | 0x0C | FatFs default |
+///
+/// One-sector clusters give 6 to 63 thousand clusters at 4 to 32 MiB,
+/// inside FAT16's 4085 to 65524. Every other size is refused.
+pub fn card_layout(mib: usize) -> Result<CardLayout, Error> {
+    if !(CARD_MIN_MIB..=CARD_MAX_MIB).contains(&mib) || !mib.is_power_of_two() {
+        return Err(Error::new(
+            "build_card",
+            -1,
+            "card size must be a power of 2 from 4 to 32768 MiB: FAT16 from 4 to 32, FAT32 from 64",
+        ));
+    }
+    Ok(if mib >= CARD_FAT32_MIN_MIB {
+        CardLayout {
+            mib,
+            part_type: 0x0C,
+            fat_type: 32,
+            cluster_bytes: 0,
+        }
+    } else {
+        CardLayout {
+            mib,
+            part_type: 0x0E,
+            fat_type: 16,
+            cluster_bytes: 512,
+        }
+    })
+}
+
 /// Builds a card image in memory, laid out as RobCo-Core's
 /// `tools/mksdimage.sh` does: an MBR written here with one partition at
-/// LBA 2048, FAT16 (type 0x0E) below 64 MiB and FAT32 (type 0x0C) from
-/// 64 MiB, formatted and filled in order by RobCo-Core's FatFs.
+/// LBA 2048, sized and typed by [`card_layout`], formatted and filled in
+/// order by RobCo-Core's FatFs. It refuses a size [`card_layout`] refuses
+/// before it allocates, and fails if the volume FatFs made is not the FAT
+/// type the partition table declares.
 ///
-/// Only FAT16 at 16 MiB is tested. FAT32 is not.
+/// FAT16 is tested at 4, 16 and 32 MiB. FAT32 is built at 64 MiB only.
 pub fn build_card(mib: usize, entries: &[Entry<'_>]) -> Result<Vec<u8>, Error> {
+    let layout = card_layout(mib)?;
     let bytes = mib
         .checked_mul(1024 * 1024)
-        .ok_or_else(|| Error::new("build_card", -1, "card too large"))?;
+        .ok_or_else(|| Error::new("build_card", -1, "card too large for this system"))?;
     let sectors = (bytes / SECTOR) as u64;
-    let part_sectors = sectors
-        .checked_sub(PART_LBA)
-        .filter(|&n| n > 0)
-        .and_then(|n| u32::try_from(n).ok())
-        .ok_or_else(|| Error::new("build_card", -1, "card size out of range"))?;
-    let fat32 = mib >= 64;
+    let part_sectors = u32::try_from(sectors - PART_LBA)
+        .map_err(|_| Error::new("build_card", -1, "card size out of range"))?;
     let mut img = vec![0u8; bytes];
     let mbr = &mut img[0x1BE..0x1CE];
     mbr[0] = 0x00;
     mbr[1..4].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
-    mbr[4] = if fat32 { 0x0C } else { 0x0E };
+    mbr[4] = layout.part_type;
     mbr[5..8].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
     mbr[8..12].copy_from_slice(&(PART_LBA as u32).to_le_bytes());
     mbr[12..16].copy_from_slice(&part_sectors.to_le_bytes());
@@ -357,14 +412,22 @@ pub fn build_card(mib: usize, entries: &[Entry<'_>]) -> Result<Vec<u8>, Error> {
     img[511] = 0xAA;
 
     let opts = ffi::FsMkfsOpts {
-        fmt: if fat32 {
+        fmt: if layout.fat_type == 32 {
             ffi::FS_MKFS_FAT32
         } else {
             ffi::FS_MKFS_FAT
         },
-        cluster_bytes: if fat32 { 0 } else { 512 },
+        cluster_bytes: layout.cluster_bytes,
     };
     with_volume(&mut img, c"card", Some(&opts), || {
+        let made = statvfs(c"card")?.fat_type;
+        if made != layout.fat_type {
+            return Err(Error::new(
+                "build_card",
+                i32::from(made),
+                "FatFs made a FAT type the partition table does not declare",
+            ));
+        }
         for e in entries {
             let p = c_string(e.path, &format!("card:/{}", e.path))?;
             match e.data {
@@ -393,6 +456,25 @@ fn write_file(what: &str, path: &CStr, d: &[u8]) -> Result<(), Error> {
         return Err(Error::new(what, w, "short write"));
     }
     fs_check(what, c)
+}
+
+fn statvfs(vol: &CStr) -> Result<ffi::FsStatvfs, Error> {
+    let mut st = ffi::FsStatvfs::default();
+    // SAFETY: `vol` ends with NUL; `st` outlives the call.
+    fs_check("fs_statvfs", unsafe {
+        ffi::fs_statvfs(vol.as_ptr(), &mut st)
+    })?;
+    Ok(st)
+}
+
+/// The partition type in a card image's MBR and the FAT type of its
+/// volume, 12, 16 or 32, as the file system reports it.
+pub fn card_types(img: &mut [u8]) -> Result<(u8, u8), Error> {
+    let part_type = *img
+        .get(0x1C2)
+        .ok_or_else(|| Error::new("card_types", -1, "image too short"))?;
+    let fat = with_volume(img, c"probe", None, || statvfs(c"probe"))?.fat_type;
+    Ok((part_type, fat))
 }
 
 /// Mounts a card image built by [`build_card`] and reads one file back.
