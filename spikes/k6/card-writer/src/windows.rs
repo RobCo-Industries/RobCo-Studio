@@ -21,21 +21,27 @@ ConvertTo-Json -Depth 4 -Compress -InputObject ([pscustomobject]@{
   SystemDrive = $env:SystemDrive; Disks = $d; Partitions = $p; Drives = $w })
 "#;
 
-/// MSFT_Disk BusType values.
+/// MSFT_Disk BusType values, from Microsoft's MSFT_Disk page: 0 Unknown, 1 SCSI, 2 ATAPI,
+/// 3 ATA, 4 1394, 5 SSA, 6 Fibre Channel, 7 USB, 8 RAID, 9 iSCSI, 10 SAS, 11 SATA, 12 SD,
+/// 13 MMC, 14 Virtual (reserved for system use), 15 File Backed Virtual, 16 Storage Spaces,
+/// 17 NVMe. 18 and up are reserved. Every documented value has a class on purpose. Value 0,
+/// a reserved value and any text not in this list land in `Unknown`, which is refused.
 fn bus_of(n: Option<u64>, text: &str) -> (Bus, String) {
     let by_num = match n {
         Some(7) => Some(Bus::Usb),
         Some(12) | Some(13) => Some(Bus::Sd),
-        Some(15) => Some(Bus::Virtual),
-        Some(1..=6) | Some(8..=11) | Some(14) | Some(16..=18) => Some(Bus::Internal),
+        // 14 is the Virtual bus some virtual disks report; 15 is a VHD.
+        Some(14) | Some(15) => Some(Bus::Virtual),
+        Some(1..=6) | Some(8..=11) | Some(16) | Some(17) => Some(Bus::Internal),
         _ => None,
     };
     let by_text = match text {
         "USB" => Some(Bus::Usb),
         "SD" | "MMC" => Some(Bus::Sd),
-        "File Backed Virtual" => Some(Bus::Virtual),
-        "" | "Unknown" => None,
-        _ => Some(Bus::Internal),
+        "Virtual" | "File Backed Virtual" => Some(Bus::Virtual),
+        "SCSI" | "ATAPI" | "ATA" | "1394" | "SSA" | "Fibre Channel" | "RAID" | "iSCSI" | "SAS"
+        | "SATA" | "Storage Spaces" | "Spaces" | "NVMe" => Some(Bus::Internal),
+        _ => None,
     };
     let raw = match n {
         Some(n) => format!("{text} ({n})"),
@@ -184,7 +190,7 @@ pub fn parse(text: &str) -> DiskList {
                 .unwrap_or("")
                 .trim()
                 .to_string(),
-            block_size: as_u64(d.get("LogicalSectorSize")).map(|b| b as u32),
+            block_size: as_u64(d.get("LogicalSectorSize")).and_then(|b| u32::try_from(b).ok()),
         });
     }
     list
