@@ -27,7 +27,7 @@ CI runs the same commands on Ubuntu, macOS and Windows and fails on any warning.
 - `unsafe` is denied in every crate except `studio-sys` and `studio-disk`. There, each `unsafe` block needs a `SAFETY` comment.
 - `unwrap`, `expect`, `panic!`, `todo!` and `dbg!` are denied outside tests.
 - `Cargo.lock` is committed. A new dependency needs a reason, and its licence must be on the allow list in `deny.toml`.
-- The toolchain in `rust-toolchain.toml` and `rust-version` in `Cargo.toml` move together, in a pull request that does nothing else.
+- The toolchain in `rust-toolchain.toml` and `rust-version` in `Cargo.toml` move together, in a pull request that does nothing else. CI runs `scripts/check-pins.py` to check that they agree.
 
 ## Branches and pull requests
 
@@ -37,4 +37,4 @@ Work on a branch from `main`. Open one pull request per milestone. A pull reques
 
 Studio is GPL-3.0-or-later. Nothing that ends up inside a user's tape, app or card image lives in this repository: no runtime, no template, no code skeleton. Those live in [RobCo Reel](https://github.com/RobCo-Industries/RobCo-Reel) under MIT. If a file you add would be copied or linked into a user's work, it belongs there.
 
-Each source file starts with an SPDX line: `// SPDX-License-Identifier: GPL-3.0-or-later`. Contributions come in under the repository's licence.
+Each source file starts with an SPDX line: `// SPDX-License-Identifier: GPL-3.0-or-later`. Contributions come in under the repository's licence. `REUSE.toml` covers files that cannot hold a comment, and CI runs `reuse lint` on every file.
