@@ -957,6 +957,63 @@ fn resolve_lock_io_errors() {
     );
 }
 
+#[test]
+fn resolve_lock_write_leaves_the_old_temporary_name_alone() {
+    let dir = TempDir::new("oldtmp");
+    let old = dir.path().join("robco.lock.tmp");
+    fs::write(&old, "someone else's").unwrap();
+    let lock = Lock::parse(LOCK.as_bytes()).unwrap();
+    lock::write(dir.path(), &lock).unwrap();
+    lock::write(dir.path(), &lock).unwrap();
+    assert_eq!(fs::read_to_string(&old).unwrap(), "someone else's");
+    assert_eq!(
+        fs::read(dir.path().join(lock::FILE)).unwrap(),
+        LOCK.as_bytes()
+    );
+    assert_eq!(
+        dir.listing(),
+        vec![lock::FILE.to_owned(), "robco.lock.tmp".to_owned()]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resolve_lock_write_never_follows_a_link() {
+    let dir = TempDir::new("link");
+    let target = dir.path().join("target");
+    fs::write(&target, "kept").unwrap();
+    std::os::unix::fs::symlink(&target, dir.path().join("robco.lock.tmp")).unwrap();
+    // Links at the first names the writer picks too: it passes over them.
+    for n in 0..8 {
+        std::os::unix::fs::symlink(
+            &target,
+            dir.path()
+                .join(format!("{}{}.{n}", lock::TEMP_PREFIX, std::process::id())),
+        )
+        .unwrap();
+    }
+    let lock = Lock::parse(LOCK.as_bytes()).unwrap();
+    lock::write(dir.path(), &lock).unwrap();
+    assert_eq!(
+        fs::read(dir.path().join(lock::FILE)).unwrap(),
+        LOCK.as_bytes()
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "kept");
+}
+
+#[test]
+fn resolve_lock_failed_write_keeps_the_old_lock_and_no_temporary_file() {
+    let dir = TempDir::new("failed");
+    // A folder where the lock goes: the rename over it fails.
+    let old = dir.path().join(lock::FILE);
+    fs::create_dir(&old).unwrap();
+    fs::write(old.join("inside"), "old").unwrap();
+    let lock = Lock::parse(LOCK.as_bytes()).unwrap();
+    assert_eq!(code(lock::write(dir.path(), &lock)), "io: write");
+    assert_eq!(fs::read_to_string(old.join("inside")).unwrap(), "old");
+    assert_eq!(dir.listing(), vec![lock::FILE.to_owned()]);
+}
+
 // A stale lock.
 
 fn requires_map(edges: &[(&str, &str, &str)]) -> impl Fn(&LockedPackage) -> Vec<Requirement> {

@@ -15,8 +15,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::ErrorKind;
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write as _};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use toml::{Table, Value};
 
@@ -36,8 +38,12 @@ pub const FORMAT: i64 = 1;
 /// The lock's file name in the project root.
 pub const FILE: &str = "robco.lock";
 
-/// The temporary file the writer renames over [`FILE`].
-pub const TEMP_FILE: &str = "robco.lock.tmp";
+/// The start of each temporary file the writer renames over [`FILE`]. The
+/// process id and a counter follow, so no two writers share a name.
+pub const TEMP_PREFIX: &str = "robco.lock.tmp.";
+
+/// How many names the writer tries when one already exists.
+const TEMP_TRIES: u32 = 16;
 
 /// A parsed or resolved `robco.lock`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,23 +479,42 @@ pub fn read(project: &Path) -> Result<Option<Lock>, Error> {
     }
 }
 
-/// Writes `robco.lock` into a project folder: a temporary file in the same
-/// folder, renamed over the old lock. A failure gives `io: write`.
+/// Writes `robco.lock` into a project folder: a new temporary file in the
+/// same folder, renamed over the old lock. The temporary file gets a name no
+/// one else has and is created new, so an existing file or link of that name
+/// is never opened. A failure removes the temporary file, leaves the old
+/// lock as it was and gives `io: write`.
 pub fn write(project: &Path, lock: &Lock) -> Result<(), Error> {
-    let tmp = project.join(TEMP_FILE);
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let path = project.join(FILE);
     let fail = |p: &Path, e: &std::io::Error| Error::IoWrite {
         path: p.display().to_string(),
         reason: e.kind().to_string(),
     };
-    fs::write(&tmp, lock.to_text()).map_err(|e| {
+    let mut tries = 0;
+    let (tmp, mut file) = loop {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = project.join(format!("{TEMP_PREFIX}{}.{n}", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(f) => break (tmp, f),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists && tries + 1 < TEMP_TRIES => {
+                tries += 1;
+            }
+            Err(e) => return Err(fail(&tmp, &e)),
+        }
+    };
+    let written = file
+        .write_all(lock.to_text().as_bytes())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    let done = written
+        .map_err(|e| fail(&tmp, &e))
+        .and_then(|()| fs::rename(&tmp, &path).map_err(|e| fail(&path, &e)));
+    if done.is_err() {
         let _ = fs::remove_file(&tmp);
-        fail(&tmp, &e)
-    })?;
-    fs::rename(&tmp, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        fail(&path, &e)
-    })
+    }
+    done
 }
 
 /// What a build does with the lock, before it installs anything.
