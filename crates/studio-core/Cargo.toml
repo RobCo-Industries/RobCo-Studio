@@ -11,6 +11,11 @@ publish.workspace = true
 [dependencies]
 studio-sys.workspace = true
 studio-disk.workspace = true
+serde_json = "1"
+
+# Wraps the Job Object calls, which need `unsafe`, forbidden in this crate.
+[target.'cfg(windows)'.dependencies]
+win32job = "2.1.0"
 
 [lints]
 workspace = true

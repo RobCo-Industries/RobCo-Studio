@@ -4,14 +4,11 @@ RobCo Studio is the development tool for the RobCo Industries operating systems.
 
 ## Status
 
-No feature works yet. This repository holds the skeleton of the first milestone:
+Nothing is usable yet. What exists:
 
-- A Cargo workspace with five crates. Each one is an empty shell except for the version. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- `robco --version` and `robco version` print the version. No other command exists.
-- `robco-studio` prints its version too. It opens no window yet.
+- A Cargo workspace with five crates that do nothing yet. `robco --version`, `robco version` and `robco-studio` print the version, and nothing else. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - CI on Ubuntu, macOS and Windows: format, lints, tests, a licence check, a release build of `robco` and a link check of the Markdown files.
-
-No RobCo-Core C is linked yet, and no window toolkit is chosen. Spikes decide both.
+- Seven spikes, throwaway code that answers one question each, with their results. No RobCo-Core C is linked into the crates yet. See [docs/SPIKES.md](docs/SPIKES.md).
 
 To build and test, see [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
