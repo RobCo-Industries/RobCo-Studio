@@ -7,7 +7,10 @@
 # The package:
 #   bin/        qemu-system-arm, qemu-system-aarch64, and on Windows the DLLs
 #   lib/        Linux and macOS: the libraries the system does not provide
-#   licences/   licence texts and notices; for now QEMU's COPYING and LICENSE
+#   licenses/   licence texts named after each component, and
+#               packed-libraries.txt, the record of what was packed
+#   NOTICE      what the package is and what it carries
+# notices.sh writes licenses/ and NOTICE, as docs/THIRD_PARTY.md asks.
 set -euxo pipefail
 
 os=$1
@@ -20,10 +23,9 @@ exe=""
 [ "$os" = windows ] && exe=.exe
 
 rm -rf "$dist"
-mkdir -p "$dist/bin" "$dist/lib" "$dist/licences/qemu"
+mkdir -p "$dist/bin" "$dist/lib"
 for t in arm aarch64; do cp "$build/qemu-system-$t$exe" "$dist/bin/"; done
 chmod 755 "$dist"/bin/*
-cp "$build/COPYING" "$build/LICENSE" "$dist/licences/qemu/"
 
 {
   cat "$build/build.txt"
@@ -95,6 +97,8 @@ case $os in
     exit 2
     ;;
 esac
+
+"$here/notices.sh" "$os" "$out" | tee -a "$report"
 
 {
   echo "packed files:"
