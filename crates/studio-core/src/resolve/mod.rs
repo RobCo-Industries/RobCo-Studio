@@ -367,6 +367,19 @@ pub fn is_tool_version(s: &str) -> bool {
             .all(|b| (0x21..=0x7E).contains(&b) && b != b'"' && b != b'\\')
 }
 
+/// Whether two names are equal but for case: their lower case forms are
+/// equal, or their upper case forms are, by the Unicode mappings of
+/// [`str::to_lowercase`] and [`str::to_uppercase`]. No normalization. Two
+/// equal names count too.
+///
+/// The spec forbids two archive entries "whose names differ only in case"
+/// and does not yet name the case folding. This is the rule until it does.
+/// Every place in this module that compares names for case calls this
+/// function.
+pub fn same_but_case(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase() || a.to_uppercase() == b.to_uppercase()
+}
+
 /// The form of a SHA-256: 64 lower case hex digits. Upper case is refused.
 pub fn is_sha256(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))

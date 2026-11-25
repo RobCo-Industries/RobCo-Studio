@@ -1534,3 +1534,45 @@ fn resolve_index_format_value_is_a_positive_integer() {
         );
     }
 }
+
+#[test]
+fn resolve_case_pairs_beyond_ascii() {
+    // Equal lower case forms, or equal upper case forms, by the standard
+    // library's Unicode mappings.
+    for (a, b) in [
+        ("Å.txt", "å.txt"),
+        ("Ω", "ω"),
+        ("\u{212A}.txt", "k.txt"),
+        ("straße", "STRASSE"),
+        ("ſ", "s"),
+    ] {
+        assert!(same_but_case(a, b), "{a} {b}");
+        assert!(same_but_case(b, a), "{b} {a}");
+    }
+    for (a, b) in [("a", "b"), ("å", "a"), ("e\u{301}", "é")] {
+        assert!(!same_but_case(a, b), "{a} {b}");
+    }
+    let base: Value = serde_json::from_str(SDK).unwrap();
+    let with = |paths: &[&str]| {
+        let mut v = base.clone();
+        let files = v["files"].as_array_mut().unwrap();
+        let entry = files[0].clone();
+        for p in paths {
+            let mut e = entry.clone();
+            e["path"] = Value::from(*p);
+            files.push(e);
+        }
+        files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+        sdk_json::parse(v.to_string().as_bytes())
+    };
+    // A pair in the files list.
+    for pair in [["Å.txt", "å.txt"], ["\u{212A}.txt", "k.txt"]] {
+        let e = with(&pair).unwrap_err();
+        assert_eq!(e.code(), "package: manifest", "{pair:?}");
+        assert!(e.to_string().contains("differs only in case"), "{e}");
+    }
+    assert!(with(&["Å.txt", "a.txt"]).is_ok());
+    // The manifest's own name, in another case beyond ASCII.
+    let e = with(&["ſdk.json"]).unwrap_err();
+    assert!(e.to_string().contains("names the manifest"), "{e}");
+}

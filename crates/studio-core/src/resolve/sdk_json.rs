@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 use super::index::{self, IndexPackage};
 use super::{
     Abi, Error, KNOWN_FORMATS, PIPOS, Requirement, TEMPLATES, ToolPin, Version, is_package_name,
-    is_sha256,
+    is_sha256, same_but_case,
 };
 
 /// The `sdk.json` `format` this module reads. A larger one fails.
@@ -323,7 +323,7 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
         }
         // `files` lists every file but `sdk.json`. The archive allows no two
         // names that differ only in case, so `SDK.JSON` is refused too.
-        if f.path.eq_ignore_ascii_case(MANIFEST) {
+        if same_but_case(&f.path, MANIFEST) {
             return Err(bad(
                 &format!("{at}path = {:?}", f.path),
                 "names the manifest: files lists every file but sdk.json",
@@ -332,7 +332,7 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
         // No two names that differ only in case, by the archive rules.
         if let Some(other) = files
             .iter()
-            .find(|p| p.path != f.path && p.path.eq_ignore_ascii_case(&f.path))
+            .find(|p| p.path != f.path && same_but_case(&p.path, &f.path))
         {
             return Err(bad(
                 &format!("{at}path = {:?}", f.path),
