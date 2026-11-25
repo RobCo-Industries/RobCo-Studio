@@ -3,7 +3,9 @@
 //! The project manifest, `robco.toml`, format 1.
 //!
 //! The rules are the "robco.toml", "Kinds" and "Errors" sections of
-//! `docs/spec/STUDIO_PROJECT.md` in RobCo-Core, read at commit `a7acab5`.
+//! `docs/spec/STUDIO_PROJECT.md` in RobCo-Core, read at commit `a7acab5`. The source order follows the
+//! "Source order" section of the same file as it stands in review, read at
+//! commit `dc294ad`. The manifest is TOML 1.1, as the `toml` crate parses it.
 //!
 //! This module is pure: text in, a checked [`Manifest`] or a
 //! [`ManifestError`] out. It reads no file. Three checks need the project
@@ -626,43 +628,54 @@ fn pattern_matches(pattern: &str, path: &str) -> bool {
     pdir == dir && component_matches(pname, name)
 }
 
-/// The order of the expanded source list.
+/// The order of the source list, which is the link order.
 ///
-/// The spec sorts by byte value of the path. A build may need another
-/// order to match a Makefile's link order; this is the one place to change.
-pub fn order_sources(sources: &mut Vec<String>) {
-    sources.sort_unstable();
-    sources.dedup();
+/// `matches` holds, for each pattern in the order the manifest writes them,
+/// the paths it expanded to. A pattern's own matches are sorted by byte
+/// value, which leaves a pattern without `*` as its one path. The groups
+/// are then appended in order, and a path already in the list keeps its
+/// first place. This is the one place the rule lives.
+pub fn order_sources(matches: Vec<Vec<String>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for mut group in matches {
+        group.sort_unstable();
+        for path in group {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 /// Expands the source patterns against the project's regular files.
 ///
 /// `files` lists every regular file under the project root, as relative
 /// paths with `/`. The caller gathers it; this function reads nothing.
-/// It drops repeats and orders the result with [`order_sources`]. A pattern
-/// that matches nothing, or a match that does not end in `.c`, fails with
-/// `sources`.
+/// The result is in the order of [`order_sources`]. A pattern that matches
+/// nothing, or a match that does not end in `.c`, fails with `sources`.
+/// Paths compare byte for byte, so a name that differs only in case
+/// matches nothing.
 pub fn expand_sources(patterns: &[String], files: &[&str]) -> Result<Vec<String>, ManifestError> {
-    let mut out = Vec::new();
+    let mut groups = Vec::with_capacity(patterns.len());
     for pattern in patterns {
-        let mut matched = false;
+        let mut group = Vec::new();
         for file in files.iter().filter(|f| pattern_matches(pattern, f)) {
             if !file.ends_with(".c") {
                 return Err(ManifestError::Sources(format!(
                     "{pattern}: matches {file}, which is not a .c file"
                 )));
             }
-            matched = true;
-            out.push((*file).to_string());
+            group.push((*file).to_string());
         }
-        if !matched {
+        if group.is_empty() {
             return Err(ManifestError::Sources(format!(
                 "{pattern}: matches nothing"
             )));
         }
+        groups.push(group);
     }
-    order_sources(&mut out);
-    Ok(out)
+    Ok(order_sources(groups))
 }
 
 /// Checks the icon file and returns its 128 META bytes.

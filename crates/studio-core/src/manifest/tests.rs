@@ -384,33 +384,96 @@ fn code_sources() {
     );
 }
 
+fn strings(s: &[&str]) -> Vec<String> {
+    s.iter().map(|s| s.to_string()).collect()
+}
+
+const CULVERT_FILES: &[&str] = &["draw.c", "game.c", "logic.c", "main.c", "Makefile"];
+const SRC_FILES: &[&str] = &[
+    "src/main.c",
+    "src/game.c",
+    "src/draw.c",
+    "src/sub/deep.c",
+    "main.c",
+];
+
 #[test]
-fn sources_expand_and_drop_repeats() {
-    let patterns: Vec<String> = ["src/*.c", "src/main.c", "x*y*z.c"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    let files = [
-        "src/main.c",
-        "src/game.c",
-        "src/sub/deep.c",
-        "xayz.c",
-        "xyz.c",
-        "xz.c",
-        "main.c",
-    ];
+fn source_order_keeps_an_explicit_list_as_written() {
+    let list = ["main.c", "game.c", "logic.c", "draw.c"];
     assert_eq!(
-        expand_sources(&patterns, &files).unwrap(),
-        ["src/game.c", "src/main.c", "xayz.c", "xyz.c"]
+        expand_sources(&strings(&list), CULVERT_FILES).unwrap(),
+        list
     );
 }
 
 #[test]
-fn source_order_is_byte_order() {
-    let mut s: Vec<String> = ["main.c", "game.c", "logic.c", "draw.c", "Z.c", "main.c"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    order_sources(&mut s);
-    assert_eq!(s, ["Z.c", "draw.c", "game.c", "logic.c", "main.c"]);
+fn source_order_sorts_a_patterns_matches() {
+    assert_eq!(
+        expand_sources(&strings(&["src/*.c"]), SRC_FILES).unwrap(),
+        ["src/draw.c", "src/game.c", "src/main.c"]
+    );
+}
+
+#[test]
+fn source_order_mixes_names_and_patterns() {
+    assert_eq!(
+        expand_sources(&strings(&["src/main.c", "src/*.c"]), SRC_FILES).unwrap(),
+        ["src/main.c", "src/draw.c", "src/game.c"]
+    );
+}
+
+#[test]
+fn source_order_keeps_a_repeat_at_its_first_place() {
+    assert_eq!(
+        expand_sources(
+            &strings(&["game.c", "main.c", "game.c", "*.c"]),
+            CULVERT_FILES
+        )
+        .unwrap(),
+        ["game.c", "main.c", "draw.c", "logic.c"]
+    );
+}
+
+#[test]
+fn order_sources_is_the_rule() {
+    let groups = vec![strings(&["b.c"]), strings(&["z.c", "a.c", "b.c"])];
+    assert_eq!(order_sources(groups), ["b.c", "a.c", "z.c"]);
+}
+
+#[test]
+fn source_names_compare_by_byte() {
+    check(
+        expand_sources(&strings(&["MAIN.c"]), CULVERT_FILES).unwrap_err(),
+        "sources",
+        "MAIN.c: matches nothing",
+    );
+}
+
+#[test]
+fn pattern_star_matches_runs() {
+    let files = ["xayz.c", "xyz.c", "xz.c", "sub/xyz.c"];
+    assert_eq!(
+        expand_sources(&strings(&["x*y*z.c"]), &files).unwrap(),
+        ["xayz.c", "xyz.c"]
+    );
+}
+
+/// The spec's second example, Culvert, copied byte for byte.
+#[test]
+fn culvert_example_keeps_its_makefile_order() {
+    let m = parse(include_bytes!("../../tests/manifest/culvert.toml")).unwrap();
+    assert_eq!(m.project.name, "CULVERT");
+    assert_eq!(m.target.abi.abi_version(), 0x0001_0004);
+    assert_eq!(
+        expand_sources(&m.build.sources, CULVERT_FILES).unwrap(),
+        ["main.c", "game.c", "logic.c", "draw.c"]
+    );
+}
+
+/// The manifest is TOML 1.1: an inline table over several lines, which
+/// TOML 1.0 refuses, parses. This pins the behaviour of the `toml` crate.
+#[test]
+fn toml_1_1_inline_table_over_lines_parses() {
+    let text = "format = 1\nproject = {\n  name = \"PIPES\",\n  version = \"1.0.0\",\n  kind = \"holotape\",\n  subtype = \"game\",\n}\ntarget = { platform = \"pipos\", abi = \"1.3\" }\n";
+    assert_eq!(parse(text.as_bytes()).unwrap().project.name, "PIPES");
 }
