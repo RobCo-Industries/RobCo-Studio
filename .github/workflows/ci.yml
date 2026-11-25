@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, s1-ci-jobs]
   pull_request:
 
 permissions:
@@ -70,39 +70,91 @@ jobs:
       - name: Licences, advisories, bans and sources
         run: cargo deny --locked check
 
+  file-licences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every file carries an SPDX licence
+        uses: fsfe/reuse-action@v5
+        with:
+          args: lint
+
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain file, manifests and the RobCo-Core submodule agree
+        run: python3 scripts/check-pins.py
+
   release:
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Linux: statically linked against musl, so it runs in any container.
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            rustflags: ""
             exe: ""
           - os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: ""
             exe: ""
+          # Windows: the C runtime is linked statically.
           - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rustflags: -C target-feature=+crt-static
             exe: .exe
     runs-on: ${{ matrix.os }}
     env:
       EXE: ${{ matrix.exe }}
+      BIN: target/${{ matrix.target }}/release/robco${{ matrix.exe }}
+      RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
-        run: rustup toolchain install
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - name: Install the musl C compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Release build
-        run: cargo build --release --locked -p robco
+        run: cargo build --release --locked -p robco --target ${{ matrix.target }}
       - name: Run the binary
         run: |
-          out=$(./target/release/robco$EXE --version | tr -d '\r')
+          out=$("./$BIN" --version | tr -d '\r')
           echo "$out"
           case "$out" in
             "robco "[0-9]*.[0-9]*.[0-9]*) ;;
             *) echo "::error::unexpected version line: $out"; exit 1 ;;
           esac
+      - name: The binary is static
+        if: runner.os == 'Linux'
+        run: |
+          file "$BIN"
+          if out=$(ldd "$BIN" 2>&1); then rc=0; else rc=$?; fi
+          echo "ldd: $out (exit $rc)"
+          case "$out" in
+            *"not a dynamic executable"*|*"statically linked"*) ;;
+            *) echo "::error::robco is linked dynamically"; exit 1 ;;
+          esac
+      - name: The binary links the C runtime statically
+        if: runner.os == 'Windows'
+        run: |
+          if grep -a -i -o -E '(vcruntime|msvcp)[0-9]+[_a-z0-9]*\.dll|api-ms-win-crt-[a-z0-9-]+\.dll|ucrtbase\.dll' "$BIN" > crt-imports.txt; then
+            sort -u crt-imports.txt
+            echo "::error::robco imports the C runtime from a DLL"
+            exit 1
+          fi
+          echo "no C runtime DLL among the imports"
       - uses: actions/upload-artifact@v4
         with:
           name: robco-${{ runner.os }}-${{ runner.arch }}
-          path: target/release/robco${{ env.EXE }}
+          path: ${{ env.BIN }}
           if-no-files-found: error
 
   docs:
