@@ -8,7 +8,7 @@ pub const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 $d = @(Get-Disk | ForEach-Object { [pscustomobject]@{
   Number = $_.Number; FriendlyName = $_.FriendlyName; Size = $_.Size
-  BusType = [int]$_.BusType; BusTypeText = "$($_.BusType)"
+  BusType = $_.CimInstanceProperties["BusType"].Value; BusTypeText = "$($_.BusType)"
   IsBoot = $_.IsBoot; IsSystem = $_.IsSystem; IsOffline = $_.IsOffline
   LogicalSectorSize = $_.LogicalSectorSize } })
 $p = @(Get-Partition | ForEach-Object { [pscustomobject]@{

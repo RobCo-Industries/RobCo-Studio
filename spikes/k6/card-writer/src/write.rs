@@ -119,7 +119,7 @@ pub fn write_and_verify(target: Approved, image: &Path) -> io::Result<Outcome> {
             break;
         }
     }
-    dev.sync_all()?;
+    flush(&dev)?;
     drop(dev);
     let write_ms = t0.elapsed().as_millis();
     let t1 = Instant::now();
@@ -160,7 +160,7 @@ pub fn compare(device: &str, image: &Path, bytes: u64) -> io::Result<Option<u64>
 
 /// A pseudo-random test image, the same for the same seed.
 pub fn make_image(out: &Path, size: usize, seed: u64) -> io::Result<()> {
-    let mut x = seed | 1;
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     let mut data = Vec::with_capacity(size);
     while data.len() < size {
         x ^= x << 13;
@@ -170,4 +170,17 @@ pub fn make_image(out: &Path, size: usize, seed: u64) -> io::Result<()> {
     }
     data.truncate(size);
     std::fs::write(out, data)
+}
+
+/// Flushes the device. On macOS, `sync_all` is `F_FULLFSYNC`, which a raw disk node
+/// refuses with ENOTTY: rdisk writes are unbuffered by the system, and the drive's own
+/// cache would need the DKIOCSYNCHRONIZECACHE ioctl, which this spike does not call.
+fn flush(dev: &File) -> io::Result<()> {
+    match dev.sync_all() {
+        Err(e) if cfg!(target_os = "macos") && e.raw_os_error() == Some(25) => {
+            eprintln!("flush: F_FULLFSYNC not supported on a raw disk, continuing");
+            Ok(())
+        }
+        r => r,
+    }
 }
