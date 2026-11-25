@@ -1,0 +1,11 @@
+# REUSE metadata. CI runs `reuse lint`.
+# Every file in this repository is GPL-3.0-or-later. A file's own SPDX lines
+# add to what this file says. Submodules carry their own licence information
+# and `reuse lint` skips them.
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The RobCo Studio contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"

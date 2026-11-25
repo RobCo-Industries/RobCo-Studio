@@ -6,3 +6,6 @@
 *.swp
 *~
 .DS_Store
+
+# Python, from the scripts and their tests
+__pycache__/
