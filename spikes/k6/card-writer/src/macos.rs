@@ -175,7 +175,7 @@ pub fn parse_value(v: &Value) -> DiskList {
             mounts: m,
             synthesized,
             label: as_str(i.get("MediaName")).unwrap_or("").trim().to_string(),
-            block_size: as_u64(i.get("DeviceBlockSize")).map(|b| b as u32),
+            block_size: as_u64(i.get("DeviceBlockSize")).and_then(|b| u32::try_from(b).ok()),
         });
     }
     if !root_disks.is_empty()

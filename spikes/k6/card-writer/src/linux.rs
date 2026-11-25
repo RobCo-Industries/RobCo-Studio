@@ -126,7 +126,7 @@ pub fn parse(text: &str) -> DiskList {
             mounts,
             synthesized: false,
             label: format!("{vendor} {model}").trim().to_string(),
-            block_size: as_u64(dev.get("log-sec")).map(|b| b as u32),
+            block_size: as_u64(dev.get("log-sec")).and_then(|b| u32::try_from(b).ok()),
         });
     }
     list
