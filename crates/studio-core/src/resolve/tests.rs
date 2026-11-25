@@ -1195,32 +1195,54 @@ fn resolve_stale_lock_fails_and_writes_nothing() {
 }
 
 #[test]
-fn resolve_no_lock_writes_one_and_a_fitting_lock_is_kept() {
+fn resolve_no_lock_writes_nothing_and_write_gives_the_lock_bytes() {
     let dir = TempDir::new("fresh");
     let i = parse_index(INDEX).unwrap();
     let go = || resolve(&target("1.3"), &i, LOCATION, "linux-x64");
-    let l = lock::use_or_resolve(dir.path(), &target("1.3"), "linux-x64", &go).unwrap();
+    let r = lock::use_or_resolve(dir.path(), &target("1.3"), "linux-x64", &go).unwrap();
+    let lock::Resolution::New(l) = r else {
+        panic!("no lock gives a new resolution")
+    };
+    assert!(dir.listing().is_empty(), "{:?}", dir.listing());
+    lock::write(dir.path(), &l).unwrap();
     assert_eq!(
         fs::read(dir.path().join(lock::FILE)).unwrap(),
         LOCK.as_bytes()
     );
-    let again = lock::use_or_resolve(dir.path(), &target("1.2"), "linux-x64", &|| {
-        unreachable!("a fitting lock is used unchanged")
-    })
-    .unwrap();
-    assert_eq!(l, again);
 }
 
 #[test]
-fn resolve_failed_update_keeps_old_lock() {
+fn resolve_fitting_lock_is_kept_untouched() {
+    let dir = TempDir::new("kept");
+    let path = dir.path().join(lock::FILE);
+    fs::write(&path, LOCK).unwrap();
+    let old = fs::File::options().write(true).open(&path).unwrap();
+    let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    old.set_modified(past).unwrap();
+    drop(old);
+    let r = lock::use_or_resolve(dir.path(), &target("1.2"), "linux-x64", &|| {
+        unreachable!("a fitting lock is used unchanged")
+    })
+    .unwrap();
+    assert_eq!(
+        r,
+        lock::Resolution::Locked(Lock::parse(LOCK.as_bytes()).unwrap())
+    );
+    assert_eq!(fs::read(&path).unwrap(), LOCK.as_bytes());
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), past);
+    assert_eq!(dir.listing(), vec![lock::FILE.to_owned()]);
+}
+
+#[test]
+fn resolve_again_writes_nothing() {
     let dir = TempDir::new("update");
     fs::write(dir.path().join(lock::FILE), b"old").unwrap();
     let i = parse_index(INDEX).unwrap();
-    let e = lock::update(dir.path(), &|| {
-        resolve(&target("1.9"), &i, LOCATION, "linux-x64")
-    })
-    .unwrap_err();
+    let e =
+        lock::resolve_again(&|| resolve(&target("1.9"), &i, LOCATION, "linux-x64")).unwrap_err();
     assert_eq!(e.code(), "sdk: no package");
+    let r = lock::resolve_again(&|| resolve(&target("1.3"), &i, LOCATION, "linux-x64")).unwrap();
+    assert!(matches!(r, lock::Resolution::New(_)));
     assert_eq!(fs::read(dir.path().join(lock::FILE)).unwrap(), b"old");
     assert_eq!(dir.listing(), vec![lock::FILE.to_owned()]);
 }

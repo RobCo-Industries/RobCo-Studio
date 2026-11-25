@@ -514,7 +514,13 @@ pub fn read(project: &Path) -> Result<Option<Lock>, Error> {
     }
 }
 
-/// Writes `robco.lock` into a project folder: a new temporary file in the
+/// Writes `robco.lock` into a project folder: step 10 of "The steps of
+/// update, build, run and test". Call it only for a [`Resolution::New`], and
+/// only once steps 7 to 9 passed: every package and tool the command installs
+/// is installed and checked. A command that fails before this step writes no
+/// lock, so a first build keeps no lock and `robco update` keeps the old one.
+///
+/// It writes a new temporary file in the
 /// same folder, renamed over the old lock. The temporary file gets a name no
 /// one else has and is created new, so an existing file or link of that name
 /// is never opened. A failure removes the temporary file, leaves the old
@@ -552,37 +558,49 @@ pub fn write(project: &Path, lock: &Lock) -> Result<(), Error> {
     done
 }
 
-/// What a build does with the lock, before it installs anything.
+/// Where the lock a command uses came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// The project's `robco.lock`, read at step 5. The command never writes it.
+    Locked(Lock),
+    /// A new resolution from the index, step 6. The command writes it with
+    /// [`write`] at step 10, after its installs passed.
+    New(Lock),
+}
+
+impl Resolution {
+    /// The lock, wherever it came from.
+    pub fn lock(&self) -> &Lock {
+        match self {
+            Self::Locked(l) | Self::New(l) => l,
+        }
+    }
+}
+
+/// Steps 5 and 6 of a build, run or test. Writes nothing.
 ///
-/// No lock: calls `resolve`, writes its lock and returns it. A lock: checks
-/// the parts of "A stale lock" that need no `requires`, and returns it
-/// unchanged. The caller runs [`Lock::check_stale`] again with the
-/// `requires` once the packages are installed. Every failure leaves the
-/// folder as it was.
+/// No lock: calls `resolve` and returns [`Resolution::New`]. A lock: checks
+/// the parts of "A stale lock" that need no `requires`, and returns it as
+/// [`Resolution::Locked`]. The caller runs [`Lock::check_stale`] again with
+/// the `requires` once the packages are installed.
 pub fn use_or_resolve(
     project: &Path,
     target: &Target,
     host: &str,
     resolve: &dyn Fn() -> Result<Lock, Error>,
-) -> Result<Lock, Error> {
+) -> Result<Resolution, Error> {
     match read(project)? {
         Some(lock) => {
             lock.check_stale(target, host, None)?;
-            Ok(lock)
+            Ok(Resolution::Locked(lock))
         }
-        None => {
-            let lock = resolve()?;
-            write(project, &lock)?;
-            Ok(lock)
-        }
+        None => resolve().map(Resolution::New),
     }
 }
 
-/// The lock part of `robco update`: resolves again as if no lock existed
-/// and writes the new lock in place of the old. A failure leaves the old
-/// lock as it was.
-pub fn update(project: &Path, resolve: &dyn Fn() -> Result<Lock, Error>) -> Result<Lock, Error> {
-    let lock = resolve()?;
-    write(project, &lock)?;
-    Ok(lock)
+/// Step 6 of `robco update`: resolves again as if no lock existed. It does
+/// not read the old lock and writes nothing; the caller writes the new lock
+/// with [`write`] at step 10.
+pub fn resolve_again(resolve: &dyn Fn() -> Result<Lock, Error>) -> Result<Resolution, Error> {
+    resolve().map(Resolution::New)
 }
