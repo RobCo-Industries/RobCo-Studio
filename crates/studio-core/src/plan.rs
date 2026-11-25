@@ -3,10 +3,14 @@
 //! The build plan: the commands that turn a project into `build/NAME.elf`
 //! and its raw image.
 //!
-//! The rules are the "flags.json" section of `docs/spec/SDK_PACKAGE.md` in
+//! The contract is the "flags.json" section of `docs/spec/SDK_PACKAGE.md` in
 //! RobCo-Core, with its parts "Build order", "Startup code", "Path maps" and
-//! "Reading flags.json". The source order is the "Source order" section of
-//! `docs/spec/STUDIO_PROJECT.md`, which [`manifest::expand_sources`] holds.
+//! "Reading flags.json", and the sections "A project folder", "Source order"
+//! and "What a holotape build produces" of `docs/spec/STUDIO_PROJECT.md`. The text was read at RobCo-Core
+//! commit `e004c73`. [`manifest::expand_sources`] holds the source order.
+//!
+//! One rule is this module's own: each path field of `flags.json` must be
+//! a plain relative path with `/`, checked after the spec's checks.
 //!
 //! This module is pure. It reads `flags.json` from its bytes, and [`plan`]
 //! gives the ordered list of commands of a build. It runs nothing and reads
@@ -20,6 +24,9 @@
 //! 2. One compile per source, in the order of the source list.
 //! 3. The link, to `build/NAME.elf`.
 //! 4. `objcopy`, to the raw image that the seal reads.
+//!
+//! Before the first command the caller creates [`BuildPlan::dirs`], the
+//! folders the commands write into. Every output lies under `build/`.
 //!
 //! Each compile carries the three path maps of the spec, and each map twice
 //! on Windows. The seal, step 5 of the spec, is not a command: the caller
@@ -141,6 +148,25 @@ pub fn parse_flags(bytes: &[u8]) -> Result<Flags, FlagsError> {
         system_libs: strings(&root, "system_libs")?,
         abi_define: string(&root, "abi_define")?,
     })
+    .and_then(check_paths)
+}
+
+/// Checks each package-relative path, in the order of the spec's table.
+fn check_paths(flags: Flags) -> Result<Flags, FlagsError> {
+    let one = |key: &str, path: &str| {
+        manifest::check_path(key, path, false).map_err(|e| FlagsError::Manifest(e.detail()))
+    };
+    for d in &flags.include_dirs {
+        one("include_dirs", d)?;
+    }
+    for (k, p) in &flags.linker_scripts {
+        one(&format!("linker_scripts.{k}"), p)?;
+    }
+    one("crt0", &flags.crt0)?;
+    for l in &flags.libs {
+        one("libs", l)?;
+    }
+    Ok(flags)
 }
 
 fn wrong(key: &str, expected: &str) -> FlagsError {
@@ -281,6 +307,10 @@ pub struct Command {
 pub struct BuildPlan {
     /// The source list, in link order, relative to the project root.
     pub sources: Vec<String>,
+    /// The folders the commands write into, relative to the project root,
+    /// with `/`. Each parent comes before its children and each folder
+    /// comes once. The caller creates them before the first command.
+    pub dirs: Vec<String>,
     /// The commands, in the order they run.
     pub commands: Vec<Command>,
     /// The ELF the link writes, relative to the project root.
@@ -437,8 +467,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
     let raw = format!("build/{name}.bin");
     let mut args = flags.ldflags.clone();
     args.extend(["-T".into(), host.join(input.package, script)]);
-    args.push(crt0_object);
-    args.extend(objects);
+    args.push(crt0_object.clone());
+    args.extend(objects.iter().cloned());
     args.extend(flags.libs.iter().map(|l| host.join(input.package, l)));
     args.extend(flags.system_libs.iter().cloned());
     args.extend(["-o".into(), elf.clone()]);
@@ -455,12 +485,35 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
         cwd: input.project.to_string(),
     });
 
+    let dirs = dirs_of(
+        std::iter::once(crt0_object.as_str())
+            .chain(objects.iter().map(String::as_str))
+            .chain([elf.as_str(), raw.as_str()]),
+    );
+
     Ok(BuildPlan {
         sources,
+        dirs,
         commands,
         elf,
         raw,
     })
+}
+
+/// The folders that hold the given files and all their parents, sorted.
+/// A sorted list puts each parent before its children, since a parent is a
+/// prefix of its child.
+fn dirs_of<'a>(files: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut dirs = std::collections::BTreeSet::new();
+    for file in files {
+        let mut at = 0;
+        while let Some(i) = file[at..].find('/') {
+            at += i;
+            dirs.insert(file[..at].to_string());
+            at += 1;
+        }
+    }
+    dirs.into_iter().collect()
 }
 
 #[cfg(test)]

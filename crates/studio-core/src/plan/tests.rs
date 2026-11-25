@@ -64,6 +64,15 @@ fn manifest(text: &str) -> Manifest {
 }
 
 fn make(m: &Manifest, flags: &[u8], host: Host) -> Result<BuildPlan, PlanError> {
+    make_with(m, flags, host, FILES)
+}
+
+fn make_with(
+    m: &Manifest,
+    flags: &[u8],
+    host: Host,
+    files: &[&str],
+) -> Result<BuildPlan, PlanError> {
     let (package, toolchain, project) = match host {
         Host::Unix => ("/c/pkg/pipos/1.4.0", "/c/tools/gcc", "/w/my proj"),
         Host::Windows => (
@@ -78,7 +87,7 @@ fn make(m: &Manifest, flags: &[u8], host: Host) -> Result<BuildPlan, PlanError> 
         package,
         toolchain,
         project,
-        files: FILES,
+        files,
         host,
     })
 }
@@ -184,6 +193,7 @@ fn plan_unix_matches_fixture() {
     assert_eq!(p.sources, ["src/main.c", "src/draw.c", "src/game.c"]);
     assert_eq!(p.elf, "build/PIPES.elf");
     assert_eq!(p.raw, "build/PIPES.bin");
+    assert_eq!(p.dirs, ["build", "build/obj", "build/obj/src"]);
     assert_eq!(p.commands, want);
 }
 
@@ -263,7 +273,9 @@ fn plan_windows_matches_fixture() {
             cwd: cwd.into(),
         },
     ];
-    assert_eq!(ok(Host::Windows).commands, want);
+    let p = ok(Host::Windows);
+    assert_eq!(p.dirs, ["build", "build/obj", "build/obj/src"]);
+    assert_eq!(p.commands, want);
 }
 
 #[test]
@@ -465,4 +477,109 @@ fn plan_flags_inner_types() {
 fn plan_flags_unknown_field_ignored() {
     let text = String::from_utf8_lossy(FLAGS).replace("\"format\": 1,", "\"format\": 1, \"x\": 1,");
     assert!(parse_flags(text.as_bytes()).is_ok());
+}
+
+fn dirs_for(sources: &str, files: &[&str]) -> Vec<String> {
+    let m = manifest(&MANIFEST.replace("[\"src/main.c\", \"src/*.c\"]", sources));
+    match make_with(&m, FLAGS, Host::Unix, files) {
+        Ok(p) => p.dirs,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[test]
+fn plan_dirs_nested_source() {
+    let dirs = dirs_for("[\"src/game/logic/main.c\"]", &["src/game/logic/main.c"]);
+    assert_eq!(
+        dirs,
+        [
+            "build",
+            "build/obj",
+            "build/obj/src",
+            "build/obj/src/game",
+            "build/obj/src/game/logic",
+        ]
+    );
+}
+
+#[test]
+fn plan_dirs_two_sources_one_folder() {
+    let dirs = dirs_for("[\"src/a.c\", \"src/b.c\"]", &["src/a.c", "src/b.c"]);
+    assert_eq!(dirs, ["build", "build/obj", "build/obj/src"]);
+}
+
+#[test]
+fn plan_dirs_source_at_root() {
+    let dirs = dirs_for("[\"main.c\"]", &["main.c"]);
+    assert_eq!(dirs, ["build", "build/obj"]);
+}
+
+#[test]
+fn plan_dirs_hold_every_output() {
+    for host in [Host::Unix, Host::Windows] {
+        let p = ok(host);
+        let mut outputs: Vec<&str> = vec![p.elf.as_str(), p.raw.as_str()];
+        for c in &p.commands {
+            if let Some(i) = c.args.iter().position(|a| a == "-o") {
+                outputs.push(&c.args[i + 1]);
+            }
+        }
+        for out in outputs {
+            let parent = &out[..out.rfind('/').unwrap_or(0)];
+            assert!(p.dirs.iter().any(|d| d == parent), "{out}");
+        }
+        for (i, d) in p.dirs.iter().enumerate() {
+            if let Some(at) = d.rfind('/') {
+                assert!(p.dirs[..i].iter().any(|x| x == &d[..at]), "{d}");
+            }
+        }
+    }
+}
+
+fn path_err(from: &str, to: &str) -> FlagsError {
+    let text = String::from_utf8_lossy(FLAGS).replacen(from, to, 1);
+    flags_err(&text)
+}
+
+#[test]
+fn plan_flags_paths_checked() {
+    let fields = [
+        ("\"include\"", "include_dirs"),
+        ("\"lib/holotape.ld\"", "linker_scripts.holotape"),
+        ("\"lib/crt0.S\"", "crt0"),
+        ("\"lib/libpip.a\"", "libs"),
+    ];
+    let bad = [
+        ("/abs", "starts with /"),
+        ("C:lib", "starts with a drive letter"),
+        ("lib\\\\x", "uses \\, the separator is /"),
+        ("lib//x", "has an empty component"),
+        ("", "has an empty component"),
+        ("lib/", "has an empty component"),
+        ("./lib", "has a . component"),
+        ("lib/../x", "has a .. component"),
+        ("lib\\u0000x", "holds a NUL"),
+    ];
+    for (from, field) in fields {
+        for (value, reason) in bad {
+            let e = path_err(from, &format!("\"{value}\""));
+            assert_eq!(e.code(), "manifest", "{field} {value}");
+            let shown = serde_json::from_str::<String>(&format!("\"{value}\"")).unwrap_or_default();
+            assert_eq!(e.detail(), format!("{field}: {shown:?}: {reason}"));
+        }
+    }
+}
+
+#[test]
+fn plan_flags_paths_in_field_order_after_types() {
+    // A bad path and a later type error: the type error wins.
+    let text = String::from_utf8_lossy(FLAGS)
+        .replace("\"include\"", "\"../x\"")
+        .replace("\"PIPOS_ABI_TARGET\"", "1");
+    assert_eq!(flags_err(&text).detail(), "abi_define: expected a string");
+    // Two bad paths: the first field of the table wins.
+    let text = String::from_utf8_lossy(FLAGS)
+        .replace("\"lib/libpip.a\"", "\"/x\"")
+        .replace("\"include\"", "\"../x\"");
+    assert!(flags_err(&text).detail().starts_with("include_dirs:"));
 }
