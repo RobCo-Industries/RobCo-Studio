@@ -23,7 +23,7 @@ else
 fi
 # Firmware sources and CI tooling hold symlinks Windows cannot make.
 # The build needs neither.
-tar xf qemu.tar.xz --exclude="qemu-${ver}/roms" --exclude="qemu-${ver}/tests/lcitool"
+tar xf qemu.tar.xz --exclude="qemu-${ver}/roms" --exclude="qemu-${ver}/tests/lcitool/libvirt-ci"
 cd "qemu-${ver}"
 
 configure=(./configure
@@ -36,6 +36,12 @@ configure=(./configure
   --disable-guest-agent
   --disable-slirp
   --disable-werror)
+
+if [ "$os" = macos ]; then
+  # Homebrew's libfdt has no pkg-config file that meson finds.
+  brew=$(brew --prefix)
+  configure+=(--extra-cflags="-I$brew/include" --extra-ldflags="-L$brew/lib")
+fi
 
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
 start=$(date +%s)
