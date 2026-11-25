@@ -1,0 +1,6 @@
+[
+  {"name": "app", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.0"}], "formats": {}},
+  {"name": "app", "version": "2.0.0", "abi": "2.0", "requires": [{"name": "log", "abi": "1.5"}], "formats": {}},
+  {"name": "log", "version": "1.4.0", "abi": "1.4", "requires": [], "formats": {}},
+  {"name": "log", "version": "1.5.0", "abi": "1.5", "requires": [], "formats": {"flags": 2}}
+]

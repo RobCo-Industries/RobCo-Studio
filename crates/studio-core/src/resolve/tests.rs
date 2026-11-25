@@ -7,14 +7,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::index::{self, Index};
-use super::lock::{self, Lock};
+use serde_json::Value;
+
+use super::index::{self, Index, IndexPackage};
+use super::lock::{self, Lock, LockedPackage};
 use super::sdk_json;
 use super::*;
 
 const INDEX: &str = include_str!("../../tests/fixtures/index.json");
 const SDK: &str = include_str!("../../tests/fixtures/sdk.json");
+const SDK_TEMPLATES: &str = include_str!("../../tests/fixtures/sdk-templates.json");
 const LOCK: &str = include_str!("../../tests/fixtures/robco.lock");
+const REQUIRES: &str = include_str!("../../tests/fixtures/requires-index.json");
+const OPEN: &str = include_str!("../../tests/fixtures/open-index.json");
+const LIMIT: &str = include_str!("../../tests/fixtures/limit-index.json");
 const LOCATION: &str = "https://example.invalid/robco/index.json";
 const H: &str = "0000000000000000000000000000000000000000000000000000000000000001";
 
@@ -60,90 +66,150 @@ fn target(abi: &str) -> Target {
     }
 }
 
-fn pkg(name: &str, version: &str, extra: &str) -> String {
-    let abi = if name == PIPOS {
-        let v = Version::parse(version).unwrap();
-        format!(
-            r#""abi": "{}", "tools": [{{"name": "gcc", "version": "15.2.1-1.1"}}, {{"name": "qemu", "version": "10.1.2"}}],"#,
-            v.abi()
-        )
-    } else {
-        String::new()
-    };
-    format!(
-        r#"{{"name": "{name}", "version": "{version}", {abi} {extra} "url": "u", "size": 1, "sha256": "{H}"}}"#
-    )
-}
-
-fn archive() -> String {
-    format!(r#"{{"url": "u", "size": 1, "sha256": "{H}", "root": ""}}"#)
-}
-
-fn tools_json() -> String {
-    format!(
-        r#"{{"name": "gcc", "version": "15.2.1-1.1", "archives": {{"linux-x64": {a}, "macos-arm64": {a}}}}},
-           {{"name": "qemu", "version": "10.1.2", "archives": {{"linux-x64": {a}, "macos-arm64": {a}}}}}"#,
-        a = archive()
-    )
-}
-
-fn index_of(packages: &[String], tools: &str) -> String {
-    format!(
-        r#"{{"format": 1, "packages": [{}], "tools": [{tools}]}}"#,
-        packages.join(",")
-    )
-}
-
-fn pipos_index(versions: &[&str]) -> Index {
-    let p: Vec<String> = versions.iter().map(|v| pkg(PIPOS, v, "")).collect();
-    index::parse(&index_of(&p, &tools_json())).unwrap()
+fn parse_index(text: &str) -> Result<Index, Error> {
+    index::parse(text.as_bytes())
 }
 
 fn code<T: std::fmt::Debug>(r: Result<T, Error>) -> &'static str {
     r.unwrap_err().code()
 }
 
+/// The spec's index example with `pipos` entries at more versions.
+fn pipos_index(versions: &[&str]) -> Index {
+    let mut i = parse_index(INDEX).unwrap();
+    let base = i.packages[0].clone();
+    i.packages = versions
+        .iter()
+        .map(|v| {
+            let version = Version::parse(v).unwrap();
+            IndexPackage {
+                version,
+                abi: Some(Abi {
+                    major: version.major,
+                    minor: version.minor,
+                }),
+                ..base.clone()
+            }
+        })
+        .collect();
+    i
+}
+
+/// The entries of the spec's short example arrays, which hold only the
+/// fields the resolver reads.
+fn entries(text: &str) -> Vec<IndexPackage> {
+    let v: Value = serde_json::from_str(text).unwrap();
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|e| IndexPackage {
+            name: e["name"].as_str().unwrap().to_owned(),
+            version: Version::parse(e["version"].as_str().unwrap()).unwrap(),
+            abi: e["abi"].as_str().and_then(Abi::parse),
+            requires: e["requires"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| Requirement {
+                    name: r["name"].as_str().unwrap().to_owned(),
+                    abi: Abi::parse(r["abi"].as_str().unwrap()).unwrap(),
+                })
+                .collect(),
+            tools: Vec::new(),
+            formats: e["formats"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_i64().unwrap()))
+                .collect(),
+            url: "u".to_owned(),
+            size: 1,
+            sha256: H.to_owned(),
+        })
+        .collect()
+}
+
+fn install(name: &str) -> Root {
+    Root::Install {
+        name: name.to_owned(),
+        pick: InstallPick::Newest,
+        argument: name.to_owned(),
+    }
+}
+
+fn picked(r: Result<Vec<&IndexPackage>, Error>) -> Vec<String> {
+    r.unwrap()
+        .iter()
+        .map(|p| format!("{} {}", p.name, p.version))
+        .collect()
+}
+
+fn failure(r: Result<Vec<&IndexPackage>, Error>) -> String {
+    r.unwrap_err().to_string()
+}
+
+/// The `text` blocks of the Examples of `SDK_PACKAGE.md`, the error lines.
+const NO_LOG: &str = "sdk: no package: log: net 1.0.0 abi 1.4, ui 1.0.0 abi 1.5";
+const NO_GFX: &str = "sdk: no package: gfx: pipos 1.4.0 abi 1.4";
+const NEWER: &str = "sdk: no package: log: app 2.0.0 abi 1.5; 1.5.0 needs a newer tool: flags 2";
+
 // The spec examples.
 
 #[test]
-fn resolve_spec_examples_parse() {
-    let i = index::parse(INDEX).unwrap();
-    assert_eq!(i.packages.len(), 1);
-    assert_eq!(i.packages[0].tools[0].version, "15.2.1-1.1");
-    let s = sdk_json::parse(SDK).unwrap();
-    assert_eq!(s.abi, Abi::parse("1.3"));
+fn resolve_spec_examples_parse_and_agree() {
+    let i = parse_index(INDEX).unwrap();
+    assert_eq!(i.packages.len(), 2);
+    let s = sdk_json::parse(SDK.as_bytes()).unwrap();
     s.check_against(&i.packages[0]).unwrap();
-    assert!(fits_sdk(&target("1.3"), &s));
-    let l = Lock::parse(LOCK).unwrap();
+    let t = sdk_json::parse(SDK_TEMPLATES.as_bytes()).unwrap();
+    t.check_against(&i.packages[1]).unwrap();
+    assert_eq!(t.abi, None);
+    let l = Lock::parse(LOCK.as_bytes()).unwrap();
     assert_eq!(l.tools.len(), 2);
 }
 
 #[test]
 fn resolve_spec_index_gives_spec_lock_bytes() {
-    let i = index::parse(INDEX).unwrap();
-    let lock = resolve(&target("1.3"), &i, LOCATION, "macos-arm64").unwrap();
-    assert_eq!(lock.to_text(), LOCK);
-    assert_eq!(Lock::parse(LOCK).unwrap().to_text(), LOCK);
+    let i = parse_index(INDEX).unwrap();
+    // Every host where both tools have an archive writes the same lock.
+    for host in ["linux-x64", "macos-arm64", "windows-x64"] {
+        let lock = resolve(&target("1.3"), &i, LOCATION, host).unwrap();
+        assert_eq!(lock.to_text(), LOCK, "{host}");
+    }
+    assert_eq!(Lock::parse(LOCK.as_bytes()).unwrap().to_text(), LOCK);
 }
 
 #[test]
 fn resolve_writes_same_bytes_twice() {
     let dir = TempDir::new("twice");
-    let i = index::parse(INDEX).unwrap();
+    let i = parse_index(INDEX).unwrap();
     let lock = resolve(&target("1.3"), &i, LOCATION, "linux-x64").unwrap();
     lock::write(dir.path(), &lock).unwrap();
     let first = fs::read(dir.path().join(lock::FILE)).unwrap();
-    let again = resolve(&target("1.3"), &i, LOCATION, "windows-x64").unwrap();
-    lock::write(dir.path(), &again).unwrap();
-    let second = fs::read(dir.path().join(lock::FILE)).unwrap();
-    assert_eq!(first, second);
+    lock::write(dir.path(), &lock).unwrap();
+    assert_eq!(fs::read(dir.path().join(lock::FILE)).unwrap(), first);
     assert_eq!(first, LOCK.as_bytes());
     assert_eq!(dir.listing(), vec![lock::FILE.to_owned()]);
 }
 
 #[test]
+fn resolve_lock_writer_escapes_strings() {
+    // The case of the spec's model: a path on Windows with a quote and a
+    // control character.
+    assert_eq!(
+        lock::quote("C:\\idx\\\"a\"\u{1f}.json"),
+        "\"C:\\\\idx\\\\\\\"a\\\"\\u001f.json\""
+    );
+    assert_eq!(lock::quote("\n\t\u{7f}é"), "\"\\u000a\\u0009\\u007fé\"");
+    let mut lock = Lock::parse(LOCK.as_bytes()).unwrap();
+    lock.index = "C:\\idx\n\u{80}".to_owned();
+    let back = Lock::parse(lock.to_text().as_bytes()).unwrap();
+    assert_eq!(back.index, lock.index);
+}
+
+#[test]
 fn resolve_lock_is_sorted_whatever_the_order_given() {
-    let mut lock = Lock::parse(LOCK).unwrap();
+    let mut lock = Lock::parse(LOCK.as_bytes()).unwrap();
     lock.tools.reverse();
     assert_eq!(lock.to_text(), LOCK);
     let mut reel = lock.packages[0].clone();
@@ -153,7 +219,7 @@ fn resolve_lock_is_sorted_whatever_the_order_given() {
     assert!(text.find("name = \"pipos\"").unwrap() < text.find("name = \"reel\"").unwrap());
 }
 
-// Fit rules and the resolver.
+// Fit rules.
 
 #[test]
 fn resolve_fit_rules_for_abi_1_3() {
@@ -168,610 +234,861 @@ fn resolve_fit_rules_for_abi_1_3() {
     assert_eq!(fit, ["1.3.0", "1.3.4", "1.4.0", "1.4.2"]);
     let lock = resolve(&t, &i, "x", "linux-x64").unwrap();
     assert_eq!(lock.packages[0].version.to_string(), "1.4.2");
-}
-
-#[test]
-fn resolve_newest_does_not_depend_on_index_order() {
     let i = pipos_index(&["1.4.2", "1.10.0", "1.3.0", "1.9.9"]);
-    let lock = resolve(&target("1.3"), &i, "x", "linux-x64").unwrap();
+    let lock = resolve(&t, &i, "x", "linux-x64").unwrap();
     assert_eq!(lock.packages[0].version.to_string(), "1.10.0");
 }
 
 #[test]
-fn resolve_no_package_fits() {
-    let i = pipos_index(&["1.2.0", "2.0.0"]);
+fn resolve_passes_over_a_format_it_does_not_know() {
+    let mut i = pipos_index(&["1.3.0", "1.4.0"]);
+    i.packages[1].formats.insert("flags".to_owned(), 2);
+    let lock = resolve(&target("1.3"), &i, "x", "linux-x64").unwrap();
+    assert_eq!(lock.packages[0].version.to_string(), "1.3.0");
+    i.packages[1].formats.remove("flags");
+    i.packages[1].formats.insert("sound".to_owned(), 1);
+    let lock = resolve(&target("1.3"), &i, "x", "linux-x64").unwrap();
+    assert_eq!(lock.packages[0].version.to_string(), "1.3.0");
+    i.packages[0].formats.insert("sound".to_owned(), 1);
     let e = resolve(&target("1.3"), &i, "x", "linux-x64").unwrap_err();
-    assert_eq!(e.code(), "sdk: no package");
-    assert_eq!(e.to_string(), "sdk: no package: nothing fits pipos ABI 1.3");
-    let mut t = target("1.2");
+    assert_eq!(
+        e.to_string(),
+        "sdk: no package: pipos: robco.toml abi 1.3; 1.4.0 needs a newer tool: sound 1"
+    );
+}
+
+#[test]
+fn resolve_never_derives_an_abi_from_a_version() {
+    let i = parse_index(INDEX).unwrap();
+    // templates 0.1.0 has no abi: it fits no project and no requires entry.
+    assert!(!fits_requirement(
+        Abi::parse("0.1").unwrap(),
+        &i.packages[1]
+    ));
+    assert_eq!(
+        resolve(&target("1.4"), &i, "x", "linux-x64")
+            .unwrap_err()
+            .to_string(),
+        "sdk: no package: pipos: robco.toml abi 1.4"
+    );
+    let mut t = target("1.3");
     t.platform = "uos".to_owned();
     assert_eq!(code(resolve(&t, &i, "x", "linux-x64")), "sdk: no package");
 }
 
+// Resolving requires.
+
 #[test]
-fn resolve_follows_requires() {
-    let p = vec![
-        pkg(
-            PIPOS,
-            "1.3.0",
-            r#""requires": [{"name": "reel", "abi": "2.1"}],"#,
-        ),
-        pkg("reel", "2.0.0", ""),
-        pkg("reel", "2.1.0", ""),
-        pkg("reel", "2.3.1", ""),
-        pkg("reel", "3.0.0", ""),
-    ];
-    let i = index::parse(&index_of(&p, &tools_json())).unwrap();
-    let lock = resolve(&target("1.3"), &i, "x", "linux-x64").unwrap();
-    let got: Vec<String> = lock
-        .packages
+fn resolve_requires_example_by_name_over_every_requirement() {
+    let e = entries(REQUIRES);
+    let want = ["app 1.0.0", "log 1.5.2", "net 1.0.0", "ui 1.0.0"];
+    assert_eq!(picked(resolve_requires(&e, &install("app"))), want);
+    // The order of the index and of a requires array does not count.
+    let mut flipped = e.clone();
+    flipped.reverse();
+    for p in &mut flipped {
+        p.requires.reverse();
+    }
+    assert_eq!(picked(resolve_requires(&flipped, &install("app"))), want);
+    // Without log 1.5.2, net and ui disagree, and the detail names both.
+    let short: Vec<IndexPackage> = e
         .iter()
-        .map(|p| format!("{} {}", p.name, p.version))
+        .filter(|p| p.version.to_string() != "1.5.2")
+        .cloned()
         .collect();
-    assert_eq!(got, ["pipos 1.3.0", "reel 2.3.1"]);
-    let p = vec![pkg(
-        PIPOS,
-        "1.3.0",
-        r#""requires": [{"name": "reel", "abi": "4.0"}],"#,
-    )];
-    let i = index::parse(&index_of(&p, &tools_json())).unwrap();
+    assert_eq!(failure(resolve_requires(&short, &install("app"))), NO_LOG);
+    let mut back = short.clone();
+    back.reverse();
+    assert_eq!(failure(resolve_requires(&back, &install("app"))), NO_LOG);
     assert_eq!(
-        code(resolve(&target("1.3"), &i, "x", "linux-x64")),
-        "sdk: no package"
+        failure(resolve_requires(&e, &install("nope"))),
+        "sdk: no package: nope: command line nope"
     );
 }
 
 #[test]
-fn resolve_takes_the_tools_the_package_names() {
-    let a = archive();
-    let tools = format!(
-        r#"{}, {{"name": "gcc", "version": "16.0.0-1.1", "archives": {{"linux-x64": {a}}}}},
-           {{"name": "qemu", "version": "11.0.0", "archives": {{"linux-x64": {a}}}}}"#,
-        tools_json()
+fn resolve_open_index_fails_and_never_goes_back() {
+    let e = entries(OPEN);
+    let root = Root::Project(target("1.3"));
+    assert_eq!(failure(resolve_requires(&e, &root)), NO_GFX);
+    let fixed: Vec<IndexPackage> = e
+        .into_iter()
+        .filter(|p| p.version.to_string() != "1.4.0")
+        .collect();
+    assert_eq!(
+        picked(resolve_requires(&fixed, &root)),
+        ["gfx 1.3.0", "pipos 1.3.0"]
     );
-    let i = index::parse(&index_of(&[pkg(PIPOS, "1.3.0", "")], &tools)).unwrap();
+}
+
+#[test]
+fn resolve_limit_index_names_the_newer_tool() {
+    let e = entries(LIMIT);
+    assert_eq!(failure(resolve_requires(&e, &install("app"))), NEWER);
+    let older: Vec<IndexPackage> = e
+        .into_iter()
+        .filter(|p| !(p.name == "app" && p.version.to_string() == "2.0.0"))
+        .collect();
+    assert_eq!(
+        picked(resolve_requires(&older, &install("app"))),
+        ["app 1.0.0", "log 1.4.0"]
+    );
+}
+
+#[test]
+fn resolve_two_majors_of_one_name_fail() {
+    let e = entries(
+        r#"[
+        {"name": "app", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.0"}], "formats": {}},
+        {"name": "app", "version": "2.0.0", "abi": "2.0", "requires": [{"name": "log", "abi": "2.0"}, {"name": "ui", "abi": "1.0"}], "formats": {}},
+        {"name": "ui", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.0"}], "formats": {}},
+        {"name": "log", "version": "1.0.0", "abi": "1.0", "requires": [], "formats": {}},
+        {"name": "log", "version": "2.0.0", "abi": "2.0", "requires": [], "formats": {}}
+    ]"#,
+    );
+    assert!(check_closed(&e, &[]).is_ok());
+    assert_eq!(
+        failure(resolve_requires(&e, &install("app"))),
+        "sdk: no package: log: app 2.0.0 abi 2.0, ui 1.0.0 abi 1.0"
+    );
+}
+
+#[test]
+fn resolve_leaves_out_a_name_no_chain_reaches() {
+    // Only the root and what its picks require enter the resolution.
+    let e = entries(
+        r#"[
+        {"name": "app", "version": "2.0.0", "abi": "2.0", "requires": [{"name": "log", "abi": "1.0"}, {"name": "ui", "abi": "1.0"}], "formats": {}},
+        {"name": "ui", "version": "1.0.0", "abi": "1.0", "requires": [], "formats": {}},
+        {"name": "log", "version": "1.0.0", "abi": "1.0", "requires": [], "formats": {}}
+    ]"#,
+    );
+    assert_eq!(picked(resolve_requires(&e, &install("ui"))), ["ui 1.0.0"]);
+}
+
+#[test]
+fn resolve_install_forms() {
+    let mut e = entries(LIMIT);
+    let minor = Root::Install {
+        name: "log".to_owned(),
+        pick: InstallPick::Minor(1, 4),
+        argument: "log@1.4".to_owned(),
+    };
+    assert_eq!(picked(resolve_requires(&e, &minor)), ["log 1.4.0"]);
+    let exact = Root::Install {
+        name: "log".to_owned(),
+        pick: InstallPick::Exact(Version::parse("1.5.0").unwrap()),
+        argument: "log@1.5.0".to_owned(),
+    };
+    assert_eq!(code(resolve_requires(&e, &exact)), "package: format");
+    e[3].formats.clear();
+    assert_eq!(picked(resolve_requires(&e, &exact)), ["log 1.5.0"]);
+    assert_eq!(
+        failure(resolve_requires(&e, &install("gcc"))),
+        "sdk: no package: gcc: command line gcc"
+    );
+}
+
+// Tools.
+
+#[test]
+fn resolve_takes_the_tools_the_package_names() {
+    let mut i = parse_index(INDEX).unwrap();
+    let mut newer = i.tools[0].clone();
+    newer.version = "16.0.0-1.1".to_owned();
+    i.tools.push(newer);
     let lock = resolve(&target("1.3"), &i, "x", "linux-x64").unwrap();
     assert_eq!(lock.tools[0].version, "15.2.1-1.1");
     assert_eq!(lock.tools[1].version, "10.1.2");
-    let pick = pick_tool(&i, &i.packages[0], "gcc").unwrap();
-    assert_eq!(pick.version, "15.2.1-1.1");
 }
 
 #[test]
 fn resolve_no_tool() {
-    let a = archive();
-    let tools =
-        format!(r#"{{"name": "gcc", "version": "15.2.1", "archives": {{"linux-x64": {a}}}}}"#);
-    let i = index::parse(&index_of(&[pkg(PIPOS, "1.3.0", "")], &tools)).unwrap();
+    let mut i = parse_index(INDEX).unwrap();
+    i.tools[1].version = "10.1.3".to_owned();
     let e = resolve(&target("1.3"), &i, "x", "linux-x64").unwrap_err();
-    assert_eq!(e.code(), "sdk: no tool");
     assert_eq!(
         e.to_string(),
-        "sdk: no tool: the index lists no gcc 15.2.1-1.1"
+        "sdk: no tool: the index lists no qemu 10.1.2"
     );
 }
 
 #[test]
-fn resolve_missing_host() {
-    let i = index::parse(INDEX).unwrap();
-    let e = resolve(&target("1.3"), &i, "x", "linux-arm64").unwrap_err();
-    assert_eq!(
-        e,
-        Error::IndexHost {
-            tool: "qemu".to_owned(),
-            version: "10.1.2".to_owned(),
-            host: "linux-arm64".to_owned(),
-        }
-    );
-    assert_eq!(e.code(), "index: host");
+fn resolve_needs_both_tools_for_the_host() {
+    let i = parse_index(INDEX).unwrap();
+    // gcc has linux-arm64 and macos-x64; qemu has neither.
+    for host in ["linux-arm64", "macos-x64"] {
+        let e = resolve(&target("1.3"), &i, "x", host).unwrap_err();
+        assert_eq!(
+            e,
+            Error::IndexHost {
+                tool: "qemu".to_owned(),
+                version: "10.1.2".to_owned(),
+                host: host.to_owned(),
+            }
+        );
+    }
 }
 
-// The index.
+// A closed index.
 
 #[test]
-fn resolve_index_duplicates() {
-    let p = vec![pkg(PIPOS, "1.3.0", ""), pkg(PIPOS, "1.03.0", "")];
+fn resolve_closure_check_of_the_index_writer() {
+    let i = parse_index(INDEX).unwrap();
+    assert!(check_closed(&i.packages, &i.tools).is_ok());
+    assert!(check_closed(&entries(REQUIRES), &[]).is_ok());
+    assert!(check_closed(&entries(LIMIT), &[]).is_ok());
     assert_eq!(
-        code(index::parse(&index_of(&p, &tools_json()))),
-        "index: duplicate"
+        check_closed(&entries(OPEN), &[]).unwrap_err(),
+        "pipos 1.4.0 requires gfx abi 1.4, and no package of the index meets it"
     );
-    let t = format!("{}, {}", tools_json(), tools_json());
+    let fixed: Vec<IndexPackage> = entries(OPEN)
+        .into_iter()
+        .filter(|p| p.version.to_string() != "1.4.0")
+        .collect();
+    assert!(check_closed(&fixed, &[]).is_ok());
+    let no_qemu: Vec<_> = i
+        .tools
+        .iter()
+        .filter(|t| t.name != "qemu")
+        .cloned()
+        .collect();
+    assert!(check_closed(&i.packages, &no_qemu).is_err());
+    let mut empty = i.tools.clone();
+    empty[1].archives.clear();
+    assert!(check_closed(&i.packages, &empty).is_err());
+}
+
+// Reading the index.
+
+#[test]
+fn resolve_index_syntax() {
+    assert_eq!(code(parse_index("not json")), "index: syntax");
+    assert_eq!(code(parse_index("[]")), "index: syntax");
     assert_eq!(
-        code(index::parse(&index_of(&[pkg(PIPOS, "1.3.0", "")], &t))),
-        "index: duplicate"
+        code(index::parse(b"{\"format\": 1, \xff}")),
+        "index: syntax"
+    );
+    let dir = TempDir::new("index-read");
+    assert_eq!(
+        code(index::read_file(&dir.path().join("none.json"))),
+        "index: read"
     );
 }
 
 #[test]
 fn resolve_index_format() {
-    let larger = INDEX.replacen("\"format\": 1", "\"format\": 2", 1);
-    assert_eq!(code(index::parse(&larger)), "index: format");
+    for f in ["2", "0", "-1", "\"1\"", "1.5", "null"] {
+        let text = INDEX.replacen("\"format\": 1", &format!("\"format\": {f}"), 1);
+        assert_eq!(code(parse_index(&text)), "index: format", "{f}");
+    }
     assert_eq!(
-        code(index::parse(r#"{"packages": [], "tools": []}"#)),
+        code(parse_index(r#"{"packages": 1, "tools": []}"#)),
         "index: format"
     );
+    // format comes before a bad entry.
     assert_eq!(
-        code(index::parse(
-            r#"{"format": 0, "packages": [], "tools": []}"#
-        )),
+        code(parse_index(r#"{"format": 2, "packages": 1}"#)),
         "index: format"
     );
-    assert_eq!(code(index::parse("not json")), "index: read");
 }
 
 #[test]
 fn resolve_index_entries() {
-    let no_url = INDEX.replacen(
-        "\"url\": \"https://example.invalid/robco/pipos-1.3.0.zip\",",
-        "",
-        1,
-    );
-    let e = index::parse(&no_url).unwrap_err();
-    assert_eq!(
-        e,
-        Error::IndexEntry("`packages[0].url` is missing".to_owned())
-    );
-    let bad = [
-        INDEX.replacen("\"abi\": \"1.3\"", "\"abi\": \"1.4\"", 1),
-        INDEX.replacen("\"version\": \"1.3.0\"", "\"version\": \"1.3\"", 1),
-        INDEX.replacen("\"size\": 812345", "\"size\": -1", 1),
-        INDEX.replacen(&format!("\"sha256\": \"{H}\""), "\"sha256\": \"01\"", 1),
-        INDEX.replacen(
-            r#"{"name": "gcc", "version": "15.2.1-1.1"},
-        {"name": "qemu", "version": "10.1.2"}"#,
-            r#"{"name": "qemu", "version": "10.1.2"},
-        {"name": "gcc", "version": "15.2.1-1.1"}"#,
-            1,
+    let cases = [
+        // A required field that is missing, in the order of the table.
+        (
+            "\"formats\": {\"rimg\": 1, \"flags\": 1, \"boot\": 1, \"runner\": 1},",
+            "",
+            "packages[0].formats is missing",
+        ),
+        (
+            "\"version\": \"1.3.0\"",
+            "\"version\": \"1.03.0\"",
+            "packages[0].version",
+        ),
+        ("\"abi\": \"1.3\",", "", "packages[0].abi is missing"),
+        ("\"abi\": \"1.3\"", "\"abi\": \"1.4\"", "packages[0].abi"),
+        ("\"abi\": \"1.3\"", "\"abi\": \"1.03\"", "packages[0].abi"),
+        (
+            "\"name\": \"pipos\"",
+            "\"name\": \"Pipos\"",
+            "packages[0].name",
+        ),
+        (
+            "\"url\": \"https://example.invalid/robco/pipos-1.3.0.zip\"",
+            "\"url\": \"http://x/p.zip\"",
+            "packages[0].url",
+        ),
+        (
+            "\"url\": \"https://example.invalid/robco/pipos-1.3.0.zip\"",
+            "\"url\": \"../p.zip\"",
+            "packages[0].url",
+        ),
+        ("\"size\": 812345", "\"size\": -1", "packages[0].size"),
+        (
+            H,
+            "000000000000000000000000000000000000000000000000000000000000000A",
+            "packages[0].sha256",
+        ),
+        (
+            "\"name\": \"templates\",\n      \"version\": \"0.1.0\",",
+            "\"name\": \"templates\",\n      \"version\": \"0.1.0\", \"abi\": \"0.1\",",
+            "packages[1].abi",
+        ),
+        (
+            "\"name\": \"templates\",\n      \"version\": \"0.1.0\",",
+            "\"name\": \"templates\",\n      \"version\": \"0.1.0\", \"tools\": [],",
+            "packages[1].tools",
+        ),
+        (
+            "\"version\": \"10.1.2\",\n",
+            "\"version\": \"10.1 2\",\n",
+            "tools[1].version",
+        ),
+        (
+            "\"linux-x64\": {\"url\": \"https://example.invalid/qemu",
+            "\"Linux\": {\"url\": \"https://example.invalid/qemu",
+            "tools[1].archives.Linux",
+        ),
+        ("\"root\": \"\"}", "\"root\": 0}", "tools[1].archives"),
+        (
+            "{\"name\": \"gcc\", \"version\": \"15.2.1-1.1\"},",
+            "",
+            "packages[0].tools",
         ),
     ];
-    for text in bad {
-        assert_ne!(text, INDEX);
-        assert_eq!(code(index::parse(&text)), "index: entry");
+    for (from, to, place) in cases {
+        let text = INDEX.replacen(from, to, 1);
+        assert_ne!(text, INDEX, "{from}");
+        let e = parse_index(&text).unwrap_err();
+        assert_eq!(e.code(), "index: entry", "{from}");
+        assert!(
+            e.to_string().starts_with(&format!("index: entry: {place}")),
+            "{e}"
+        );
     }
-    let templates = index_of(&[pkg("templates", "1.0.0", r#""tools": [],"#)], "");
-    assert_eq!(code(index::parse(&templates)), "index: entry");
-    let unknown = INDEX.replacen("\"format\": 1,", "\"format\": 1, \"later\": true,", 1);
-    index::parse(&unknown).unwrap();
+    // A local path is a URL too.
+    let text = INDEX.replacen(
+        "https://example.invalid/robco/pipos-1.3.0.zip",
+        "pkg/pipos.zip",
+        1,
+    );
+    assert_eq!(parse_index(&text).unwrap().packages[0].url, "pkg/pipos.zip");
+}
+
+#[test]
+fn resolve_index_skips_unknown_tools_and_keeps_unknown_hosts() {
+    let text = INDEX.replacen(
+        "\"tools\": [\n    {",
+        "\"tools\": [\n    {\"name\": \"gdb\", \"archives\": 7},\n    {\"name\": \"gdb\"},\n    {",
+        1,
+    );
+    assert_ne!(text, INDEX);
+    let i = parse_index(&text).unwrap();
+    assert_eq!(i.tools.len(), 2);
+    let text = INDEX.replacen(
+        "\"linux-x64\": {\"url\": \"https://example.invalid/qemu",
+        "\"freebsd-x64\": {\"url\": \"https://example.invalid/qemu",
+        1,
+    );
+    let i = parse_index(&text).unwrap();
+    assert!(i.tools[1].archives.contains_key("freebsd-x64"));
+    let lock = resolve(&target("1.3"), &i, "x", "macos-arm64").unwrap();
+    assert!(lock.tools[1].archives.contains_key("freebsd-x64"));
+    // A tool name that is not a string is still an error.
+    let text = INDEX.replacen("\"name\": \"qemu\"", "\"name\": 7", 1);
+    assert_eq!(code(parse_index(&text)), "index: entry");
+}
+
+#[test]
+fn resolve_index_duplicates() {
+    let i: Value = serde_json::from_str(INDEX).unwrap();
+    let mut twice = i.clone();
+    let p = twice["packages"][0].clone();
+    twice["packages"].as_array_mut().unwrap().push(p);
+    assert_eq!(code(parse_index(&twice.to_string())), "index: duplicate");
+    let mut twice = i.clone();
+    let t = twice["tools"][1].clone();
+    twice["tools"].as_array_mut().unwrap().push(t);
+    assert_eq!(code(parse_index(&twice.to_string())), "index: duplicate");
+    // Duplicates come last: a bad entry after the pair is reported first.
+    let mut both = i.clone();
+    let p = both["packages"][0].clone();
+    both["packages"].as_array_mut().unwrap().push(p);
+    both["tools"][1]["version"] = Value::from("");
+    assert_eq!(code(parse_index(&both.to_string())), "index: entry");
 }
 
 // sdk.json.
 
-#[test]
-fn resolve_sdk_json_errors() {
-    let larger = SDK.replacen("\"format\": 1", "\"format\": 2", 1);
-    assert_eq!(code(sdk_json::parse(&larger)), "package: format");
-    let unknown_format = SDK.replacen("\"runner\": 1", "\"runner\": 1, \"sound\": 1", 1);
-    assert_eq!(code(sdk_json::parse(&unknown_format)), "package: format");
-    let newer_format = SDK.replacen("\"rimg\": 1", "\"rimg\": 2", 1);
-    assert_eq!(code(sdk_json::parse(&newer_format)), "package: format");
-    let no_tools = SDK.replacen(
-        r#"  "tools": [
-    {"name": "gcc", "version": "15.2.1-1.1"},
-    {"name": "qemu", "version": "10.1.2"}
-  ],
-"#,
-        "",
-        1,
-    );
-    assert_ne!(no_tools, SDK);
-    assert_eq!(code(sdk_json::parse(&no_tools)), "package: manifest");
-    let no_name = SDK.replacen("\"name\": \"pipos\",", "", 1);
-    assert_eq!(code(sdk_json::parse(&no_name)), "package: manifest");
-    let unsorted = SDK.replacen("\"path\": \"boot.json\"", "\"path\": \"zz\"", 1);
-    assert_eq!(code(sdk_json::parse(&unsorted)), "package: manifest");
+fn sdk_code(text: &str) -> &'static str {
+    code(sdk_json::parse(text.as_bytes()))
 }
 
 #[test]
-fn resolve_sdk_json_tools_must_match_index() {
-    let i = index::parse(INDEX).unwrap();
-    let s = sdk_json::parse(&SDK.replacen("\"10.1.2\"", "\"10.1.3\"", 1)).unwrap();
-    assert_eq!(code(s.check_against(&i.packages[0])), "package: manifest");
+fn resolve_sdk_json_format_first() {
+    assert_eq!(sdk_code("{"), "package: manifest");
+    assert_eq!(sdk_code("[]"), "package: manifest");
+    for f in ["2", "0", "\"1\"", "1.5"] {
+        let text = SDK.replacen("\"format\": 1", &format!("\"format\": {f}"), 1);
+        assert_eq!(sdk_code(&text), "package: format", "{f}");
+    }
+    let text = SDK.replacen("\"format\": 1,", "", 1);
+    assert_eq!(sdk_code(&text), "package: format");
+    // A format it does not know, by name or by value, comes before the
+    // fields: here `name` is gone too.
+    for f in ["\"flags\": 2", "\"sound\": 1", "\"flags\": \"1\""] {
+        let text = SDK
+            .replacen("\"flags\": 1", f, 1)
+            .replacen("\"name\": \"pipos\",", "", 1);
+        assert_eq!(sdk_code(&text), "package: format", "{f}");
+    }
 }
 
-/// Each field that sdk.json and the index entry both carry must agree.
 #[test]
-fn resolve_sdk_json_must_agree_with_index_field_by_field() {
-    let i = index::parse(INDEX).unwrap();
+fn resolve_sdk_json_fields() {
+    let cases = [
+        ("\"name\": \"pipos\",", ""),
+        ("\"version\": \"1.3.0\"", "\"version\": \"01.3.0\""),
+        ("\"abi\": \"1.3\",", ""),
+        ("\"abi\": \"1.3\"", "\"abi\": \"1.4\""),
+        ("\"tools\": [", "\"tool\": ["),
+        ("\"firmware\": {", "\"firmwar\": {"),
+        ("\"base_url\"", "\"baseurl\""),
+        (
+            H,
+            "000000000000000000000000000000000000000000000000000000000000000F",
+        ),
+        ("\"path\": \"boot.json\"", "\"path\": \"LICENSES/MIT.txt\""),
+        (
+            "\"path\": \"boot/PIPOS.CFG\"",
+            "\"path\": \"Boot/PIPOS.CFG\"",
+        ),
+        ("\"commit\": \"1111", "\"commit\": \"A111"),
+    ];
+    for (from, to) in cases {
+        let text = SDK.replacen(from, to, 1);
+        assert_ne!(text, SDK, "{from}");
+        assert_eq!(sdk_code(&text), "package: manifest", "{from}");
+    }
+    let templates = [
+        (
+            "\"version\": \"0.1.0\",",
+            "\"version\": \"0.1.0\", \"abi\": \"0.1\",",
+        ),
+        (
+            "\"version\": \"0.1.0\",",
+            "\"version\": \"0.1.0\", \"tools\": [],",
+        ),
+        (
+            "\"version\": \"0.1.0\",",
+            "\"version\": \"0.1.0\", \"firmware\": {},",
+        ),
+    ];
+    for (from, to) in templates {
+        let text = SDK_TEMPLATES.replacen(from, to, 1);
+        assert_eq!(sdk_code(&text), "package: manifest", "{to}");
+    }
+}
+
+#[test]
+fn resolve_sdk_json_must_equal_its_index_entry() {
+    let i = parse_index(INDEX).unwrap();
+    let s = sdk_json::parse(SDK.as_bytes()).unwrap();
     let e = &i.packages[0];
-    let s = sdk_json::parse(SDK).unwrap();
-    s.check_against(e).unwrap();
-    let req = |name: &str, abi: &str| Requirement {
-        name: name.to_owned(),
-        abi: Abi::parse(abi).unwrap(),
+    let differs = |x: &sdk_json::SdkJson, field: &str| {
+        let err = x.check_against(e).unwrap_err();
+        assert_eq!(err.code(), "package: manifest");
+        assert!(
+            err.to_string().contains(&format!(" {field} differs")),
+            "{err}"
+        );
     };
-
     let mut x = s.clone();
-    x.name = "other".to_owned();
-    assert_eq!(code(x.check_against(e)), "package: manifest", "name");
-
+    x.name = "pipos-x".to_owned();
+    differs(&x, "name");
     let mut x = s.clone();
-    x.version = Version::parse("1.3.1").unwrap();
-    assert_eq!(code(x.check_against(e)), "package: manifest", "version");
-
+    x.version.patch = 1;
+    differs(&x, "version");
     let mut x = s.clone();
     x.abi = None;
-    assert_eq!(code(x.check_against(e)), "package: manifest", "abi");
-
-    // An archive that needs a package its index entry does not name.
+    differs(&x, "abi");
     let mut x = s.clone();
-    x.requires = vec![req("reel", "1.0")];
-    assert_eq!(code(x.check_against(e)), "package: manifest", "requires");
-    // The other way round, and the same name at another ABI.
-    let mut ie = e.clone();
-    ie.requires = vec![req("reel", "1.0")];
-    assert_eq!(code(s.check_against(&ie)), "package: manifest");
+    x.tools[1].version = "10.1.3".to_owned();
+    differs(&x, "tools");
     let mut x = s.clone();
-    x.requires = vec![req("reel", "1.1")];
-    assert_eq!(code(x.check_against(&ie)), "package: manifest");
-    // The same set in another order agrees.
-    ie.requires = vec![req("reel", "1.0"), req("templates", "1.0")];
-    x.requires = vec![req("templates", "1.0"), req("reel", "1.0")];
-    x.check_against(&ie).unwrap();
-
+    x.formats.insert("rimg".to_owned(), 2);
+    differs(&x, "formats");
+    // requires: the same entries in the same order.
+    let r = |n: &str| Requirement {
+        name: n.to_owned(),
+        abi: Abi::parse("1.0").unwrap(),
+    };
     let mut x = s.clone();
-    x.tools.reverse();
-    assert_eq!(code(x.check_against(e)), "package: manifest", "tools");
+    let mut entry = e.clone();
+    x.requires = vec![r("a"), r("b")];
+    entry.requires = vec![r("b"), r("a")];
+    let err = x.check_against(&entry).unwrap_err();
+    assert!(err.to_string().contains(" requires differs"), "{err}");
+    entry.requires = x.requires.clone();
+    x.check_against(&entry).unwrap();
 }
 
-// The lock.
+// Reading the lock.
 
-fn no_requires(_: &lock::LockedPackage) -> Vec<Requirement> {
-    Vec::new()
+fn lock_err(text: &str) -> Error {
+    Lock::parse(text.as_bytes()).unwrap_err()
 }
 
-fn stale_detail(text: &str, t: &Target, host: &str) -> String {
-    match Lock::parse(text)
-        .unwrap()
-        .check_stale(t, host, &no_requires)
-    {
-        Err(Error::LockStale(d)) => d,
-        other => panic!("not stale: {other:?}"),
+#[test]
+fn resolve_lock_syntax_format_and_unknown_keys() {
+    let e = lock_err("format = 1\nindex = \"x\"\nbad =\n");
+    assert_eq!(e.code(), "lock: syntax");
+    assert!(e.to_string().starts_with("lock: syntax: line 3"), "{e}");
+    assert_eq!(
+        Lock::parse(b"format = 1\n\xff").unwrap_err().code(),
+        "lock: syntax"
+    );
+    for f in ["2", "0", "\"1\"", "1.0"] {
+        let text = LOCK.replacen("format = 1", &format!("format = {f}"), 1);
+        assert_eq!(lock_err(&text).code(), "lock: format", "{f}");
     }
+    assert_eq!(
+        lock_err(&LOCK.replacen("format = 1\n", "", 1)).code(),
+        "lock: format"
+    );
+    // A later format reports its format before an unknown key.
+    let text = LOCK.replacen("format = 1", "format = 2\nwhen = 1", 1);
+    assert_eq!(lock_err(&text).code(), "lock: format");
+    let text = LOCK.replacen("format = 1", "format = 1\nwhen = 1", 1);
+    assert_eq!(lock_err(&text), Error::LockUnknownKey("when".to_owned()));
+    let text = LOCK.replacen("version = \"10.1.2\"", "version = \"10.1.2\"\narch = 1", 1);
+    assert_eq!(
+        lock_err(&text),
+        Error::LockUnknownKey("tool.arch".to_owned())
+    );
+    // Unknown keys come before a bad entry.
+    let text = LOCK
+        .replacen("sha256 = \"", "date = 1\nsha256 = \"", 1)
+        .replacen("index = ", "index = 1\n#", 1);
+    assert_eq!(
+        lock_err(&text),
+        Error::LockUnknownKey("package.date".to_owned())
+    );
+}
+
+#[test]
+fn resolve_lock_entries() {
+    let cases = [
+        (
+            "index = \"https://example.invalid/robco/index.json\"\n",
+            "",
+            "index is missing",
+        ),
+        (
+            "index = \"https://example.invalid/robco/index.json\"",
+            "index = 1",
+            "index is not a string",
+        ),
+        (
+            "version = \"1.3.0\"",
+            "version = \"1.03.0\"",
+            "package.version = \"1.03.0\"",
+        ),
+        (
+            "version = \"1.3.0\"",
+            "version = 1",
+            "package.version is not a string",
+        ),
+        (
+            "name = \"pipos\"",
+            "name = \"Pipos\"",
+            "package.name = \"Pipos\"",
+        ),
+        (
+            H,
+            "000000000000000000000000000000000000000000000000000000000000000A",
+            "package.sha256 = ",
+        ),
+        ("name = \"qemu\"", "name = \"gdb\"", "tool.name = \"gdb\""),
+        (
+            "name = \"qemu\"",
+            "name = \"gcc\"",
+            "tool.name = \"gcc\" is listed twice",
+        ),
+        (
+            "version = \"10.1.2\"",
+            "version = \"10 1\"",
+            "tool.version = \"10 1\"",
+        ),
+        (
+            "linux-x64 = \"0000000000000000000000000000000000000000000000000000000000000007\"",
+            "\"Linux\" = \"0000000000000000000000000000000000000000000000000000000000000007\"",
+            "tool.archives.\"Linux\"",
+        ),
+        (
+            "linux-x64 = \"0000000000000000000000000000000000000000000000000000000000000007\"",
+            "linux-x64 = 7",
+            "tool.archives.linux-x64 is not a string",
+        ),
+    ];
+    for (from, to, detail) in cases {
+        let text = LOCK.replacen(from, to, 1);
+        assert_ne!(text, LOCK, "{from}");
+        let e = lock_err(&text);
+        assert_eq!(e.code(), "lock: entry", "{from}");
+        let shown = e.to_string();
+        assert!(
+            shown.starts_with(&format!("lock: entry: {detail}")),
+            "{shown}"
+        );
+        assert!(shown.ends_with("run robco update"), "{shown}");
+    }
+    let twice = LOCK.replacen(
+        "\n[[tool]]",
+        &format!(
+            "\n[[package]]\nname = \"pipos\"\nversion = \"1.4.0\"\nsha256 = \"{H}\"\n\n[[tool]]"
+        ),
+        1,
+    );
+    assert!(
+        lock_err(&twice)
+            .to_string()
+            .contains("package.name = \"pipos\" is listed twice")
+    );
+    let empty = "format = 1\nindex = \"x\"\n\n[[tool]]\nname = \"gcc\"\nversion = \"1\"\n\n[tool.archives]\n";
+    assert!(
+        lock_err(empty)
+            .to_string()
+            .starts_with("lock: entry: tool.archives is empty")
+    );
+    let table = "format = 1\nindex = \"x\"\n\n[package]\nname = \"pipos\"\n";
+    assert_eq!(lock_err(table).code(), "lock: entry");
+}
+
+#[test]
+fn resolve_lock_absent_lists_are_stale_not_entry() {
+    let l = Lock::parse(b"format = 1\nindex = \"x\"\n").unwrap();
+    assert!(l.packages.is_empty() && l.tools.is_empty());
+    let e = l
+        .check_stale(&target("1.3"), "linux-x64", None)
+        .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "lock: stale: package pipos is needed and not listed: run robco update"
+    );
+    let no_tools = LOCK.split("\n[[tool]]").next().unwrap().to_owned();
+    let e = Lock::parse(no_tools.as_bytes())
+        .unwrap()
+        .check_stale(&target("1.3"), "linux-x64", None)
+        .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "lock: stale: tool gcc is not listed: run robco update"
+    );
+}
+
+#[test]
+fn resolve_lock_io_errors() {
+    let dir = TempDir::new("io");
+    assert_eq!(lock::read(dir.path()).unwrap(), None);
+    fs::create_dir(dir.path().join(lock::FILE)).unwrap();
+    assert_eq!(code(lock::read(dir.path())), "io: read");
+    let lock = Lock::parse(LOCK.as_bytes()).unwrap();
+    assert_eq!(
+        code(lock::write(&dir.path().join("none"), &lock)),
+        "io: write"
+    );
+}
+
+// A stale lock.
+
+fn requires_map(edges: &[(&str, &str, &str)]) -> impl Fn(&LockedPackage) -> Vec<Requirement> {
+    let edges: Vec<(String, String, String)> = edges
+        .iter()
+        .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+        .collect();
+    move |p: &LockedPackage| {
+        edges
+            .iter()
+            .filter(|(by, _, _)| *by == p.name)
+            .map(|(_, n, abi)| Requirement {
+                name: n.clone(),
+                abi: Abi::parse(abi).unwrap(),
+            })
+            .collect()
+    }
+}
+
+fn lock_with(extra: &[(&str, &str)]) -> Lock {
+    let mut l = Lock::parse(LOCK.as_bytes()).unwrap();
+    for (name, version) in extra {
+        l.packages.push(LockedPackage {
+            name: (*name).to_owned(),
+            version: Version::parse(version).unwrap(),
+            sha256: H.to_owned(),
+        });
+    }
+    l
+}
+
+fn stale(l: &Lock, t: &Target, edges: &[(&str, &str, &str)]) -> String {
+    let f = requires_map(edges);
+    match l.check_stale(t, "linux-x64", Some(&f)) {
+        Ok(()) => "ok".to_owned(),
+        Err(e) => {
+            assert_eq!(e.code(), "lock: stale");
+            e.to_string()
+        }
+    }
+}
+
+#[test]
+fn resolve_stale_rules() {
+    let l = lock_with(&[]);
+    assert_eq!(stale(&l, &target("1.3"), &[]), "ok");
+    assert_eq!(stale(&l, &target("1.2"), &[]), "ok");
+    // Rule 1: the manifest's requirement.
+    assert_eq!(
+        stale(&l, &target("1.4"), &[]),
+        "lock: stale: package pipos 1.3.0 does not fit robco.toml platform pipos abi 1.4: run robco update"
+    );
+    let mut uos = target("1.3");
+    uos.platform = "uos".to_owned();
+    assert!(stale(&l, &uos, &[]).contains("does not fit robco.toml platform uos"));
+    // Rule 1: a requires entry of another listed package.
+    let l = lock_with(&[("gfx", "1.3.0")]);
+    assert_eq!(
+        stale(&l, &target("1.3"), &[("pipos", "gfx", "1.5")]),
+        "lock: stale: package gfx 1.3.0 does not fit pipos 1.3.0 abi 1.5: run robco update"
+    );
+    assert_eq!(stale(&l, &target("1.3"), &[("pipos", "gfx", "1.2")]), "ok");
+    // Rule 2: a needed package that is not listed, from any listed package.
+    assert_eq!(
+        stale(
+            &l,
+            &target("1.3"),
+            &[("pipos", "gfx", "1.2"), ("gfx", "log", "1.0")]
+        ),
+        "lock: stale: package log is needed and not listed: run robco update"
+    );
+    // Rule 3: a listed package nothing needs.
+    assert_eq!(
+        stale(&l, &target("1.3"), &[]),
+        "lock: stale: package gfx 1.3.0 is listed and not needed: run robco update"
+    );
+    // Before the install, rule 3 cannot see requires, so it waits.
+    assert!(l.check_stale(&target("1.3"), "linux-x64", None).is_ok());
+    // Rule 4: a tool with no archive for the host.
+    let e = lock_with(&[])
+        .check_stale(&target("1.3"), "linux-arm64", None)
+        .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "lock: stale: tool qemu 10.1.2 has no archive for linux-arm64: run robco update"
+    );
+    // The order of the list: rule 1 is named before rule 4.
+    let e = lock_with(&[])
+        .check_stale(&target("1.4"), "linux-arm64", None)
+        .unwrap_err();
+    assert!(e.to_string().contains("pipos 1.3.0 does not fit"), "{e}");
 }
 
 #[test]
 fn resolve_stale_lock_fails_and_writes_nothing() {
     let dir = TempDir::new("stale");
     fs::write(dir.path().join(lock::FILE), LOCK).unwrap();
-    let before = fs::read(dir.path().join(lock::FILE)).unwrap();
-    let e = lock::use_or_resolve(
-        dir.path(),
-        &target("1.4"),
-        "linux-x64",
-        &no_requires,
-        &|| panic!("a stale lock must not resolve"),
-    )
+    let i = parse_index(INDEX).unwrap();
+    let e = lock::use_or_resolve(dir.path(), &target("1.4"), "linux-x64", &|| {
+        resolve(&target("1.4"), &i, LOCATION, "linux-x64")
+    })
     .unwrap_err();
     assert_eq!(e.code(), "lock: stale");
-    assert!(e.to_string().ends_with("run robco update"));
-    assert_eq!(fs::read(dir.path().join(lock::FILE)).unwrap(), before);
+    assert_eq!(
+        fs::read(dir.path().join(lock::FILE)).unwrap(),
+        LOCK.as_bytes()
+    );
     assert_eq!(dir.listing(), vec![lock::FILE.to_owned()]);
 }
 
 #[test]
-fn resolve_fitting_lock_is_used_unchanged() {
-    let dir = TempDir::new("fit");
-    fs::write(dir.path().join(lock::FILE), LOCK).unwrap();
-    let l = lock::use_or_resolve(
-        dir.path(),
-        &target("1.2"),
-        "linux-x64",
-        &no_requires,
-        &|| panic!("a fitting lock must not resolve"),
-    )
-    .unwrap();
-    assert_eq!(l, Lock::parse(LOCK).unwrap());
+fn resolve_no_lock_writes_one_and_a_fitting_lock_is_kept() {
+    let dir = TempDir::new("fresh");
+    let i = parse_index(INDEX).unwrap();
+    let go = || resolve(&target("1.3"), &i, LOCATION, "linux-x64");
+    let l = lock::use_or_resolve(dir.path(), &target("1.3"), "linux-x64", &go).unwrap();
     assert_eq!(
         fs::read(dir.path().join(lock::FILE)).unwrap(),
         LOCK.as_bytes()
     );
-}
-
-#[test]
-fn resolve_no_lock_writes_one() {
-    let dir = TempDir::new("none");
-    let i = index::parse(INDEX).unwrap();
-    let t = target("1.3");
-    lock::use_or_resolve(dir.path(), &t, "linux-x64", &no_requires, &|| {
-        resolve(&t, &i, LOCATION, "linux-x64")
+    let again = lock::use_or_resolve(dir.path(), &target("1.2"), "linux-x64", &|| {
+        unreachable!("a fitting lock is used unchanged")
     })
     .unwrap();
-    assert_eq!(
-        fs::read(dir.path().join(lock::FILE)).unwrap(),
-        LOCK.as_bytes()
-    );
+    assert_eq!(l, again);
 }
 
 #[test]
 fn resolve_failed_update_keeps_old_lock() {
     let dir = TempDir::new("update");
-    fs::write(dir.path().join(lock::FILE), "old").unwrap();
-    let i = pipos_index(&["2.0.0"]);
-    let t = target("1.3");
-    let e = lock::update(dir.path(), &|| resolve(&t, &i, "x", "linux-x64")).unwrap_err();
+    fs::write(dir.path().join(lock::FILE), b"old").unwrap();
+    let i = parse_index(INDEX).unwrap();
+    let e = lock::update(dir.path(), &|| {
+        resolve(&target("1.9"), &i, LOCATION, "linux-x64")
+    })
+    .unwrap_err();
     assert_eq!(e.code(), "sdk: no package");
     assert_eq!(fs::read(dir.path().join(lock::FILE)).unwrap(), b"old");
     assert_eq!(dir.listing(), vec![lock::FILE.to_owned()]);
 }
 
 #[test]
-fn resolve_stale_rules() {
-    // 1. No longer fits: ABI or platform.
-    assert_eq!(
-        stale_detail(LOCK, &target("1.4"), "linux-x64"),
-        "package pipos 1.3.0 does not fit ABI 1.4"
-    );
-    let mut uos = target("1.3");
-    uos.platform = "uos".to_owned();
-    assert_eq!(
-        stale_detail(LOCK, &uos, "linux-x64"),
-        "package pipos 1.3.0 does not fit platform uos"
-    );
-    // 2. A needed package is missing.
-    let no_pipos = LOCK.replacen(
-        "[[package]]\nname = \"pipos\"",
-        "[[package]]\nname = \"reel\"",
-        1,
-    );
-    assert_eq!(
-        stale_detail(&no_pipos, &target("1.3"), "linux-x64"),
-        "package pipos is needed and not listed"
-    );
-    // 3. A listed package is not needed: the same lock, read with a
-    // requirement that names pipos as needed and reel as extra.
-    let extra = LOCK.replacen(
-        "\n[[tool]]",
-        &format!(
-            "\n[[package]]\nname = \"reel\"\nversion = \"1.0.0\"\nsha256 = \"{H}\"\n\n[[tool]]"
-        ),
-        1,
-    );
-    assert_eq!(
-        stale_detail(&extra, &target("1.3"), "linux-x64"),
-        "package reel is listed and not needed"
-    );
-    // 4. A tool is missing, or has no archive for the host.
-    assert_eq!(
-        stale_detail(LOCK, &target("1.3"), "linux-arm64"),
-        "tool qemu 10.1.2 has no archive for linux-arm64"
-    );
-    let cut = LOCK.find("\n[[tool]]\nname = \"qemu\"").unwrap();
-    assert_eq!(
-        stale_detail(&LOCK[..cut + 1], &target("1.3"), "linux-x64"),
-        "tool qemu is not listed"
-    );
-}
-
-#[test]
-fn resolve_stale_follows_requires() {
-    let l = LOCK.replacen(
-        "\n[[tool]]",
-        &format!(
-            "\n[[package]]\nname = \"reel\"\nversion = \"2.0.0\"\nsha256 = \"{H}\"\n\n[[tool]]"
-        ),
-        1,
-    );
-    let needs = |abi: &'static str| {
-        move |p: &lock::LockedPackage| {
-            if p.name == PIPOS {
-                vec![Requirement {
-                    name: "reel".to_owned(),
-                    abi: Abi::parse(abi).unwrap(),
-                }]
-            } else {
-                Vec::new()
-            }
-        }
-    };
-    let lock = Lock::parse(&l).unwrap();
-    lock.check_stale(&target("1.3"), "linux-x64", &needs("2.0"))
-        .unwrap();
-    let e = lock
-        .check_stale(&target("1.3"), "linux-x64", &needs("2.1"))
-        .unwrap_err();
-    assert_eq!(
-        e,
-        Error::LockStale("package reel 2.0.0 does not fit ABI 2.1".to_owned())
-    );
-    let only_pipos = Lock::parse(LOCK).unwrap();
-    let e = only_pipos
-        .check_stale(&target("1.3"), "linux-x64", &needs("2.0"))
-        .unwrap_err();
-    assert_eq!(
-        e,
-        Error::LockStale("package reel is needed and not listed".to_owned())
-    );
-}
-
-/// The lock example with extra packages, each at 1.0.0.
-fn lock_with(extra: &[&str]) -> Lock {
-    let mut add = String::new();
-    for n in extra {
-        add.push_str(&format!(
-            "\n[[package]]\nname = \"{n}\"\nversion = \"1.0.0\"\nsha256 = \"{H}\"\n"
-        ));
-    }
-    Lock::parse(&LOCK.replacen("\n[[tool]]", &format!("{add}\n[[tool]]"), 1)).unwrap()
-}
-
-/// Checks a lock where each `(from, to)` edge is a `requires` at ABI 1.0.
-fn stale_with_edges(lock: &Lock, edges: &[(&str, &str)]) -> Result<(), Error> {
-    let edges: Vec<(String, String)> = edges
-        .iter()
-        .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
-        .collect();
-    let requires = move |p: &lock::LockedPackage| {
-        edges
-            .iter()
-            .filter(|(from, _)| *from == p.name)
-            .map(|(_, to)| Requirement {
-                name: to.clone(),
-                abi: Abi::parse("1.0").unwrap(),
-            })
-            .collect()
-    };
-    lock.check_stale(&target("1.3"), "linux-x64", &requires)
-}
-
-#[test]
-fn resolve_stale_needs_only_what_the_root_reaches() {
-    let stale = |d: &str| Err(Error::LockStale(d.to_owned()));
-    // Two packages that need each other and that pipos never reaches.
-    assert_eq!(
-        stale_with_edges(&lock_with(&["a", "b"]), &[("a", "b"), ("b", "a")]),
-        stale("package a is listed and not needed")
-    );
-    // A chain that pipos never reaches.
-    assert_eq!(
-        stale_with_edges(&lock_with(&["a", "b", "c"]), &[("a", "b"), ("b", "c")]),
-        stale("package a is listed and not needed")
-    );
-    // A cycle that pipos reaches, one that runs back to pipos too: fine.
-    stale_with_edges(
-        &lock_with(&["a", "b"]),
-        &[(PIPOS, "a"), ("a", "b"), ("b", "a"), ("b", PIPOS)],
-    )
-    .unwrap();
-    // A requirement on a package the lock does not hold.
-    assert_eq!(
-        stale_with_edges(&lock_with(&["a"]), &[(PIPOS, "a"), ("a", "ghost")]),
-        stale("package ghost is needed and not listed")
-    );
-}
-
-#[test]
-fn resolve_lock_read_errors() {
-    assert_eq!(code(Lock::parse("format = \n")), "lock: syntax");
-    assert_eq!(
-        code(Lock::parse(&LOCK.replacen("format = 1", "format = 2", 1))),
-        "lock: format"
-    );
-    assert_eq!(
-        code(Lock::parse(&LOCK.replacen("format = 1\n", "", 1))),
-        "lock: format"
-    );
-    let e = Lock::parse(&LOCK.replacen("sha256 = ", "date = 1\nsha256 = ", 1)).unwrap_err();
-    assert_eq!(e, Error::LockUnknownKey("package.date".to_owned()));
-    let e = Lock::parse(&LOCK.replacen("linux-x64 = \"", "linux-x64 = 1 #\"", 1));
-    assert_eq!(code(e), "lock: syntax");
-    let e = Lock::parse(&LOCK.replacen("index =", "when = 1\nindex =", 1)).unwrap_err();
-    assert_eq!(e, Error::LockUnknownKey("when".to_owned()));
-    // A newer format with a new key reports the format, not the key.
-    let newer = LOCK.replacen("format = 1", "format = 2\nwhen = 1", 1);
-    assert_eq!(code(Lock::parse(&newer)), "lock: format");
-    assert_eq!(
-        code(Lock::parse(&LOCK.replacen("\"1.3.0\"", "\"1.3\"", 1))),
-        "lock: syntax"
-    );
-}
-
-#[test]
-fn resolve_lock_tool_hash_missing() {
-    let l = Lock::parse(LOCK).unwrap();
-    let s = sdk_json::parse(SDK).unwrap();
+fn resolve_lock_tool_hash_and_missing() {
+    let l = Lock::parse(LOCK.as_bytes()).unwrap();
+    let mut s = sdk_json::parse(SDK.as_bytes()).unwrap();
     l.check_tools(&s).unwrap();
-    let edited = Lock::parse(&LOCK.replacen("\"10.1.2\"", "\"10.1.3\"", 1)).unwrap();
-    let e = edited.check_tools(&s).unwrap_err();
-    assert_eq!(e.code(), "lock: tool");
-    assert!(e.to_string().ends_with("run robco update"));
-
+    s.tools[0].version = "16.0.0-1.1".to_owned();
+    assert_eq!(code(l.check_tools(&s)), "lock: tool");
     let p = &l.packages[0];
-    p.check_hash(&H.to_ascii_uppercase()).unwrap();
+    p.check_hash(H).unwrap();
     assert_eq!(code(p.check_hash(&H.replace('1', "2"))), "lock: hash");
-
-    let i = index::parse(INDEX).unwrap();
+    let i = parse_index(INDEX).unwrap();
     p.find_in(&i).unwrap();
     l.tools[0].find_in(&i, "linux-x64").unwrap();
-    let other = Lock::parse(&LOCK.replacen("\"1.3.0\"", "\"1.3.1\"", 1)).unwrap();
-    assert_eq!(code(other.packages[0].find_in(&i)), "lock: missing");
+    let mut gone = i.clone();
+    gone.packages.clear();
+    assert_eq!(code(p.find_in(&gone)), "lock: missing");
     assert_eq!(code(l.tools[1].find_in(&i, "linux-arm64")), "lock: missing");
 }
 
 #[test]
-fn resolve_lock_quotes_odd_text() {
-    let mut l = Lock::parse(LOCK).unwrap();
-    l.index = "C:\\idx \"a\"\n".to_owned();
-    l.tools[0]
-        .archives
-        .insert("odd host".to_owned(), H.to_owned());
-    let back = Lock::parse(&l.to_text()).unwrap();
-    assert_eq!(back, l);
-}
-
-#[test]
-fn resolve_error_codes() {
-    let s = String::new;
-    let all = [
-        (Error::IndexRead(s()), "index: read"),
-        (Error::IndexFormat(s()), "index: format"),
-        (Error::IndexEntry(s()), "index: entry"),
-        (
-            Error::IndexDuplicate {
-                name: s(),
-                version: s(),
-            },
-            "index: duplicate",
-        ),
-        (
-            Error::IndexHost {
-                tool: s(),
-                version: s(),
-                host: s(),
-            },
-            "index: host",
-        ),
-        (Error::PackageFormat(s()), "package: format"),
-        (Error::PackageManifest(s()), "package: manifest"),
-        (
-            Error::NoPackage {
-                platform: s(),
-                abi: Abi { major: 1, minor: 3 },
-            },
-            "sdk: no package",
-        ),
-        (
-            Error::NoTool {
-                name: s(),
-                version: s(),
-            },
-            "sdk: no tool",
-        ),
-        (
-            Error::LockTool {
-                name: s(),
-                locked: s(),
-                named: s(),
-            },
-            "lock: tool",
-        ),
-        (Error::LockSyntax(s()), "lock: syntax"),
-        (Error::LockFormat(s()), "lock: format"),
-        (Error::LockUnknownKey(s()), "lock: unknown key"),
-        (Error::LockStale(s()), "lock: stale"),
-        (Error::LockHash(s()), "lock: hash"),
-        (Error::LockMissing(s()), "lock: missing"),
-        (Error::LockIo(s()), "lock: io"),
-    ];
-    for (e, c) in all {
-        assert_eq!(e.code(), c);
-        assert!(e.to_string().starts_with(c));
-    }
-}
-
-#[test]
-fn resolve_versions() {
-    assert_eq!(Version::parse("1.02.3").unwrap().to_string(), "1.2.3");
+fn resolve_versions_have_no_leading_zero() {
+    assert_eq!(
+        Version::parse("1.3.0").map(|v| v.to_string()).as_deref(),
+        Some("1.3.0")
+    );
+    assert_eq!(
+        Version::parse("0.0.0").map(|v| v.to_string()).as_deref(),
+        Some("0.0.0")
+    );
     for bad in [
-        "1.2",
-        "1.2.3.4",
-        "1.2.-3",
-        "1.2.65536",
-        "+1.2.3",
-        "1. 2.3",
+        "1.03.0",
+        "01.3.0",
+        "1.3",
+        "1.3.0.0",
+        "1.3.65536",
+        "+1.3.0",
+        "1.3.0 ",
         "",
     ] {
         assert_eq!(Version::parse(bad), None, "{bad}");
     }
-    assert!(Version::parse("1.10.0") > Version::parse("1.9.9"));
-    assert_eq!(Abi::parse("1.3.0"), None);
+    assert_eq!(Abi::parse("1.03"), None);
+    assert!(Abi::parse("65535.0").is_some());
+    assert!(is_tool_version("15.2.1-1.1"));
+    for bad in ["", "a b", "a\"b", "a\\b", &"x".repeat(65)] {
+        assert!(!is_tool_version(bad), "{bad}");
+    }
+    assert!(is_host_name("linux-x64") && is_host_name("x64") && !is_host_name("9x"));
 }

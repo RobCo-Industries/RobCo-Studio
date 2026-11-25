@@ -3,14 +3,15 @@
 //! Which SDK packages and tools a project builds with, and its lock file.
 //!
 //! Implements RobCo-Core `docs/spec/SDK_PACKAGE.md`, sections "The index",
-//! "sdk.json" and "Version and ABI rules", and `docs/spec/STUDIO_PROJECT.md`,
-//! section "robco.lock", as read at RobCo-Core commit `a7acab5`, with the
-//! tool pins of "Tools a package names" and "What the lock pins" as read in
-//! review at RobCo-Core commit `dc294ad`.
+//! "Reading the index", "A closed index", "sdk.json", "Tools a package
+//! names", "What must equal the index entry", "Version and ABI rules",
+//! "Resolving requires" and "Hashes", and `docs/spec/STUDIO_PROJECT.md`,
+//! section "robco.lock", as read at RobCo-Core commit `223e8cd`.
 //!
 //! - [`index`] reads the index.
 //! - [`sdk_json`] reads a package's `sdk.json`.
-//! - This module holds versions, the fit rules and the resolver.
+//! - This module holds versions, the fit rules, the resolver and the
+//!   closure check of an index writer.
 //! - [`lock`] reads, checks and writes `robco.lock`.
 //!
 //! Everything here is pure code, except [`lock`], which reads and writes
@@ -20,21 +21,26 @@ pub mod index;
 pub mod lock;
 pub mod sdk_json;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use crate::codes::ErrorCode;
 use index::{Index, IndexPackage, IndexTool};
 use lock::{Lock, LockedPackage, LockedTool};
 
 /// The tools every lock lists, by name, in lock order.
 pub const TOOLS: [&str; 2] = ["gcc", "qemu"];
 
-/// The only platform a format 1 project targets.
+/// The only platform a format 1 project targets, and its package.
 pub const PIPOS: &str = "pipos";
 
-/// The formats of `sdk.json` `formats` this tool knows, with the value it
-/// reads. Rule 4 of the fit rules uses this list.
-pub const KNOWN_FORMATS: [(&str, u64); 7] = [
+/// The package of project skeletons. It must not carry `abi`, `tools` or
+/// `firmware`.
+pub const TEMPLATES: &str = "templates";
+
+/// The formats of `formats` this tool knows, with the one value it reads.
+/// Rule 4 of the fit rules uses this list.
+pub const KNOWN_FORMATS: [(&str, i64); 7] = [
     ("boot", 1),
     ("flags", 1),
     ("project", 1),
@@ -44,18 +50,21 @@ pub const KNOWN_FORMATS: [(&str, u64); 7] = [
     ("templates", 1),
 ];
 
-/// Why resolving, reading the index, reading `sdk.json` or using the lock
-/// failed. Each variant is one error code of the specs; [`Error::code`]
+/// Why reading the index, reading `sdk.json`, resolving or using the lock
+/// failed. Each variant is one code of the spec's table; [`Error::code`]
 /// gives it as the spec spells it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// `index: read`. The index text is not JSON. The specs give no code
-    /// for this case; see the module report.
+    /// `index: read`. A local index file is missing or cannot be read.
     IndexRead(String),
+    /// `index: syntax`. The bytes are not UTF-8, not JSON, or the top value
+    /// is not an object.
+    IndexSyntax(String),
     /// `index: format`. `format` is missing, not a positive integer, or
     /// larger than this tool reads.
     IndexFormat(String),
-    /// `index: entry`. A field is missing or has the wrong type. Names it.
+    /// `index: entry`. A field is missing, has the wrong type or breaks
+    /// its form. Names the place.
     IndexEntry(String),
     /// `index: duplicate`. Two entries share a name and a version.
     IndexDuplicate {
@@ -64,7 +73,8 @@ pub enum Error {
         /// The version.
         version: String,
     },
-    /// `index: host`. The chosen tool has no archive for the running host.
+    /// `index: host`. A tool the resolution takes has no archive for the
+    /// running host.
     IndexHost {
         /// The tool.
         tool: String,
@@ -73,19 +83,16 @@ pub enum Error {
         /// The running host.
         host: String,
     },
-    /// `package: format`. `sdk.json` has a larger `format`, or names a format
-    /// this tool does not know.
+    /// `package: format`. `sdk.json` has a bad or larger `format`, or names
+    /// a format this tool does not know.
     PackageFormat(String),
-    /// `package: manifest`. A required field of `sdk.json` is missing or has
-    /// the wrong type.
+    /// `package: manifest`. `sdk.json` does not parse, a field breaks its
+    /// table, or it differs from its index entry.
     PackageManifest(String),
-    /// `sdk: no package`. No package fits the platform and ABI.
-    NoPackage {
-        /// The platform, or the package that a `requires` entry names.
-        platform: String,
-        /// The ABI asked for.
-        abi: Abi,
-    },
+    /// `sdk: no package`. Holds the detail of "Resolving requires": the
+    /// name, the requirements on it and, when one applies, the newer tool
+    /// suffix.
+    NoPackage(String),
     /// `sdk: no tool`. The index has no tool with the name and version that
     /// the package names.
     NoTool {
@@ -94,6 +101,25 @@ pub enum Error {
         /// The version the package names.
         version: String,
     },
+    /// `lock: syntax`. `robco.lock` is not UTF-8 or not TOML. Holds the line.
+    LockSyntax(String),
+    /// `lock: format`. `format` is missing, not a positive integer, or
+    /// larger than this tool reads.
+    LockFormat(String),
+    /// `lock: unknown key`. Holds the dotted name.
+    LockUnknownKey(String),
+    /// `lock: entry`. A key is missing, has the wrong type or breaks its
+    /// form, a name comes twice, a tool is not `gcc` or `qemu`, or
+    /// `[tool.archives]` is empty. Holds the key, and for a bad value the
+    /// value.
+    LockEntry(String),
+    /// `lock: stale`. Holds the detail, which names the first package or
+    /// tool that fails.
+    LockStale(String),
+    /// `lock: hash`. An archive does not match its lock hash. Names it.
+    LockHash(String),
+    /// `lock: missing`. The index has no entry for a locked pin. Names it.
+    LockMissing(String),
     /// `lock: tool`. A `[[tool]]` version differs from the one the installed
     /// `pipos` package names.
     LockTool {
@@ -104,24 +130,20 @@ pub enum Error {
         /// The version the package names.
         named: String,
     },
-    /// `lock: syntax`. `robco.lock` does not parse, or a key has the wrong
-    /// type or value.
-    LockSyntax(String),
-    /// `lock: format`. `format` is missing, not a positive integer, or larger
-    /// than this tool reads.
-    LockFormat(String),
-    /// `lock: unknown key`. Holds the dotted name.
-    LockUnknownKey(String),
-    /// `lock: stale`. Holds the detail, which names the first package or
-    /// tool that fails.
-    LockStale(String),
-    /// `lock: hash`. An archive does not match its lock hash. Names it.
-    LockHash(String),
-    /// `lock: missing`. The index has no entry for a locked pin. Names it.
-    LockMissing(String),
-    /// `lock: io`. `robco.lock` could not be read or written. The specs give
-    /// no code for this case; see the module report.
-    LockIo(String),
+    /// `io: read`. The host refused to read a file that exists.
+    IoRead {
+        /// The file.
+        path: String,
+        /// What the host said.
+        reason: String,
+    },
+    /// `io: write`. The host refused to write, create or rename a file.
+    IoWrite {
+        /// The file.
+        path: String,
+        /// What the host said.
+        reason: String,
+    },
 }
 
 impl Error {
@@ -129,23 +151,32 @@ impl Error {
     pub fn code(&self) -> &'static str {
         match self {
             Self::IndexRead(_) => "index: read",
+            Self::IndexSyntax(_) => "index: syntax",
             Self::IndexFormat(_) => "index: format",
             Self::IndexEntry(_) => "index: entry",
             Self::IndexDuplicate { .. } => "index: duplicate",
             Self::IndexHost { .. } => "index: host",
             Self::PackageFormat(_) => "package: format",
             Self::PackageManifest(_) => "package: manifest",
-            Self::NoPackage { .. } => "sdk: no package",
+            Self::NoPackage(_) => "sdk: no package",
             Self::NoTool { .. } => "sdk: no tool",
-            Self::LockTool { .. } => "lock: tool",
             Self::LockSyntax(_) => "lock: syntax",
             Self::LockFormat(_) => "lock: format",
             Self::LockUnknownKey(_) => "lock: unknown key",
+            Self::LockEntry(_) => "lock: entry",
             Self::LockStale(_) => "lock: stale",
             Self::LockHash(_) => "lock: hash",
             Self::LockMissing(_) => "lock: missing",
-            Self::LockIo(_) => "lock: io",
+            Self::LockTool { .. } => "lock: tool",
+            Self::IoRead { .. } => "io: read",
+            Self::IoWrite { .. } => "io: write",
         }
+    }
+}
+
+impl ErrorCode for Error {
+    fn error_code(&self) -> &'static str {
+        self.code()
     }
 }
 
@@ -154,16 +185,17 @@ impl fmt::Display for Error {
         let code = self.code();
         match self {
             Self::IndexRead(d)
+            | Self::IndexSyntax(d)
             | Self::IndexFormat(d)
             | Self::IndexEntry(d)
             | Self::PackageFormat(d)
             | Self::PackageManifest(d)
+            | Self::NoPackage(d)
             | Self::LockSyntax(d)
             | Self::LockFormat(d)
             | Self::LockUnknownKey(d)
             | Self::LockHash(d)
-            | Self::LockMissing(d)
-            | Self::LockIo(d) => write!(f, "{code}: {d}"),
+            | Self::LockMissing(d) => write!(f, "{code}: {d}"),
             Self::IndexDuplicate { name, version } => {
                 write!(f, "{code}: {name} {version} is listed twice")
             }
@@ -172,12 +204,10 @@ impl fmt::Display for Error {
                 version,
                 host,
             } => write!(f, "{code}: {tool} {version} has no archive for {host}"),
-            Self::NoPackage { platform, abi } => {
-                write!(f, "{code}: nothing fits {platform} ABI {abi}")
-            }
             Self::NoTool { name, version } => {
                 write!(f, "{code}: the index lists no {name} {version}")
             }
+            Self::LockEntry(d) | Self::LockStale(d) => write!(f, "{code}: {d}: run robco update"),
             Self::LockTool {
                 name,
                 locked,
@@ -186,30 +216,28 @@ impl fmt::Display for Error {
                 f,
                 "{code}: the lock pins {name} {locked} and the package names {name} {named}: run robco update"
             ),
-            Self::LockStale(d) => write!(f, "{code}: {d}: run robco update"),
+            Self::IoRead { path, reason } | Self::IoWrite { path, reason } => {
+                write!(f, "{code}: {path}: {reason}")
+            }
         }
     }
 }
 
 impl std::error::Error for Error {}
 
-/// Parses a decimal part: ASCII digits only, leading zeros allowed, at most
-/// 65535.
+/// Reads a decimal part, from 0 to 65535, with no leading zero: `0` is a
+/// part and `03` is not.
 fn parse_part(s: &str) -> Option<u16> {
-    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) || (s.len() > 1 && s.starts_with('0'))
+    {
         return None;
     }
-    let mut n: u32 = 0;
-    for b in s.bytes() {
-        n = n.checked_mul(10)?.checked_add(u32::from(b - b'0'))?;
-        if n > u32::from(u16::MAX) {
-            return None;
-        }
-    }
-    u16::try_from(n).ok()
+    s.parse::<u16>().ok()
 }
 
-/// A package version, `X.Y.Z`, each part from 0 to 65535.
+/// A package version, `X.Y.Z`, each part from 0 to 65535 with no leading
+/// zero. A project's own `project.version` has other rules, in
+/// [`crate::manifest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version {
     /// X.
@@ -221,7 +249,7 @@ pub struct Version {
 }
 
 impl Version {
-    /// Reads `X.Y.Z`. Returns `None` for anything else.
+    /// Reads `X.Y.Z`. Returns `None` for anything else, `1.03.0` included.
     pub fn parse(s: &str) -> Option<Self> {
         let mut it = s.split('.');
         let v = Self {
@@ -232,8 +260,10 @@ impl Version {
         it.next().is_none().then_some(v)
     }
 
-    /// The first two parts, which are the ABI of a package.
-    pub fn abi(self) -> Abi {
+    /// The first two parts. Only a locked package's ABI comes from its
+    /// version: the lock has no `abi` key. Everywhere else the ABI is read
+    /// from `abi`, never worked out from the version.
+    pub fn locked_abi(self) -> Abi {
         Abi {
             major: self.major,
             minor: self.minor,
@@ -257,7 +287,9 @@ pub struct Abi {
 }
 
 impl Abi {
-    /// Reads `MAJOR.MINOR`. Returns `None` for anything else.
+    /// Reads `MAJOR.MINOR`, each part with no leading zero, the form of
+    /// `abi` in `sdk.json`, the index and `requires`. Returns `None` for
+    /// anything else.
     pub fn parse(s: &str) -> Option<Self> {
         let (a, b) = s.split_once('.')?;
         Some(Self {
@@ -299,29 +331,6 @@ pub struct Requirement {
     pub abi: Abi,
 }
 
-/// Rules 1 to 3 of the fit rules, for a `pipos` package as the index lists
-/// it. Rule 4 needs the package's `sdk.json`: see [`fits_sdk`].
-pub fn fits(target: &Target, package: &IndexPackage) -> bool {
-    target.platform == PIPOS
-        && package.name == PIPOS
-        && package.abi.is_some_and(|abi| abi.serves(target.abi))
-}
-
-/// All four fit rules, for a `pipos` package by its `sdk.json`.
-pub fn fits_sdk(target: &Target, sdk: &sdk_json::SdkJson) -> bool {
-    target.platform == PIPOS
-        && sdk.name == PIPOS
-        && sdk.abi.is_some_and(|abi| abi.serves(target.abi))
-        && sdk_json::check_formats(&sdk.formats).is_ok()
-}
-
-/// Whether a package serves a `requires` entry: rules 2 and 3. A package
-/// without `abi` has the first two parts of its version as its ABI, the
-/// rule `sdk.json` gives for `pipos`.
-fn fits_requirement(req: &Requirement, package: &IndexPackage) -> bool {
-    req.name == package.name && package.abi.unwrap_or(package.version.abi()).serves(req.abi)
-}
-
 /// A tool that a package names, at one exact version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPin {
@@ -331,118 +340,282 @@ pub struct ToolPin {
     pub version: String,
 }
 
-/// Picks the index entry of a tool, `gcc` or `qemu`, for a resolved package.
-///
-/// This is the one place that decides which tool version a project uses.
-/// It takes the version the package names in `tools`, compared byte for
-/// byte, and never the newest in the index. This rule is spec text in
-/// review, not yet on RobCo-Core main, and may still change.
-pub fn pick_tool<'a>(
-    index: &'a Index,
-    package: &IndexPackage,
-    name: &str,
-) -> Result<&'a IndexTool, Error> {
-    let pin = package
-        .tools
-        .iter()
-        .find(|t| t.name == name)
-        .ok_or_else(|| {
-            Error::IndexEntry(format!(
-                "{} {} names no `{name}` in `tools`",
-                package.name, package.version
-            ))
-        })?;
-    index
-        .tools
-        .iter()
-        .find(|t| t.name == pin.name && t.version == pin.version)
-        .ok_or_else(|| Error::NoTool {
-            name: pin.name.clone(),
-            version: pin.version.clone(),
-        })
+/// The form of a package name: 1 to 32 characters from `a` to `z`, `0` to
+/// `9` and `-`, starting with a letter.
+pub fn is_package_name(s: &str) -> bool {
+    is_name(s)
 }
 
-/// Picks the newest package of `name` that serves every need.
-fn pick_package<'a>(
-    index: &'a Index,
-    name: &str,
-    needs: &[Requirement],
-) -> Option<&'a IndexPackage> {
-    index
-        .packages
-        .iter()
-        .filter(|p| p.name == name && needs.iter().all(|r| fits_requirement(r, p)))
-        .max_by_key(|p| p.version)
+/// The form of a host name, the same as a package name's.
+pub fn is_host_name(s: &str) -> bool {
+    is_name(s)
 }
 
-/// Resolves a project against an index, as if no lock existed, and returns
-/// the lock to write.
-///
-/// `location` is the index as the caller was given it, kept for the record.
-/// `host` is the running host, such as `macos-arm64`: each chosen tool must
-/// have an archive for it. The lock lists the archives of every host.
-pub fn resolve(target: &Target, index: &Index, location: &str, host: &str) -> Result<Lock, Error> {
-    let no_package = || Error::NoPackage {
-        platform: target.platform.clone(),
-        abi: target.abi,
-    };
-    if target.platform != PIPOS {
-        return Err(no_package());
+fn is_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    (1..=32).contains(&b.len())
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// The form of a tool version: 1 to 64 bytes from `0x21` to `0x7E`, with
+/// no `"` and no `\`.
+pub fn is_tool_version(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes()
+            .all(|b| (0x21..=0x7E).contains(&b) && b != b'"' && b != b'\\')
+}
+
+/// The form of a SHA-256: 64 lower case hex digits. Upper case is refused.
+pub fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The formats of `formats` that this tool does not know, by name or by
+/// value, sorted by name.
+pub fn unknown_formats(formats: &BTreeMap<String, i64>) -> Vec<(&str, i64)> {
+    formats
+        .iter()
+        .filter(|(n, v)| !KNOWN_FORMATS.contains(&(n.as_str(), **v)))
+        .map(|(n, v)| (n.as_str(), *v))
+        .collect()
+}
+
+/// Rule 4: every format of the entry is one the tool knows.
+fn rule4(p: &IndexPackage) -> bool {
+    unknown_formats(&p.formats).is_empty()
+}
+
+/// Rules 1 to 3 of the fit rules, on an index entry alone. A package
+/// without `abi` fits nothing.
+fn fits_rules_1_to_3(target: &Target, p: &IndexPackage) -> bool {
+    target.platform == PIPOS && p.name == PIPOS && p.abi.is_some_and(|abi| abi.serves(target.abi))
+}
+
+/// All four fit rules, for a project and an index entry. The resolver
+/// decides on the index entry alone.
+pub fn fits(target: &Target, p: &IndexPackage) -> bool {
+    fits_rules_1_to_3(target, p) && rule4(p)
+}
+
+/// Rules 2, 3 and 4, for a `requires` entry at `abi` and an index entry.
+pub fn fits_requirement(abi: Abi, p: &IndexPackage) -> bool {
+    p.abi.is_some_and(|a| a.serves(abi)) && rule4(p)
+}
+
+/// What `robco sdk install` names on its command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallPick {
+    /// `PACKAGE`: the highest version.
+    Newest,
+    /// `PACKAGE@X.Y`: the highest version whose first two parts are these.
+    Minor(u16, u16),
+    /// `PACKAGE@X.Y.Z`: that version.
+    Exact(Version),
+}
+
+/// The root requirement of a resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Root {
+    /// A project: `pipos` at `target.abi`, by rules 1 to 4.
+    Project(Target),
+    /// `robco sdk install`: a package by the form of its argument, and
+    /// rule 4.
+    Install {
+        /// The package name.
+        name: String,
+        /// Which versions the argument allows.
+        pick: InstallPick,
+        /// The argument as given, for the detail of `sdk: no package`.
+        argument: String,
+    },
+}
+
+impl Root {
+    fn name(&self) -> &str {
+        match self {
+            Root::Project(_) => PIPOS,
+            Root::Install { name, .. } => name,
+        }
     }
-    // The newest pipos, then the closure of `requires`, until nothing moves.
-    // Each round re-picks every package from the needs of the last round, so
-    // a pick never depends on the order of the index.
-    let root = Requirement {
-        name: PIPOS.to_owned(),
-        abi: target.abi,
-    };
-    let mut picks: BTreeMap<String, &IndexPackage> = BTreeMap::new();
-    for _ in 0..=index.packages.len() {
-        let mut needs: BTreeMap<String, Vec<Requirement>> = BTreeMap::new();
-        needs
-            .entry(root.name.clone())
-            .or_default()
-            .push(root.clone());
+
+    fn text(&self) -> String {
+        match self {
+            Root::Project(t) => format!("robco.toml abi {}", t.abi),
+            Root::Install { argument, .. } => format!("command line {argument}"),
+        }
+    }
+
+    /// Whether `p` fits the root, with rule 4 when `rule_4` is set.
+    fn fits(&self, p: &IndexPackage, rule_4: bool) -> bool {
+        let form = match self {
+            Root::Project(t) => fits_rules_1_to_3(t, p),
+            Root::Install { name, pick, .. } => {
+                p.name == *name
+                    && match pick {
+                        InstallPick::Newest => true,
+                        InstallPick::Minor(x, y) => (p.version.major, p.version.minor) == (*x, *y),
+                        InstallPick::Exact(v) => p.version == *v,
+                    }
+            }
+        };
+        form && (!rule_4 || rule4(p))
+    }
+}
+
+/// One requirement of the set: who states it, on which name, at which ABI.
+/// `by` is `None` for the root.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Need {
+    by: Option<(String, Version)>,
+    name: String,
+    abi: Option<Abi>,
+}
+
+impl Need {
+    fn fits(&self, root: &Root, p: &IndexPackage, rule_4: bool) -> bool {
+        match (&self.by, self.abi) {
+            (Some(_), Some(abi)) => {
+                p.name == self.name && p.abi.is_some_and(|a| a.serves(abi)) && (!rule_4 || rule4(p))
+            }
+            _ => root.fits(p, rule_4),
+        }
+    }
+}
+
+/// The detail of `sdk: no package` for `name`, by "Resolving requires".
+fn no_package(root: &Root, packages: &[IndexPackage], name: &str, on: &[&Need]) -> Error {
+    let mut parts = Vec::new();
+    if on.iter().any(|n| n.by.is_none()) {
+        parts.push(root.text());
+    }
+    // `on` comes from a BTreeSet, so stated requirements are already sorted
+    // by package name in byte order, then by version.
+    for n in on {
+        if let (Some((by, v)), Some(abi)) = (&n.by, n.abi) {
+            parts.push(format!("{by} {v} abi {abi}"));
+        }
+    }
+    let mut detail = format!("{name}: {}", parts.join(", "));
+    let near = packages
+        .iter()
+        .filter(|p| p.name == name && !rule4(p) && on.iter().all(|n| n.fits(root, p, false)))
+        .max_by_key(|p| p.version);
+    if let Some(p) = near
+        && let Some((format, value)) = unknown_formats(&p.formats).first()
+    {
+        detail.push_str(&format!(
+            "; {} needs a newer tool: {format} {value}",
+            p.version
+        ));
+    }
+    Error::NoPackage(detail)
+}
+
+/// Resolves a root requirement and every `requires` it leads to, by the
+/// passes of "Resolving requires", from the index entries alone.
+///
+/// Returns one entry per name, sorted by name in byte order. It never goes
+/// back to an older version of a name picked in an earlier pass. A
+/// `PACKAGE@X.Y.Z` root whose entry uses a format this tool does not know
+/// fails with `package: format`.
+pub fn resolve_requires<'a>(
+    packages: &'a [IndexPackage],
+    root: &Root,
+) -> Result<Vec<&'a IndexPackage>, Error> {
+    if let Root::Install {
+        pick: InstallPick::Exact(v),
+        name,
+        ..
+    } = root
+        && let Some(p) = packages.iter().find(|p| p.name == *name && p.version == *v)
+        && let Some((format, value)) = unknown_formats(&p.formats).first()
+    {
+        return Err(Error::PackageFormat(format!(
+            "{name} {v} uses {format} {value}, which this tool does not know: install a newer tool"
+        )));
+    }
+
+    let mut set: BTreeSet<Need> = BTreeSet::new();
+    set.insert(Need {
+        by: None,
+        name: root.name().to_owned(),
+        abi: None,
+    });
+    let mut picks: BTreeMap<&str, &IndexPackage> = BTreeMap::new();
+    loop {
+        // Step 2: every name at once, from the whole set. Names come in
+        // byte order, so the first that fails is the first in byte order.
+        picks.clear();
+        let names: BTreeSet<&str> = set.iter().map(|n| n.name.as_str()).collect();
+        for name in names {
+            let on: Vec<&Need> = set.iter().filter(|n| n.name == name).collect();
+            let best = packages
+                .iter()
+                .filter(|p| p.name == name && on.iter().all(|n| n.fits(root, p, true)))
+                .max_by_key(|p| p.version);
+            match best {
+                Some(p) => {
+                    picks.insert(&p.name, p);
+                }
+                None => return Err(no_package(root, packages, name, &on)),
+            }
+        }
+        // Step 3: the requires of each pick.
+        let mut added = false;
+        let mut new = Vec::new();
         for p in picks.values() {
             for r in &p.requires {
-                needs.entry(r.name.clone()).or_default().push(r.clone());
+                new.push(Need {
+                    by: Some((p.name.clone(), p.version)),
+                    name: r.name.clone(),
+                    abi: Some(r.abi),
+                });
             }
         }
-        let mut next = BTreeMap::new();
-        for (name, reqs) in &needs {
-            match pick_package(index, name, reqs) {
-                Some(p) => {
-                    next.insert(name.clone(), p);
-                }
-                None if *name == root.name => return Err(no_package()),
-                None => {
-                    let abi = reqs.iter().map(|r| r.abi).max().unwrap_or(target.abi);
-                    return Err(Error::NoPackage {
-                        platform: name.clone(),
-                        abi,
-                    });
-                }
-            }
+        for n in new {
+            added |= set.insert(n);
         }
-        if next == picks {
+        if !added {
             break;
         }
-        picks = next;
     }
 
-    let pipos = picks.get(PIPOS).copied().ok_or_else(no_package)?;
-    let packages = picks
-        .values()
-        .map(|p| LockedPackage {
-            name: p.name.clone(),
-            version: p.version,
-            sha256: p.sha256.clone(),
-        })
-        .collect();
+    // The root and what its picks reach by `requires`.
+    let mut reached: BTreeSet<&str> = BTreeSet::new();
+    let mut todo = vec![root.name()];
+    while let Some(name) = todo.pop() {
+        if reached.insert(name)
+            && let Some(p) = picks.get(name)
+        {
+            todo.extend(p.requires.iter().map(|r| r.name.as_str()));
+        }
+    }
+    Ok(picks
+        .into_iter()
+        .filter(|(n, _)| reached.contains(n))
+        .map(|(_, p)| p)
+        .collect())
+}
 
-    let mut tools = Vec::new();
-    for name in TOOLS {
-        let tool = pick_tool(index, pipos, name)?;
+/// The index entry of each tool a `pipos` package names, `gcc` then `qemu`,
+/// each with an archive for `host`.
+pub fn pick_tools<'a>(
+    index: &'a Index,
+    package: &IndexPackage,
+    host: &str,
+) -> Result<Vec<&'a IndexTool>, Error> {
+    let mut out = Vec::new();
+    for pin in &package.tools {
+        let tool = index
+            .tools
+            .iter()
+            .find(|t| t.name == pin.name && t.version == pin.version)
+            .ok_or_else(|| Error::NoTool {
+                name: pin.name.clone(),
+                version: pin.version.clone(),
+            })?;
         if !tool.archives.contains_key(host) {
             return Err(Error::IndexHost {
                 tool: tool.name.clone(),
@@ -450,22 +623,80 @@ pub fn resolve(target: &Target, index: &Index, location: &str, host: &str) -> Re
                 host: host.to_owned(),
             });
         }
-        tools.push(LockedTool {
-            name: tool.name.clone(),
-            version: tool.version.clone(),
-            archives: tool
-                .archives
-                .iter()
-                .map(|(h, a)| (h.clone(), a.sha256.clone()))
-                .collect(),
-        });
+        out.push(tool);
     }
+    Ok(out)
+}
 
+/// Resolves a project against an index, as if no lock existed, and returns
+/// the lock to write.
+///
+/// `location` is the index as the caller was given it, kept for the record.
+/// `host` is the running host, such as `macos-arm64`: both tools must have
+/// an archive for it. The lock lists the archives of every host.
+pub fn resolve(target: &Target, index: &Index, location: &str, host: &str) -> Result<Lock, Error> {
+    let picks = resolve_requires(&index.packages, &Root::Project(target.clone()))?;
+    let mut tools = Vec::new();
+    if let Some(pipos) = picks.iter().find(|p| p.name == PIPOS) {
+        for tool in pick_tools(index, pipos, host)? {
+            tools.push(LockedTool {
+                name: tool.name.clone(),
+                version: tool.version.clone(),
+                archives: tool
+                    .archives
+                    .iter()
+                    .map(|(h, a)| (h.clone(), a.sha256.clone()))
+                    .collect(),
+            });
+        }
+    }
     Ok(Lock {
         index: location.to_owned(),
-        packages,
+        packages: picks
+            .iter()
+            .map(|p| LockedPackage {
+                name: p.name.clone(),
+                version: p.version,
+                sha256: p.sha256.clone(),
+            })
+            .collect(),
         tools,
     })
+}
+
+/// The closure check of "A closed index", for the party that writes an
+/// index. A reader never runs it.
+///
+/// Returns the first broken rule, in the order of `packages`: a `requires`
+/// entry that no package of the index meets by rules 2 and 3, or a tool a
+/// package names that no `tools` entry with at least one archive holds.
+/// Rule 4 plays no part.
+pub fn check_closed(packages: &[IndexPackage], tools: &[IndexTool]) -> Result<(), String> {
+    for p in packages {
+        for r in &p.requires {
+            let met = packages
+                .iter()
+                .any(|q| q.name == r.name && q.abi.is_some_and(|a| a.serves(r.abi)));
+            if !met {
+                return Err(format!(
+                    "{} {} requires {} abi {}, and no package of the index meets it",
+                    p.name, p.version, r.name, r.abi
+                ));
+            }
+        }
+        for pin in &p.tools {
+            let held = tools
+                .iter()
+                .any(|t| t.name == pin.name && t.version == pin.version && !t.archives.is_empty());
+            if !held {
+                return Err(format!(
+                    "{} {} names {} {}, and the index holds no archive of it",
+                    p.name, p.version, pin.name, pin.version
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The host name of the running system, as the index spells it, or `None`
@@ -479,12 +710,6 @@ pub fn running_host() -> Option<&'static str> {
         ("windows", "x86_64") => Some("windows-x64"),
         _ => None,
     }
-}
-
-/// Checks a SHA-256 string: 64 hex digits of either case. Returns it in
-/// lower case, the form the specs compare and write.
-fn sha256(s: &str) -> Option<String> {
-    (s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| s.to_ascii_lowercase())
 }
 
 #[cfg(test)]
