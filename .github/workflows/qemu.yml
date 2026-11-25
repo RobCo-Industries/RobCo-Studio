@@ -68,7 +68,10 @@ jobs:
         include:
           # The oldest hosted Ubuntu: its glibc is the oldest the package runs on.
           - { os: ubuntu-22.04, name: linux }
-          - { os: macos-latest, name: macos }
+          # The archive is named macos-arm64. macOS 15 runners are Apple
+          # silicon, and the label does not move as macos-latest does.
+          # release.py refuses a program of another machine.
+          - { os: macos-15, name: macos }
           - { os: windows-latest, name: windows }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -243,7 +246,7 @@ jobs:
           # A bare image of the oldest supported Ubuntu, with only what the
           # canary needs: none of the hosted runner's libraries.
           - { os: ubuntu-latest, name: linux, container: "ubuntu:22.04", gcc: linux-x64.tar.gz, gcc_sha: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6 }
-          - { os: macos-latest, name: macos, container: "", gcc: darwin-arm64.tar.gz, gcc_sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870 }
+          - { os: macos-15, name: macos, container: "", gcc: darwin-arm64.tar.gz, gcc_sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870 }
           - { os: windows-latest, name: windows, container: "", gcc: win32-x64.zip, gcc_sha: bae6a3d1667697ce750c3b13d6d26d80973ecedc2cc87bf04869e83447fd93ea }
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
