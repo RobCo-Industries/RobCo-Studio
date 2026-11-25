@@ -90,7 +90,14 @@ case $os in
   macos)
     dylibbundler -of -b -x "$dist/bin/qemu-system-arm" -x "$dist/bin/qemu-system-aarch64" \
       -d "$dist/lib" -p @executable_path/../lib/
+    # dylibbundler can add the same run path twice. dyld 26 aborts on that.
+    rp=@executable_path/../lib/
+    for b in "$dist"/bin/*; do
+      n=$(otool -l "$b" | grep -c "path $rp " || [ $? = 1 ])
+      while [ "$n" -gt 1 ]; do install_name_tool -delete_rpath "$rp" "$b"; n=$((n - 1)); done
+    done
     for f in "$dist"/lib/*.dylib "$dist"/bin/*; do codesign --force -s - "$f"; done
+    "$dist/bin/qemu-system-arm" --version
     { echo "runtime libraries after packing:"; otool -L "$dist/bin/qemu-system-arm"; } >>"$report"
     ;;
   windows)
