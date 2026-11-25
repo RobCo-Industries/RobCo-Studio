@@ -1,0 +1,89 @@
+# spike K5 benchmark, 2026-11-25T20:15:27Z
+# host: Linux x86_64, cpus: 4
+# load averages before: 1.72, 1.06, 0.47
+# robco-core: 73a6cb2a67b3
+## screendump raspi0 640x480, load averages: 1.72, 1.06, 0.47
+run mode=screendump board=raspi0 size=640x480 host=linux-x86_64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.53
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=56426 guest_clock=1.00 key_conn=second key_latency[n=41 median=0.72ms p95=0.78ms max=0.81ms] key_errors=0
+phase=ppm-15 format=ppm sink=file target=15 frames=31 fps=15.5 changes=30 unique=31 late=0 bytes=921615 qemu_cpu=102% poller_cpu=2% guest_draws_per_s=55941 guest_clock=1.00 reply[n=31 median=3.32ms p95=3.75ms max=4.32ms] read_decode[n=31 median=0.68ms p95=1.45ms max=2.39ms] total[n=31 median=4.02ms p95=5.20ms max=6.71ms]
+phase=ppm-30 format=ppm sink=file target=30 frames=61 fps=30.4 changes=60 unique=61 late=0 bytes=921615 qemu_cpu=102% poller_cpu=4% guest_draws_per_s=53424 guest_clock=1.00 reply[n=61 median=3.28ms p95=3.42ms max=3.47ms] read_decode[n=61 median=0.68ms p95=0.75ms max=1.02ms] total[n=61 median=3.95ms p95=4.12ms max=4.23ms]
+phase=ppm-max format=ppm sink=file target=max frames=521 fps=260.4 changes=520 unique=521 late=0 bytes=921615 qemu_cpu=118% poller_cpu=27% guest_draws_per_s=20519 guest_clock=1.00 reply[n=521 median=2.79ms p95=2.94ms max=8.68ms] read_decode[n=521 median=0.44ms p95=0.79ms max=0.97ms] total[n=521 median=3.24ms p95=3.47ms max=9.47ms]
+phase=png-max not-run: this QEMU has no PNG screendump: {"error": {"class": "GenericError", "desc": "Enable PNG support with libpng for screendump"}}
+
+phase=ppm-fifo-max format=ppm sink=fifo target=max frames=529 fps=264.2 changes=528 unique=529 late=0 bytes=921615 qemu_cpu=117% poller_cpu=54% guest_draws_per_s=20369 guest_clock=1.00 reply[n=529 median=2.38ms p95=3.68ms max=4.32ms] read_decode[n=529 median=0.37ms p95=0.70ms max=0.86ms] total[n=529 median=3.00ms p95=4.05ms max=4.67ms]
+phase=ppm-max-keys-same format=ppm sink=file target=max frames=504 fps=251.6 changes=503 unique=504 late=0 bytes=921615 qemu_cpu=119% poller_cpu=30% guest_draws_per_s=21091 guest_clock=1.00 reply[n=504 median=2.81ms p95=2.92ms max=3.90ms] read_decode[n=504 median=0.44ms p95=0.81ms max=0.98ms] total[n=504 median=3.31ms p95=3.54ms max=4.69ms] key_conn=same key_latency[n=41 median=2.68ms p95=4.48ms max=4.97ms] key_errors=0
+phase=ppm-max-keys-second format=ppm sink=file target=max frames=510 fps=254.5 changes=509 unique=510 late=0 bytes=921615 qemu_cpu=119% poller_cpu=29% guest_draws_per_s=21130 guest_clock=1.00 reply[n=510 median=2.84ms p95=2.97ms max=5.16ms] read_decode[n=510 median=0.44ms p95=0.80ms max=0.97ms] total[n=510 median=3.31ms p95=3.55ms max=5.97ms] key_conn=second key_latency[n=41 median=1.07ms p95=2.73ms max=2.88ms] key_errors=0
+run_s=14.6 qemu_exited=yes
+PASS
+## screendump raspi0 320x240, load averages: 1.56, 1.06, 0.48
+run mode=screendump board=raspi0 size=320x240 host=linux-x86_64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.53
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=50253 guest_clock=1.00 key_conn=second key_latency[n=40 median=0.60ms p95=0.72ms max=0.73ms] key_errors=0
+phase=ppm-15 format=ppm sink=file target=15 frames=31 fps=15.5 changes=30 unique=31 late=0 bytes=230415 qemu_cpu=101% poller_cpu=0% guest_draws_per_s=58761 guest_clock=1.00 reply[n=31 median=1.87ms p95=2.48ms max=2.93ms] read_decode[n=31 median=0.20ms p95=0.44ms max=0.49ms] total[n=31 median=2.14ms p95=2.66ms max=3.42ms]
+phase=ppm-30 format=ppm sink=file target=30 frames=61 fps=30.5 changes=60 unique=61 late=0 bytes=230415 qemu_cpu=102% poller_cpu=1% guest_draws_per_s=55970 guest_clock=1.00 reply[n=61 median=1.99ms p95=2.28ms max=3.01ms] read_decode[n=61 median=0.18ms p95=0.25ms max=0.27ms] total[n=61 median=2.18ms p95=2.42ms max=3.23ms]
+phase=ppm-max format=ppm sink=file target=max frames=1166 fps=582.6 changes=1165 unique=1166 late=0 bytes=230415 qemu_cpu=136% poller_cpu=20% guest_draws_per_s=24679 guest_clock=1.00 reply[n=1166 median=1.38ms p95=1.53ms max=2.43ms] read_decode[n=1166 median=0.16ms p95=0.22ms max=0.32ms] total[n=1166 median=1.55ms p95=1.66ms max=2.56ms]
+phase=png-max not-run: this QEMU has no PNG screendump: {"error": {"class": "GenericError", "desc": "Enable PNG support with libpng for screendump"}}
+
+phase=ppm-fifo-max format=ppm sink=fifo target=max frames=1108 fps=553.9 changes=1107 unique=1108 late=0 bytes=230415 qemu_cpu=135% poller_cpu=41% guest_draws_per_s=23471 guest_clock=1.00 reply[n=1108 median=1.37ms p95=1.94ms max=4.17ms] read_decode[n=1108 median=0.17ms p95=0.21ms max=0.38ms] total[n=1108 median=1.51ms p95=2.07ms max=4.27ms]
+phase=ppm-max-keys-same format=ppm sink=file target=max frames=1124 fps=561.6 changes=1123 unique=1124 late=0 bytes=230415 qemu_cpu=137% poller_cpu=20% guest_draws_per_s=25892 guest_clock=1.00 reply[n=1124 median=1.43ms p95=1.60ms max=2.00ms] read_decode[n=1124 median=0.16ms p95=0.22ms max=0.28ms] total[n=1124 median=1.59ms p95=1.74ms max=2.19ms] key_conn=same key_latency[n=41 median=1.34ms p95=2.27ms max=2.39ms] key_errors=0
+phase=ppm-max-keys-second format=ppm sink=file target=max frames=1102 fps=550.6 changes=1101 unique=1102 late=0 bytes=230415 qemu_cpu=137% poller_cpu=20% guest_draws_per_s=24725 guest_clock=1.00 reply[n=1102 median=1.45ms p95=1.76ms max=3.86ms] read_decode[n=1102 median=0.15ms p95=0.22ms max=0.31ms] total[n=1102 median=1.61ms p95=1.91ms max=3.98ms] key_conn=second key_latency[n=41 median=0.72ms p95=1.29ms max=3.14ms] key_errors=0
+run_s=14.6 qemu_exited=yes
+PASS
+## screendump raspi2b 640x480, load averages: 1.74, 1.12, 0.51
+run mode=screendump board=raspi2b size=640x480 host=linux-x86_64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.54
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=56451 guest_clock=1.00 key_conn=second key_latency[n=40 median=0.65ms p95=0.74ms max=0.78ms] key_errors=0
+phase=ppm-15 format=ppm sink=file target=15 frames=31 fps=15.5 changes=30 unique=31 late=0 bytes=921615 qemu_cpu=102% poller_cpu=2% guest_draws_per_s=55211 guest_clock=1.00 reply[n=31 median=3.78ms p95=4.12ms max=4.45ms] read_decode[n=31 median=0.51ms p95=1.53ms max=1.80ms] total[n=31 median=4.29ms p95=5.20ms max=6.24ms]
+phase=ppm-30 format=ppm sink=file target=30 frames=61 fps=30.4 changes=60 unique=61 late=0 bytes=921615 qemu_cpu=102% poller_cpu=4% guest_draws_per_s=51490 guest_clock=1.00 reply[n=61 median=3.73ms p95=3.96ms max=4.03ms] read_decode[n=61 median=0.81ms p95=0.97ms max=1.01ms] total[n=61 median=4.44ms p95=4.83ms max=4.92ms]
+phase=ppm-max format=ppm sink=file target=max frames=504 fps=251.6 changes=503 unique=504 late=0 bytes=921615 qemu_cpu=120% poller_cpu=28% guest_draws_per_s=20806 guest_clock=1.00 reply[n=504 median=2.90ms p95=2.98ms max=5.20ms] read_decode[n=504 median=0.44ms p95=0.81ms max=0.97ms] total[n=504 median=3.36ms p95=3.69ms max=5.65ms]
+phase=png-max not-run: this QEMU has no PNG screendump: {"error": {"class": "GenericError", "desc": "Enable PNG support with libpng for screendump"}}
+
+phase=ppm-fifo-max format=ppm sink=fifo target=max frames=497 fps=248.2 changes=496 unique=497 late=0 bytes=921615 qemu_cpu=118% poller_cpu=51% guest_draws_per_s=19781 guest_clock=1.00 reply[n=497 median=2.57ms p95=3.89ms max=5.00ms] read_decode[n=497 median=0.36ms p95=0.70ms max=1.39ms] total[n=497 median=3.19ms p95=4.26ms max=5.36ms]
+phase=ppm-max-keys-same format=ppm sink=file target=max frames=485 fps=242.3 changes=484 unique=485 late=0 bytes=921615 qemu_cpu=120% poller_cpu=27% guest_draws_per_s=20845 guest_clock=1.00 reply[n=485 median=3.01ms p95=3.21ms max=5.88ms] read_decode[n=485 median=0.45ms p95=0.80ms max=0.96ms] total[n=485 median=3.48ms p95=3.75ms max=6.33ms] key_conn=same key_latency[n=41 median=2.33ms p95=4.36ms max=4.65ms] key_errors=0
+phase=ppm-max-keys-second format=ppm sink=file target=max frames=475 fps=237.1 changes=474 unique=475 late=0 bytes=921615 qemu_cpu=119% poller_cpu=27% guest_draws_per_s=20267 guest_clock=1.00 reply[n=475 median=3.04ms p95=3.44ms max=7.68ms] read_decode[n=475 median=0.47ms p95=0.83ms max=1.10ms] total[n=475 median=3.57ms p95=4.08ms max=8.16ms] key_conn=second key_latency[n=41 median=1.30ms p95=2.98ms max=5.89ms] key_errors=0
+run_s=14.7 qemu_exited=yes
+PASS
+## screendump raspi2b 320x240, load averages: 1.58, 1.12, 0.52
+run mode=screendump board=raspi2b size=320x240 host=linux-x86_64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.54
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=48846 guest_clock=1.00 key_conn=second key_latency[n=40 median=0.66ms p95=0.73ms max=0.82ms] key_errors=0
+phase=ppm-15 format=ppm sink=file target=15 frames=31 fps=15.5 changes=30 unique=31 late=0 bytes=230415 qemu_cpu=101% poller_cpu=0% guest_draws_per_s=57723 guest_clock=1.00 reply[n=31 median=2.06ms p95=2.59ms max=2.59ms] read_decode[n=31 median=0.18ms p95=0.36ms max=0.45ms] total[n=31 median=2.27ms p95=2.78ms max=3.04ms]
+phase=ppm-30 format=ppm sink=file target=30 frames=61 fps=30.5 changes=60 unique=61 late=0 bytes=230415 qemu_cpu=102% poller_cpu=1% guest_draws_per_s=56885 guest_clock=1.00 reply[n=61 median=1.93ms p95=2.26ms max=2.62ms] read_decode[n=61 median=0.21ms p95=0.24ms max=0.41ms] total[n=61 median=2.13ms p95=2.48ms max=2.85ms]
+phase=ppm-max format=ppm sink=file target=max frames=1032 fps=515.9 changes=1031 unique=1032 late=0 bytes=230415 qemu_cpu=136% poller_cpu=19% guest_draws_per_s=22948 guest_clock=1.00 reply[n=1032 median=1.54ms p95=1.78ms max=4.06ms] read_decode[n=1032 median=0.17ms p95=0.28ms max=0.34ms] total[n=1032 median=1.76ms p95=1.94ms max=4.21ms]
+phase=png-max not-run: this QEMU has no PNG screendump: {"error": {"class": "GenericError", "desc": "Enable PNG support with libpng for screendump"}}
+
+phase=ppm-fifo-max format=ppm sink=fifo target=max frames=1022 fps=510.7 changes=1021 unique=1022 late=0 bytes=230415 qemu_cpu=136% poller_cpu=36% guest_draws_per_s=23034 guest_clock=1.00 reply[n=1022 median=1.54ms p95=2.11ms max=4.22ms] read_decode[n=1022 median=0.12ms p95=0.18ms max=0.42ms] total[n=1022 median=1.68ms p95=2.22ms max=4.34ms]
+phase=ppm-max-keys-same format=ppm sink=file target=max frames=1011 fps=505.3 changes=1010 unique=1011 late=0 bytes=230415 qemu_cpu=139% poller_cpu=20% guest_draws_per_s=24183 guest_clock=1.00 reply[n=1011 median=1.58ms p95=1.78ms max=2.60ms] read_decode[n=1011 median=0.18ms p95=0.26ms max=0.30ms] total[n=1011 median=1.79ms p95=1.92ms max=2.72ms] key_conn=same key_latency[n=41 median=1.53ms p95=2.26ms max=2.61ms] key_errors=0
+phase=ppm-max-keys-second format=ppm sink=file target=max frames=1012 fps=505.8 changes=1011 unique=1012 late=0 bytes=230415 qemu_cpu=140% poller_cpu=17% guest_draws_per_s=24145 guest_clock=1.00 reply[n=1012 median=1.63ms p95=1.82ms max=3.04ms] read_decode[n=1012 median=0.14ms p95=0.26ms max=0.34ms] total[n=1012 median=1.82ms p95=1.97ms max=3.22ms] key_conn=second key_latency[n=41 median=0.69ms p95=1.38ms max=1.63ms] key_errors=0
+run_s=14.6 qemu_exited=yes
+PASS
+## screendump raspi3b 640x480, load averages: 1.60, 1.14, 0.54
+run mode=screendump board=raspi3b size=640x480 host=linux-x86_64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.54
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=57424 guest_clock=1.00 key_conn=second key_latency[n=41 median=0.70ms p95=0.73ms max=0.77ms] key_errors=0
+phase=ppm-15 format=ppm sink=file target=15 frames=31 fps=15.5 changes=30 unique=31 late=0 bytes=921615 qemu_cpu=101% poller_cpu=2% guest_draws_per_s=56297 guest_clock=1.00 reply[n=31 median=3.52ms p95=4.06ms max=4.55ms] read_decode[n=31 median=0.69ms p95=1.58ms max=1.67ms] total[n=31 median=4.22ms p95=5.15ms max=6.22ms]
+phase=ppm-30 format=ppm sink=file target=30 frames=61 fps=30.4 changes=60 unique=61 late=0 bytes=921615 qemu_cpu=103% poller_cpu=4% guest_draws_per_s=52236 guest_clock=1.00 reply[n=61 median=3.72ms p95=3.88ms max=4.02ms] read_decode[n=61 median=0.81ms p95=0.85ms max=1.44ms] total[n=61 median=4.43ms p95=4.70ms max=4.85ms]
+phase=ppm-max format=ppm sink=file target=max frames=510 fps=254.8 changes=509 unique=510 late=0 bytes=921615 qemu_cpu=117% poller_cpu=28% guest_draws_per_s=21718 guest_clock=1.00 reply[n=510 median=2.83ms p95=2.99ms max=4.04ms] read_decode[n=510 median=0.47ms p95=0.80ms max=0.90ms] total[n=510 median=3.33ms p95=3.63ms max=4.86ms]
+phase=png-max not-run: this QEMU has no PNG screendump: {"error": {"class": "GenericError", "desc": "Enable PNG support with libpng for screendump"}}
+
+phase=ppm-fifo-max format=ppm sink=fifo target=max frames=509 fps=254.4 changes=508 unique=509 late=0 bytes=921615 qemu_cpu=118% poller_cpu=51% guest_draws_per_s=20259 guest_clock=1.00 reply[n=509 median=2.57ms p95=3.89ms max=6.12ms] read_decode[n=509 median=0.37ms p95=0.69ms max=0.93ms] total[n=509 median=3.16ms p95=4.26ms max=6.59ms]
+phase=ppm-max-keys-same format=ppm sink=file target=max frames=490 fps=244.9 changes=489 unique=490 late=0 bytes=921615 qemu_cpu=120% poller_cpu=28% guest_draws_per_s=21707 guest_clock=1.00 reply[n=490 median=2.90ms p95=3.11ms max=3.49ms] read_decode[n=490 median=0.46ms p95=0.80ms max=1.03ms] total[n=490 median=3.45ms p95=3.66ms max=4.24ms] key_conn=same key_latency[n=41 median=2.42ms p95=4.40ms max=5.45ms] key_errors=0
+phase=ppm-max-keys-second format=ppm sink=file target=max frames=490 fps=244.7 changes=489 unique=490 late=0 bytes=921615 qemu_cpu=119% poller_cpu=28% guest_draws_per_s=21055 guest_clock=1.00 reply[n=490 median=2.93ms p95=3.15ms max=4.46ms] read_decode[n=490 median=0.46ms p95=0.83ms max=0.99ms] total[n=490 median=3.47ms p95=3.85ms max=5.26ms] key_conn=second key_latency[n=41 median=0.96ms p95=2.50ms max=2.88ms] key_errors=0
+run_s=14.6 qemu_exited=yes
+PASS
+## screendump raspi3b 320x240, load averages: 1.55, 1.15, 0.55
+run mode=screendump board=raspi3b size=320x240 host=linux-x86_64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.54
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=50738 guest_clock=1.00 key_conn=second key_latency[n=40 median=0.65ms p95=0.74ms max=0.82ms] key_errors=0
+phase=ppm-15 format=ppm sink=file target=15 frames=31 fps=15.5 changes=30 unique=31 late=0 bytes=230415 qemu_cpu=101% poller_cpu=0% guest_draws_per_s=59535 guest_clock=1.00 reply[n=31 median=2.10ms p95=2.33ms max=2.39ms] read_decode[n=31 median=0.23ms p95=0.67ms max=0.68ms] total[n=31 median=2.36ms p95=2.81ms max=3.01ms]
+phase=ppm-30 format=ppm sink=file target=30 frames=61 fps=30.5 changes=60 unique=61 late=0 bytes=230415 qemu_cpu=103% poller_cpu=1% guest_draws_per_s=57660 guest_clock=1.00 reply[n=61 median=2.05ms p95=2.30ms max=2.35ms] read_decode[n=61 median=0.21ms p95=0.23ms max=0.30ms] total[n=61 median=2.26ms p95=2.49ms max=2.52ms]
+phase=ppm-max format=ppm sink=file target=max frames=916 fps=457.8 changes=915 unique=916 late=0 bytes=230415 qemu_cpu=126% poller_cpu=17% guest_draws_per_s=18631 guest_clock=1.00 reply[n=916 median=1.72ms p95=2.61ms max=6.60ms] read_decode[n=916 median=0.16ms p95=0.27ms max=0.36ms] total[n=916 median=1.88ms p95=2.75ms max=6.78ms]
+phase=png-max not-run: this QEMU has no PNG screendump: {"error": {"class": "GenericError", "desc": "Enable PNG support with libpng for screendump"}}
+
+phase=ppm-fifo-max format=ppm sink=fifo target=max frames=1012 fps=505.6 changes=1011 unique=1012 late=0 bytes=230415 qemu_cpu=136% poller_cpu=36% guest_draws_per_s=23227 guest_clock=1.00 reply[n=1012 median=1.52ms p95=2.11ms max=4.56ms] read_decode[n=1012 median=0.14ms p95=0.18ms max=0.34ms] total[n=1012 median=1.68ms p95=2.23ms max=4.68ms]
+phase=ppm-max-keys-same format=ppm sink=file target=max frames=1022 fps=510.8 changes=1021 unique=1022 late=0 bytes=230415 qemu_cpu=138% poller_cpu=18% guest_draws_per_s=25024 guest_clock=1.00 reply[n=1022 median=1.58ms p95=1.76ms max=7.50ms] read_decode[n=1022 median=0.16ms p95=0.25ms max=0.32ms] total[n=1022 median=1.76ms p95=1.90ms max=7.72ms] key_conn=same key_latency[n=41 median=1.44ms p95=2.46ms max=2.64ms] key_errors=0
+phase=ppm-max-keys-second format=ppm sink=file target=max frames=1010 fps=505.0 changes=1009 unique=1010 late=0 bytes=230415 qemu_cpu=139% poller_cpu=18% guest_draws_per_s=24147 guest_clock=1.00 reply[n=1010 median=1.59ms p95=1.81ms max=2.95ms] read_decode[n=1010 median=0.15ms p95=0.26ms max=0.36ms] total[n=1010 median=1.82ms p95=1.97ms max=3.09ms] key_conn=second key_latency[n=41 median=0.61ms p95=1.64ms max=1.85ms] key_errors=0
+run_s=14.6 qemu_exited=yes
+PASS
+# load averages after: 1.57, 1.18, 0.57

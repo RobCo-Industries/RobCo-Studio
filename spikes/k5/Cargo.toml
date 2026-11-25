@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "k5"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Spike K5: frame rate of QMP screendump against VNC"
+
+[dependencies]
+# PNG decoding. MIT OR Apache-2.0.
+png = "0.17"
+
+[profile.release]
+debug = false

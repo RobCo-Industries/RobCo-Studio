@@ -1,0 +1,29 @@
+# spike K5 benchmark, 2026-11-25T20:07:45Z
+# host: Darwin arm64, cpus: 10
+# load averages before: 4.64 5.84 5.34
+# robco-core: 73a6cb2a67b3
+## vnc raspi0 640x480, load averages: 4.64 5.84 5.34
+run mode=vnc board=raspi0 size=640x480 host=macos-aarch64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.59
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=78963 guest_clock=1.00 key_conn=second key_latency[n=40 median=0.43ms p95=0.48ms max=0.52ms] key_errors=0
+phase=vnc-30 target=30 updates=114 fps=28.3 changes=113 unique=114 rects=413 bytes_per_s=728190 size=640x480 qemu_cpu=100% poller_cpu=1% guest_draws_per_s=78483 guest_clock=1.00 request_to_update[n=114 median=34.93ms p95=35.99ms max=79.36ms]
+phase=vnc-max target=max updates=115 fps=28.7 changes=114 unique=115 rects=436 bytes_per_s=727195 size=640x480 qemu_cpu=101% poller_cpu=1% guest_draws_per_s=80126 guest_clock=1.00 request_to_update[n=115 median=34.95ms p95=35.97ms max=36.07ms]
+run_s=10.7 qemu_exited=yes
+PASS
+## vnc raspi2b 640x480, load averages: 4.32 5.71 5.30
+run mode=vnc board=raspi2b size=640x480 host=macos-aarch64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.56
+phase=idle qemu_cpu=101% poller_cpu=0% guest_draws_per_s=87842 guest_clock=1.00 key_conn=second key_latency[n=41 median=0.45ms p95=0.50ms max=0.51ms] key_errors=0
+phase=vnc-30 target=30 updates=113 fps=28.2 changes=112 unique=113 rects=455 bytes_per_s=723483 size=640x480 qemu_cpu=100% poller_cpu=1% guest_draws_per_s=87917 guest_clock=1.00 request_to_update[n=113 median=35.02ms p95=36.05ms max=79.34ms]
+phase=vnc-max target=max updates=115 fps=28.6 changes=114 unique=115 rects=464 bytes_per_s=726736 size=640x480 qemu_cpu=100% poller_cpu=1% guest_draws_per_s=90178 guest_clock=1.00 request_to_update[n=115 median=35.02ms p95=36.03ms max=36.07ms]
+run_s=10.7 qemu_exited=yes
+PASS
+## vnc raspi3b 640x480, load averages: 4.13 5.62 5.27
+run mode=vnc board=raspi3b size=640x480 host=macos-aarch64 qemu="QEMU emulator version 10.1.2" phase_s=2
+boot_s=0.57
+phase=idle qemu_cpu=100% poller_cpu=0% guest_draws_per_s=77996 guest_clock=1.00 key_conn=second key_latency[n=41 median=0.44ms p95=0.49ms max=0.54ms] key_errors=0
+phase=vnc-30 target=30 updates=113 fps=28.1 changes=112 unique=113 rects=402 bytes_per_s=728175 size=640x480 qemu_cpu=100% poller_cpu=1% guest_draws_per_s=78021 guest_clock=1.00 request_to_update[n=113 median=35.03ms p95=36.05ms max=81.60ms]
+phase=vnc-max target=max updates=116 fps=28.8 changes=115 unique=116 rects=438 bytes_per_s=731995 size=640x480 qemu_cpu=100% poller_cpu=1% guest_draws_per_s=78387 guest_clock=1.00 request_to_update[n=116 median=35.00ms p95=36.09ms max=36.31ms]
+run_s=10.7 qemu_exited=yes
+PASS
+# load averages after: 3.96 5.54 5.25
