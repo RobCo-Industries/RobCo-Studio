@@ -111,6 +111,24 @@ fn formed<'a>(
     }
 }
 
+/// Reads a `url` and checks its form for an index from `source`.
+fn url<'a>(obj: &'a Map<String, Value>, at: &str, source: IndexSource) -> Result<&'a str, Error> {
+    let s = string(obj, at, "url")?;
+    if is_url(s, source) {
+        Ok(s)
+    } else if source == IndexSource::Https && is_archive_path(s) {
+        Err(entry(
+            &format!("{at}.url"),
+            &format!("= {s:?} is a relative path, and only a local index may hold one"),
+        ))
+    } else {
+        Err(entry(
+            &format!("{at}.url"),
+            &format!("= {s:?} breaks its form"),
+        ))
+    }
+}
+
 fn top<'a>(obj: &'a Map<String, Value>, key: &str) -> Result<&'a Value, Error> {
     obj.get(key).ok_or_else(|| entry(key, "is missing"))
 }
@@ -129,12 +147,22 @@ fn array<'a>(v: &'a Value, at: &str) -> Result<&'a Vec<Value>, Error> {
     v.as_array().ok_or_else(|| entry(at, "is not an array"))
 }
 
-/// The form of a `url`: `https://`, or a relative path by the path rules of
-/// "The archive".
-pub fn is_url(s: &str) -> bool {
+/// The kind of place an index came from. The caller knows it from the
+/// `--index` location, by "Where the index is".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexSource {
+    /// A local file.
+    Local,
+    /// A download from an `https://` URL.
+    Https,
+}
+
+/// The form of a `url`: `https://`, or in a local index a relative path by
+/// the path rules of "The archive".
+pub fn is_url(s: &str, source: IndexSource) -> bool {
     match s.strip_prefix("https://") {
         Some(rest) => !rest.is_empty() && !s.chars().any(is_control),
-        None => is_archive_path(s),
+        None => source == IndexSource::Local && is_archive_path(s),
     }
 }
 
@@ -314,7 +342,7 @@ pub(super) fn formats(
     Ok(out)
 }
 
-fn package(v: &Value, at: &str) -> Result<IndexPackage, Error> {
+fn package(v: &Value, at: &str, source: IndexSource) -> Result<IndexPackage, Error> {
     let obj = object(v, at)?;
     let dot = format!("{at}.");
     let name = formed(obj, at, "name", is_package_name)?.to_owned();
@@ -328,7 +356,7 @@ fn package(v: &Value, at: &str) -> Result<IndexPackage, Error> {
     let requires = requires(obj.get("requires"), &dot, &Error::IndexEntry)?;
     let tools = tool_pins(obj.get("tools"), &name, &dot, &Error::IndexEntry)?;
     let formats = formats(obj.get("formats"), &name, &dot, &Error::IndexEntry)?;
-    let url = formed(obj, at, "url", is_url)?.to_owned();
+    let url = url(obj, at, source)?.to_owned();
     let size = uint(obj, at, "size")?;
     let sha256 = formed(obj, at, "sha256", is_sha256)?.to_owned();
     Ok(IndexPackage {
@@ -347,7 +375,7 @@ fn package(v: &Value, at: &str) -> Result<IndexPackage, Error> {
 /// Reads a `tools` entry. `None` when its `name` is a string other than
 /// `gcc` and `qemu`: such an entry is skipped whole, and nothing else of it
 /// is checked.
-fn tool(v: &Value, at: &str) -> Result<Option<IndexTool>, Error> {
+fn tool(v: &Value, at: &str, source: IndexSource) -> Result<Option<IndexTool>, Error> {
     let obj = object(v, at)?;
     let name = string(obj, at, "name")?;
     if !TOOLS.contains(&name) {
@@ -365,7 +393,7 @@ fn tool(v: &Value, at: &str) -> Result<Option<IndexTool>, Error> {
         archives.insert(
             host.clone(),
             Archive {
-                url: formed(a, &here, "url", is_url)?.to_owned(),
+                url: url(a, &here, source)?.to_owned(),
                 size: uint(a, &here, "size")?,
                 sha256: formed(a, &here, "sha256", is_sha256)?.to_owned(),
                 root: string(a, &here, "root")?.to_owned(),
@@ -384,12 +412,13 @@ fn tool(v: &Value, at: &str) -> Result<Option<IndexTool>, Error> {
 pub fn read_file(path: &Path) -> Result<Index, Error> {
     let bytes = std::fs::read(path)
         .map_err(|e| Error::IndexRead(format!("{}: {}", path.display(), e.kind())))?;
-    parse(&bytes)
+    parse(&bytes, IndexSource::Local)
 }
 
 /// Reads the bytes of an index, in the order of checks of "Reading the
-/// index". Fields it does not know are ignored.
-pub fn parse(bytes: &[u8]) -> Result<Index, Error> {
+/// index". Fields it does not know are ignored. `source` is where the bytes
+/// came from: only a local index may hold a relative `url`.
+pub fn parse(bytes: &[u8], source: IndexSource) -> Result<Index, Error> {
     let text = std::str::from_utf8(bytes)
         .map_err(|e| Error::IndexSyntax(format!("not UTF-8 at byte {}", e.valid_up_to())))?;
     let root: Value =
@@ -416,11 +445,11 @@ pub fn parse(bytes: &[u8]) -> Result<Index, Error> {
 
     let mut packages = Vec::new();
     for (i, v) in array(top(obj, "packages")?, "packages")?.iter().enumerate() {
-        packages.push(package(v, &format!("packages[{i}]"))?);
+        packages.push(package(v, &format!("packages[{i}]"), source)?);
     }
     let mut tools = Vec::new();
     for (i, v) in array(top(obj, "tools")?, "tools")?.iter().enumerate() {
-        if let Some(t) = tool(v, &format!("tools[{i}]"))? {
+        if let Some(t) = tool(v, &format!("tools[{i}]"), source)? {
             tools.push(t);
         }
     }

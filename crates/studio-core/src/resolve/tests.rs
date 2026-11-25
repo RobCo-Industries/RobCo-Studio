@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value;
 
-use super::index::{self, Index, IndexPackage};
+use super::index::{self, Index, IndexPackage, IndexSource};
 use super::lock::{self, Installed, Lock, LockedPackage};
 use super::sdk_json;
 use super::*;
@@ -67,7 +67,7 @@ fn target(abi: &str) -> Target {
 }
 
 fn parse_index(text: &str) -> Result<Index, Error> {
-    index::parse(text.as_bytes())
+    index::parse(text.as_bytes(), IndexSource::Local)
 }
 
 fn code<T: std::fmt::Debug>(r: Result<T, Error>) -> &'static str {
@@ -488,7 +488,7 @@ fn resolve_index_syntax() {
     assert_eq!(code(parse_index("not json")), "index: syntax");
     assert_eq!(code(parse_index("[]")), "index: syntax");
     assert_eq!(
-        code(index::parse(b"{\"format\": 1, \xff}")),
+        code(index::parse(b"{\"format\": 1, \xff}", IndexSource::Local)),
         "index: syntax"
     );
     let dir = TempDir::new("index-read");
@@ -597,6 +597,25 @@ fn resolve_index_entries() {
         1,
     );
     assert_eq!(parse_index(&text).unwrap().packages[0].url, "pkg/pipos.zip");
+    // Only a local index may hold one.
+    let e = index::parse(text.as_bytes(), IndexSource::Https).unwrap_err();
+    assert_eq!(e.code(), "index: entry");
+    assert!(
+        e.to_string()
+            .starts_with("index: entry: packages[0].url = \"pkg/pipos.zip\""),
+        "{e}"
+    );
+    assert!(index::parse(INDEX.as_bytes(), IndexSource::Https).is_ok());
+    // The same for a tool archive.
+    let text = INDEX.replacen("https://example.invalid/qemu", "qemu", 1);
+    assert_ne!(text, INDEX);
+    assert!(parse_index(&text).is_ok());
+    let e = index::parse(text.as_bytes(), IndexSource::Https).unwrap_err();
+    assert!(
+        e.to_string()
+            .starts_with("index: entry: tools[1].archives."),
+        "{e}"
+    );
 }
 
 #[test]
@@ -1396,10 +1415,11 @@ fn resolve_archive_path_refuses_control_characters() {
         "pkg\u{7f}.zip",
     ] {
         assert!(!index::is_archive_path(bad), "{bad:?}");
-        assert!(!index::is_url(bad), "{bad:?}");
+        assert!(!index::is_url(bad, IndexSource::Local), "{bad:?}");
     }
     assert!(index::is_archive_path("my pkg/é~1.zip"));
-    assert!(index::is_url("my pkg/é~1.zip"));
+    assert!(index::is_url("my pkg/é~1.zip", IndexSource::Local));
+    assert!(!index::is_url("my pkg/é~1.zip", IndexSource::Https));
     // Through the reader: a NUL in a local url fails with `index: entry`.
     let text = INDEX.replacen(
         "https://example.invalid/robco/pipos-1.3.0.zip",
@@ -1422,9 +1442,16 @@ fn resolve_https_url_needs_a_rest_and_no_control_character() {
         "https://x/\t.zip",
         "https://x/\u{7f}",
     ] {
-        assert!(!index::is_url(bad), "{bad:?}");
+        assert!(!index::is_url(bad, IndexSource::Local), "{bad:?}");
     }
-    assert!(index::is_url("https://example.invalid/p.zip"));
+    assert!(index::is_url(
+        "https://example.invalid/p.zip",
+        IndexSource::Local
+    ));
+    assert!(index::is_url(
+        "https://example.invalid/p.zip",
+        IndexSource::Https
+    ));
     let text = INDEX.replacen(
         "https://example.invalid/robco/pipos-1.3.0.zip",
         "https://",
