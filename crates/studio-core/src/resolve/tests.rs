@@ -1274,3 +1274,50 @@ fn resolve_versions_have_no_leading_zero() {
     }
     assert!(is_host_name("linux-x64") && is_host_name("x64") && !is_host_name("9x"));
 }
+
+#[test]
+fn resolve_archive_path_refuses_control_characters() {
+    for bad in [
+        "pkg\0.zip",
+        "pkg\t.zip",
+        "pkg\n.zip",
+        "pkg\u{1f}.zip",
+        "pkg\u{7f}.zip",
+    ] {
+        assert!(!index::is_archive_path(bad), "{bad:?}");
+        assert!(!index::is_url(bad), "{bad:?}");
+    }
+    assert!(index::is_archive_path("my pkg/é~1.zip"));
+    assert!(index::is_url("my pkg/é~1.zip"));
+    // Through the reader: a NUL in a local url fails with `index: entry`.
+    let text = INDEX.replacen(
+        "https://example.invalid/robco/pipos-1.3.0.zip",
+        "pkg\\u0000.zip",
+        1,
+    );
+    let e = parse_index(&text).unwrap_err();
+    assert_eq!(e.code(), "index: entry");
+    assert!(
+        e.to_string().starts_with("index: entry: packages[0].url"),
+        "{e}"
+    );
+}
+
+#[test]
+fn resolve_https_url_needs_a_rest_and_no_control_character() {
+    for bad in [
+        "https://",
+        "https://x/\0.zip",
+        "https://x/\t.zip",
+        "https://x/\u{7f}",
+    ] {
+        assert!(!index::is_url(bad), "{bad:?}");
+    }
+    assert!(index::is_url("https://example.invalid/p.zip"));
+    let text = INDEX.replacen(
+        "https://example.invalid/robco/pipos-1.3.0.zip",
+        "https://",
+        1,
+    );
+    assert_eq!(code(parse_index(&text)), "index: entry");
+}

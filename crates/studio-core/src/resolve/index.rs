@@ -132,17 +132,30 @@ fn array<'a>(v: &'a Value, at: &str) -> Result<&'a Vec<Value>, Error> {
 /// The form of a `url`: `https://`, or a relative path by the path rules of
 /// "The archive".
 pub fn is_url(s: &str) -> bool {
-    s.starts_with("https://") || is_archive_path(s)
+    match s.strip_prefix("https://") {
+        Some(rest) => !rest.is_empty() && !s.chars().any(is_control),
+        None => is_archive_path(s),
+    }
+}
+
+/// A character below U+0020, or U+007F. No system opens a path that holds
+/// one, and no URL holds one.
+fn is_control(c: char) -> bool {
+    c < '\u{20}' || c == '\u{7f}'
 }
 
 /// The path rules of "The archive": relative, `/` as the separator, no
-/// empty, `.` or `..` component, no drive letter.
+/// empty, `.` or `..` component, no drive letter. It also refuses every
+/// character below U+0020 and U+007F. The spec does not name control
+/// characters yet; this stricter rule will be written into it at its next
+/// update.
 pub fn is_archive_path(s: &str) -> bool {
     let b = s.as_bytes();
     let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
     !s.is_empty()
         && !drive
         && !s.contains('\\')
+        && !s.chars().any(is_control)
         && s.split('/').all(|c| !matches!(c, "" | "." | ".."))
 }
 
