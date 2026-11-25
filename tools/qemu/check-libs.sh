@@ -45,7 +45,7 @@ case $os in
       while read -r so arrow path _; do
         [ "$arrow" = "=>" ] || continue
         if [ "$path" = "not" ]; then
-          echo "FAIL: $so not found"; bad=1; continue
+          echo "FAIL: $so not found, neither in the package nor on the system"; bad=1; continue
         fi
         if "$0" --system "$so"; then continue; fi
         dir=$(dirname "$(readlink -f "$path")")
@@ -86,7 +86,7 @@ case $os in
 esac
 
 if [ "$bad" -ne 0 ]; then
-  echo "Verdict: fail, a library loads from outside the package."
+  echo "Verdict: fail, a library is missing or loads from outside the package."
   exit 1
 fi
 echo "Verdict: pass, every library loads from the package or the system's C library."

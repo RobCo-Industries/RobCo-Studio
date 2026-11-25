@@ -210,12 +210,15 @@ jobs:
         run: |
           test -z "${LD_LIBRARY_PATH:-}${DYLD_LIBRARY_PATH:-}"
           bash tools/qemu/check-libs.sh ${{ matrix.name }} qemu
-      # This image has its own zlib and pcre. Without the package's copy,
-      # each loads from the system, and the check must say so.
-      - name: Library check fails when zlib or pcre loads from the system (Linux)
+      # A package missing one of its libraries shows it two ways: the
+      # library loads from the system, or it is not found at all. This image
+      # has zlib and pcre but not pixman, so both ways run here. Either one
+      # is accepted, so an image update cannot break the test, but the check
+      # must exit 1 and every FAIL line must name the removed library.
+      - name: Library check fails when a packed library is removed (Linux)
         if: matrix.name == 'linux'
         run: |
-          for so in libz.so.1 libpcre.so.3; do
+          for so in libz.so.1 libpcre.so.3 libpixman-1.so.0; do
             rm -rf "$RUNNER_TEMP/broken" && cp -r qemu "$RUNNER_TEMP/broken"
             rm "$RUNNER_TEMP/broken/lib/$so"
             set +e
@@ -224,7 +227,12 @@ jobs:
             set -e
             cat broken.log
             test "$code" -eq 1
-            grep -E "FAIL: $so loads from /(usr/)?lib/x86_64-linux-gnu/" broken.log
+            grep '^FAIL' broken.log > fail.log
+            test -s fail.log
+            ok="^FAIL: $so (loads from /(usr/)?lib/x86_64-linux-gnu/[^ ]+, outside the package|not found, neither in the package nor on the system)\$"
+            if grep -vE "$ok" fail.log; then
+              echo "unexpected FAIL lines above for $so"; exit 1
+            fi
           done
       - name: Package contents
         run: |
