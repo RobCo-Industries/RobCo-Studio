@@ -1,0 +1,36 @@
+# cargo-deny configuration. CI runs `cargo deny --locked check`.
+# Studio is GPL-3.0-or-later, so every crate it links must carry a licence
+# compatible with GPL version 3. Add a licence here only with a reason.
+
+[graph]
+all-features = true
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "GPL-3.0-or-later",                 # Studio's own crates
+    "MIT",
+    "Apache-2.0",                       # compatible with GPL 3, not with GPL 2
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",                          # serialport; allows combination with the GPL
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
