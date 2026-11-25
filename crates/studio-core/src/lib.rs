@@ -10,6 +10,7 @@
 //! two programs. It holds no `unsafe` code.
 #![forbid(unsafe_code)]
 
+pub mod boot;
 pub mod guard;
 
 /// The version of Studio, from `workspace.package.version` in the root

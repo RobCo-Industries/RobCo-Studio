@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ROBCO_CORE_SHA: c8220b2731b90d0446db636a4dc986a3ce1035cb
+  ROBCO_CORE_SHA: c6b6482ff4b5cee7dda4bdc3845b4dd2edd9bb91
   XPACK: https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v15.2.1-1.1
   XPACK_NAME: xpack-arm-none-eabi-gcc-15.2.1-1.1
 
@@ -166,8 +166,7 @@ jobs:
           arm-none-eabi-gcc --version | head -1
       - name: Python test tools
         run: python -m pip install -r robco-core/tests/requirements.txt
-      # First pass counts. Only the known race in RobCo-Core's
-      # test_v23_spi0_byte_rate[raspi3b] is retried, at most twice.
+      # One pass, no retry: any failed case fails the job.
       - name: Canary, harness unchanged (Linux, macOS)
         if: matrix.name != 'windows'
         run: python spikes/k1/canary.py ${{ matrix.name }}
