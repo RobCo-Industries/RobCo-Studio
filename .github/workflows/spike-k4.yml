@@ -1,0 +1,112 @@
+name: spike-k4
+
+on:
+  push:
+    branches: [spike-k4]
+  pull_request:
+    paths:
+      - "spikes/k4/**"
+      - ".github/workflows/spike-k4.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-k4-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: "${{ matrix.toolkit }} on ${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        toolkit: [egui, gpui]
+        exclude:
+          - os: ubuntu-latest
+            toolkit: gpui
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install system packages for egui
+        if: matrix.os == 'ubuntu-latest' && matrix.toolkit == 'egui'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev
+      - name: Install system packages for GPUI
+        if: matrix.os == 'ubuntu-latest' && matrix.toolkit == 'gpui'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfontconfig-dev libfreetype-dev libvulkan-dev
+      - name: Count packages in the lock file
+        working-directory: spikes/k4/${{ matrix.toolkit }}
+        run: |
+          echo "lock packages: $(grep -c '^name = ' Cargo.lock)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Fetch crates
+        working-directory: spikes/k4/${{ matrix.toolkit }}
+        run: cargo fetch --locked
+      - name: Clean debug build
+        working-directory: spikes/k4/${{ matrix.toolkit }}
+        run: |
+          start=$(date +%s)
+          cargo build --locked
+          echo "clean debug build: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Headless test
+        working-directory: spikes/k4/${{ matrix.toolkit }}
+        run: cargo test --locked
+      - name: Clean release build
+        working-directory: spikes/k4/${{ matrix.toolkit }}
+        run: |
+          start=$(date +%s)
+          cargo build --release --locked
+          echo "clean release build: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Release program size
+        working-directory: spikes/k4/${{ matrix.toolkit }}
+        run: |
+          bin=target/release/k4-${{ matrix.toolkit }}
+          if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
+          echo "release size: $(wc -c < "$bin") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  gpui-ubuntu-known-failure:
+    name: "gpui on ubuntu: known not to build"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install system packages for GPUI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfontconfig-dev libfreetype-dev libvulkan-dev
+      - name: Check that the build fails with the known error
+        working-directory: spikes/k4/gpui
+        run: |
+          set +e
+          cargo build --locked > build.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::gpui now builds on Ubuntu. docs/spikes/K4.md is out of date."
+            exit 1
+          fi
+          if grep -q 'could not compile `xattr`' build.log && grep -q 'ENOATTR' build.log; then
+            echo "Build failed with the known error:"
+            grep -n -E 'ENOATTR|could not compile `xattr`' build.log
+            exit 0
+          fi
+          echo "::error::gpui failed to build for another reason than the known xattr ENOATTR error."
+          tail -60 build.log
+          exit 1
