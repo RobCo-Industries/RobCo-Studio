@@ -39,6 +39,10 @@ pub struct ThemeEditor {
     sliders: [f64; 3],
     /// The base colour the sliders were last set from or gave.
     sliders_for: Option<Color32>,
+    /// The numbers the sliders were last set to from a colour, and that
+    /// colour. Sliders moved back to these numbers give that colour again,
+    /// so a move and a move back is no change.
+    slid_from: Option<([f64; 3], Color32)>,
     /// The saturation and lightness rails, and the sliders they were made
     /// for. Made again only when the colour changes.
     rails: Option<([f64; 3], [[Color32; 2]; 2])>,
@@ -113,6 +117,7 @@ impl ThemeEditor {
             let [h, s, l] = palette::to_sliders(base);
             self.sliders = [h.round() % 360.0, (s * 100.0).round(), (l * 100.0).round()];
             self.sliders_for = Some(base);
+            self.slid_from = Some((self.sliders, base));
         }
     }
 
@@ -712,7 +717,10 @@ impl Studio {
         }
         if moved {
             let [h, s, l] = ed.sliders;
-            let c = palette::from_sliders(h, s / 100.0, l / 100.0);
+            let c = match ed.slid_from {
+                Some((k, c)) if k == ed.sliders => c,
+                _ => palette::from_sliders(h, s / 100.0, l / 100.0),
+            };
             ed.sliders_for = Some(c);
             ed.hex = palette::hex_text(c);
             ed.hex_for = Some(c);

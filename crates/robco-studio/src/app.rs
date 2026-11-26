@@ -683,19 +683,30 @@ impl Studio {
         ))
     }
 
-    /// Change the theme in use by `edit`. The first change makes it a
-    /// changed theme, not saved, and the status line says so once. Studio
-    /// writes nothing.
+    /// Change the theme in use by `edit`. A change makes it a changed
+    /// theme, not saved, and the status line says so once. An edit that
+    /// puts every value back as saved ends the change, and the status line
+    /// says the theme. Studio writes nothing.
     pub fn edit_theme(&mut self, edit: impl FnOnce(&mut Spec)) {
         let mut spec = self.spec().clone();
         edit(&mut spec);
         if spec == *self.spec() {
             return;
         }
-        if self.changed.is_none() {
-            self.say(Level::Info, crate::theme::changed_news(&spec.name));
-        }
+        let was = self.changed.is_some();
         self.changed = Some(spec);
+        self.settle_change();
+        match (was, &self.changed) {
+            (false, Some(c)) => {
+                let line = crate::theme::changed_news(&c.name);
+                self.say(Level::Info, line);
+            }
+            (true, None) => {
+                let line = crate::theme::news(&self.spec().name, None);
+                self.say(Level::Info, line);
+            }
+            _ => {}
+        }
         self.chose();
         self.settings_due = true;
         self.refresh_theme();
@@ -722,6 +733,7 @@ impl Studio {
         self.current = i;
         self.changed = None;
         self.adrift = None;
+        self.settle_change();
         self.chose();
         self.refresh_theme();
         self.save_settings();

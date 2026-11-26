@@ -156,8 +156,30 @@ impl Studio {
                 self.adrift = Some(u.from);
             }
         }
+        // A kept change equal to its theme is no change. The file keeps
+        // it until the next write the person causes.
+        self.settle_change();
         self.refresh_theme();
         self
+    }
+
+    /// End a change whose values equal the saved theme it sits on. A
+    /// change is a fact about values, so every path that sets a change, or
+    /// the theme under it, ends here. It compares what a file holds, by
+    /// [`store::same_values`]. A change whose own theme is gone has
+    /// nothing to compare with and stays. Gives true when it ended one.
+    pub(super) fn settle_change(&mut self) -> bool {
+        if self.adrift.is_some() {
+            return false;
+        }
+        let same = match (&self.changed, self.themes.get(self.current)) {
+            (Some(c), Some(saved)) => store::same_values(c, saved),
+            _ => false,
+        };
+        if same {
+            self.changed = None;
+        }
+        same
     }
 
     /// The file `file` of the themes folder could not be read at the last
@@ -348,6 +370,8 @@ impl Studio {
                 self.fell_back(&key);
             }
         }
+        // The file read again may now hold the change's values.
+        self.settle_change();
     }
 
     /// Write `settings.toml` now, when Studio has a settings folder and
@@ -520,6 +544,7 @@ impl Studio {
         self.current = i;
         self.changed = None;
         self.adrift = None;
+        self.settle_change();
         self.chose();
         self.refresh_theme();
         self.save_settings();
@@ -589,6 +614,7 @@ impl Studio {
             name: self.spec().name.clone(),
             ..c
         });
+        self.settle_change();
         self.refresh_theme();
         self.save_settings();
         kept?;

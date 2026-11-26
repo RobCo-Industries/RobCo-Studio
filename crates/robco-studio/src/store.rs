@@ -731,11 +731,28 @@ pub fn theme_text(spec: &Spec) -> String {
 fn screen_text(spec: &Spec) -> String {
     let mut t = String::new();
     for (i, key) in STRENGTH_KEYS.iter().enumerate() {
-        let v = spec.strengths.get(i).unwrap_or(0.0);
+        let v = stored(spec.strengths.get(i).unwrap_or(0.0));
         t.push_str(&format!("{key} = {v:.2}\n"));
     }
     t.push_str(&format!("moves = {}\nrate = {}\n", spec.moves, spec.rate));
     t
+}
+
+/// A strength as a file holds it: on the slider's step, two decimals.
+pub fn stored(v: f32) -> f64 {
+    (f64::from(v) / crt::SLIDER_STEP).round() / crt::SLIDER_STEP.recip()
+}
+
+/// `a` and `b` hold the same values once written: the base colour as
+/// given, the strengths at the file's precision, `moves` and `rate`. The
+/// name does not count.
+pub fn same_values(a: &Spec, b: &Spec) -> bool {
+    hex(a.base) == hex(b.base)
+        && a.moves == b.moves
+        && a.rate == b.rate
+        && (0..STRENGTH_KEYS.len()).all(|i| {
+            stored(a.strengths.get(i).unwrap_or(0.0)) == stored(b.strengths.get(i).unwrap_or(0.0))
+        })
 }
 
 /// A colour as `#` and six hex digits in lower case.
@@ -938,9 +955,8 @@ impl Settings {
                 }
                 s.insert("base".into(), Value::String(hex(u.spec.base)));
                 for (i, key) in STRENGTH_KEYS.iter().enumerate() {
-                    let v = u.spec.strengths.get(i).unwrap_or(0.0);
                     // Two decimals, the slider's step, so 0.35 stays 0.35.
-                    let v = (f64::from(v) / crt::SLIDER_STEP).round() / crt::SLIDER_STEP.recip();
+                    let v = stored(u.spec.strengths.get(i).unwrap_or(0.0));
                     s.insert((*key).into(), Value::Float(v));
                 }
                 s.insert("moves".into(), Value::Boolean(u.spec.moves));

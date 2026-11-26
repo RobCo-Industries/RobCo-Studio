@@ -1886,3 +1886,267 @@ fn a_field_commits_its_text_whatever_takes_the_focus() {
     assert_eq!(failed, Vec::<String>::new());
     assert_eq!(rows, 24);
 }
+
+/// A theme of the person's own on a quick colour, every strength at 0.35,
+/// the screen moving.
+const MINE: &str = "version = 1\nname = \"Mine\"\nbase = \"#5aff7f\"\n[screen]\nbloom = 0.35\nvignette = 0.35\nscanlines = 0.35\ncurvature = 0.35\npersistence = 0.35\nnoise = 0.35\nflicker = 0.35\nband = 0.35\nmask = 0.35\naberration = 0.35\nmoves = true\nrate = 30\n";
+
+/// A window on Mine, with a known adapter so no strength is held.
+fn on_mine(d: &TempDir) -> Studio {
+    std::fs::write(themes(d).join("mine.toml"), MINE).unwrap();
+    let mut s = window(d);
+    let i = s.theme_index("Mine").unwrap();
+    s.pick_theme(i);
+    s.screen.adapter = crate::screen::Adapter::Hardware;
+    s.refresh_theme();
+    s
+}
+
+/// A control of the two tabs of the editor.
+#[derive(Debug, Clone, Copy)]
+enum Ctl {
+    /// The strength slider at this place.
+    Strength(usize),
+    /// The colour slider at this place.
+    Colour(usize),
+    Hex,
+    Quick,
+    Moves,
+    Rate,
+}
+
+/// How the person puts the value back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Back {
+    /// By the same control.
+    Same,
+    /// By typing the old number in the control's field.
+    Typed,
+    Revert,
+}
+
+/// Type `text` in the field named `label`, then leave it with Tab.
+fn type_in(h: &mut egui_kittest::Harness<'_, Studio>, label: &str, text: &str) {
+    h.get_by_role_and_label(Role::TextInput, label).focus();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.get_by_role_and_label(Role::TextInput, label)
+        .type_text(text);
+    h.run_steps(2);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+}
+
+/// Press `key` on the slider named `name`.
+fn key_on(h: &mut egui_kittest::Harness<'_, Studio>, name: &str, key: egui::Key) {
+    h.get_by_role_and_label(Role::Slider, name).focus();
+    h.run_steps(2);
+    h.key_press(key);
+    h.run_steps(3);
+}
+
+/// Click the radio button `label`.
+fn radio(h: &mut egui_kittest::Harness<'_, Studio>, label: &str) {
+    h.get_by_role_and_label(Role::RadioButton, label).click();
+    h.run_steps(3);
+}
+
+/// Each control of the two tabs, changed and put back by the same
+/// control, by typing the old number and by Revert. Put back, the theme
+/// is not changed: the pane's tag, the status line and the menu say so, a
+/// pick asks nothing and `settings.toml` holds no `[unsaved]`.
+#[test]
+fn a_value_put_back_is_no_change() {
+    use Back::*;
+    let mut rows: Vec<(Ctl, Back)> = Vec::new();
+    for i in 0..Strengths::NAMES.len() {
+        for b in [Same, Typed, Revert] {
+            rows.push((Ctl::Strength(i), b));
+        }
+    }
+    for i in 0..COLOUR_SLIDERS.len() {
+        for b in [Same, Typed, Revert] {
+            rows.push((Ctl::Colour(i), b));
+        }
+    }
+    for b in [Same, Typed, Revert] {
+        rows.push((Ctl::Quick, b));
+    }
+    // The field is typed in: by the same control is by typing.
+    for b in [Typed, Revert] {
+        rows.push((Ctl::Hex, b));
+    }
+    for c in [Ctl::Moves, Ctl::Rate] {
+        for b in [Same, Revert] {
+            rows.push((c, b));
+        }
+    }
+    let mut failed = Vec::new();
+    for (k, (ctl, back)) in rows.iter().copied().enumerate() {
+        let row = format!("{ctl:?} {back:?}");
+        let d = TempDir::new(&format!("back-{k}"));
+        let s = on_mine(&d);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+        h.state_mut().theme_editor.open = true;
+        if matches!(ctl, Ctl::Strength(_) | Ctl::Moves | Ctl::Rate) {
+            h.state_mut().theme_editor.tab = ThemeTab::Screen;
+        }
+        h.run_steps(3);
+        // Change it.
+        let mut undo = egui::Key::ArrowLeft;
+        let mut old = String::new();
+        match ctl {
+            Ctl::Strength(i) => {
+                old = "0.35".into();
+                key_on(&mut h, Strengths::NAMES[i], egui::Key::ArrowRight);
+            }
+            Ctl::Colour(i) => {
+                let v = h.state().theme_editor.sliders[i];
+                old = format!("{v:.0}");
+                key_on(&mut h, COLOUR_SLIDERS[i], egui::Key::ArrowRight);
+                if h.state().theme_editor.sliders[i] == v {
+                    key_on(&mut h, COLOUR_SLIDERS[i], egui::Key::ArrowLeft);
+                    undo = egui::Key::ArrowRight;
+                }
+            }
+            Ctl::Hex => type_in(&mut h, BASE, "123456"),
+            Ctl::Quick => radio(&mut h, QUICK[2].0),
+            Ctl::Moves => {
+                h.get_by_role_and_label(Role::CheckBox, MOVES).click();
+                h.run_steps(3);
+            }
+            Ctl::Rate => radio(&mut h, "60"),
+        }
+        if h.state().changed.is_none() {
+            failed.push(format!("{row}: no change made"));
+            continue;
+        }
+        // Put it back.
+        match (ctl, back) {
+            (_, Revert) => {
+                h.get_by_role_and_label(Role::Button, BUTTONS[2]).click();
+                h.run_steps(3);
+            }
+            (Ctl::Strength(i), Same) => key_on(&mut h, Strengths::NAMES[i], undo),
+            (Ctl::Colour(i), Same) => key_on(&mut h, COLOUR_SLIDERS[i], undo),
+            (Ctl::Strength(i), Typed) => type_in(&mut h, Strengths::NAMES[i], &old),
+            (Ctl::Colour(i), Typed) => type_in(&mut h, COLOUR_SLIDERS[i], &old),
+            (Ctl::Quick, Same) => radio(&mut h, QUICK[0].0),
+            (Ctl::Quick | Ctl::Hex, Typed) => type_in(&mut h, BASE, "5aff7f"),
+            (Ctl::Moves, _) => {
+                h.get_by_role_and_label(Role::CheckBox, MOVES).click();
+                h.run_steps(3);
+            }
+            (Ctl::Rate, _) => radio(&mut h, "30"),
+            (Ctl::Hex, Same) => unreachable!(),
+        }
+        let s = h.state_mut();
+        let row_mark = s.checked(Command::Theme(ThemeId::At(s.current)));
+        let mut faults = Vec::new();
+        if s.changed.is_some() {
+            faults.push("still changed".to_owned());
+        }
+        if s.pane_tag() != TAG_YOURS {
+            faults.push(format!("tag {}", s.pane_tag()));
+        }
+        if s.status.1 != "Theme: Mine." {
+            faults.push(format!("status {}", s.status.1));
+        }
+        if !row_mark || s.checked(Command::Theme(ThemeId::Changed)) {
+            faults.push("menu mark".to_owned());
+        }
+        s.save_settings();
+        let file = std::fs::read_to_string(d.0.join(store::SETTINGS)).unwrap();
+        if file.contains("[unsaved]") {
+            faults.push("settings keep [unsaved]".to_owned());
+        }
+        s.pick_theme(1);
+        if s.theme_editor.question.is_some() || s.current != 1 {
+            faults.push("a pick asks".to_owned());
+        }
+        if !faults.is_empty() {
+            failed.push(format!("{row}: {}", faults.join(", ")));
+        }
+    }
+    assert_eq!(failed, Vec::<String>::new());
+    assert_eq!(rows.len(), 48);
+}
+
+/// A value that differs from the saved one only below what the file
+/// holds is no change; one that differs at that precision is.
+#[test]
+fn a_change_below_the_file_precision_is_no_change() {
+    let d = TempDir::new("precision");
+    let mut s = on_mine(&d);
+    s.edit_theme(|t| t.strengths.vignette = 0.354);
+    assert!(s.changed.is_none(), "0.354 is written 0.35");
+    assert_eq!(s.pane_tag(), TAG_YOURS);
+    s.edit_theme(|t| t.strengths.vignette = 0.356);
+    assert!(s.changed.is_some(), "0.356 is written 0.36");
+    // Saved and read back, a value equals itself.
+    let line = s.save_theme().unwrap();
+    assert!(line.contains("saved"), "{line}");
+    assert!(s.changed.is_none());
+    s.reload_themes();
+    s.edit_theme(|t| t.strengths.vignette = 0.36);
+    assert!(s.changed.is_none());
+}
+
+/// An `[unsaved]` equal to the theme it names is no change at start.
+/// The file keeps it until the next write the person causes.
+#[test]
+fn an_unsaved_equal_to_its_theme_is_dropped_on_the_next_write() {
+    let d = TempDir::new("start-equal");
+    std::fs::write(themes(&d).join("mine.toml"), MINE).unwrap();
+    let screen = MINE.split("[screen]\n").nth(1).unwrap();
+    let settings = format!(
+        "version = 1\ntheme = \"mine.toml\"\n\n[unsaved]\nfrom = \"mine.toml\"\nname = \"Mine\"\nbase = \"#5aff7f\"\n{screen}"
+    );
+    std::fs::write(d.0.join(store::SETTINGS), &settings).unwrap();
+    let mut s = Studio::new(None).with_settings(d.0.clone());
+    assert!(s.changed.is_none());
+    assert_eq!(s.theme_name(), "Mine");
+    assert!(s.checked(Command::Theme(ThemeId::At(s.current))));
+    let file = std::fs::read_to_string(d.0.join(store::SETTINGS)).unwrap();
+    assert_eq!(file, settings, "nothing written at start");
+    s.compact_header = !s.compact_header;
+    s.save_settings();
+    let file = std::fs::read_to_string(d.0.join(store::SETTINGS)).unwrap();
+    assert!(!file.contains("[unsaved]"), "{file}");
+}
+
+/// A reload that reads a file now equal to the change ends the change.
+#[test]
+fn a_reload_to_the_same_values_ends_the_change() {
+    let d = TempDir::new("reload-equal");
+    let mut s = on_mine(&d);
+    s.edit_theme(|t| t.strengths.vignette = 0.5);
+    assert!(s.changed.is_some());
+    let text = MINE.replace("vignette = 0.35", "vignette = 0.50");
+    std::fs::write(themes(&d).join("mine.toml"), text).unwrap();
+    s.reload_themes();
+    assert!(s.changed.is_none());
+    assert_eq!(s.pane_tag(), TAG_YOURS);
+}
+
+/// A change whose own theme is gone stays changed, even with the values
+/// of Green, the stand-in under it.
+#[test]
+fn a_change_adrift_stays_changed() {
+    let d = TempDir::new("adrift-stays");
+    let mut s = reach(&d, Way::GoneAtReload);
+    assert!(s.in_use().adrift());
+    let green = crate::theme::SHIPPED[0].clone();
+    s.edit_theme(|t| {
+        t.base = green.base;
+        t.strengths = green.strengths;
+        t.moves = green.moves;
+        t.rate = green.rate;
+    });
+    assert!(s.changed.is_some());
+    assert_eq!(s.pane_tag(), TAG_CHANGED);
+    assert!(s.checked(Command::Theme(ThemeId::Changed)));
+}
