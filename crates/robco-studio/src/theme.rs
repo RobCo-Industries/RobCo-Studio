@@ -86,70 +86,70 @@ const fn hex(v: u32) -> Color32 {
 
 /// The green scheme.
 pub const GREEN: Palette = Palette {
-    ground: hex(0x040906),
-    pane: hex(0x07110b),
-    raised: hex(0x0d1f14),
-    select: hex(0x143a22),
-    frame: hex(0x2f9150),
-    frame_dim: hex(0x1b4a2b),
-    dim: hex(0x74c08c),
-    text: hex(0xabedbd),
-    bright: hex(0x5cff8f),
-    ink: hex(0x03170a),
-    alarm: hex(0xff8170),
-    warn: hex(0xf0d264),
-    lit: hex(0xd6e98f),
+    ground: hex(0x05140a),
+    pane: hex(0x091d10),
+    raised: hex(0x0f3019),
+    select: hex(0x164524),
+    frame: hex(0x40ba60),
+    frame_dim: hex(0x216134),
+    dim: hex(0x82d893),
+    text: hex(0xa2f8ae),
+    bright: hex(0x5aff7f),
+    ink: hex(0x021a08),
+    alarm: hex(0xff8a78),
+    warn: hex(0xf5d86a),
+    lit: hex(0xdcf08f),
 };
 
 /// The amber scheme.
 pub const AMBER: Palette = Palette {
-    ground: hex(0x0a0703),
-    pane: hex(0x120c05),
-    raised: hex(0x22160a),
-    select: hex(0x40290d),
-    frame: hex(0xa87324),
-    frame_dim: hex(0x573a12),
-    dim: hex(0xcf9f5a),
-    text: hex(0xffd9a3),
-    bright: hex(0xffb23e),
-    ink: hex(0x1c0f00),
-    alarm: hex(0xff8691),
-    warn: hex(0xfff0c0),
-    lit: hex(0xf5e96b),
+    ground: hex(0x140c03),
+    pane: hex(0x1d1306),
+    raised: hex(0x30200a),
+    select: hex(0x46300f),
+    frame: hex(0xcc8d2e),
+    frame_dim: hex(0x6b4915),
+    dim: hex(0xe0ad66),
+    text: hex(0xffdb9e),
+    bright: hex(0xffb93f),
+    ink: hex(0x1f1100),
+    alarm: hex(0xff8f98),
+    warn: hex(0xfff2c4),
+    lit: hex(0xf8ec70),
 };
 
 /// The blue scheme.
 pub const BLUE: Palette = Palette {
-    ground: hex(0x04070a),
-    pane: hex(0x071018),
-    raised: hex(0x0d1d2b),
-    select: hex(0x143650),
-    frame: hex(0x3b86b8),
-    frame_dim: hex(0x1c435e),
-    dim: hex(0x7fb6d6),
-    text: hex(0xb5e0f7),
-    bright: hex(0x6cc9ff),
-    ink: hex(0x03121c),
-    alarm: hex(0xff8170),
-    warn: hex(0xf0d264),
-    lit: hex(0xd6e98f),
+    ground: hex(0x050f18),
+    pane: hex(0x091a27),
+    raised: hex(0x0f2a3e),
+    select: hex(0x163d5a),
+    frame: hex(0x4c9fd6),
+    frame_dim: hex(0x24526f),
+    dim: hex(0x8cc3e3),
+    text: hex(0xb9e5fb),
+    bright: hex(0x66c9ff),
+    ink: hex(0x02131f),
+    alarm: hex(0xff8a78),
+    warn: hex(0xf5d86a),
+    lit: hex(0xdcf08f),
 };
 
 /// The white scheme.
 pub const WHITE: Palette = Palette {
-    ground: hex(0x070808),
-    pane: hex(0x0e1010),
-    raised: hex(0x1a1d1d),
-    select: hex(0x2c3333),
-    frame: hex(0x7f8b8b),
-    frame_dim: hex(0x3b4242),
-    dim: hex(0xb0bcbc),
-    text: hex(0xe2ecec),
+    ground: hex(0x0b0e0e),
+    pane: hex(0x131717),
+    raised: hex(0x202626),
+    select: hex(0x303939),
+    frame: hex(0x96a4a4),
+    frame_dim: hex(0x495252),
+    dim: hex(0xbcc8c8),
+    text: hex(0xe8f1f1),
     bright: hex(0xf4ffff),
     ink: hex(0x0b1010),
-    alarm: hex(0xff8170),
-    warn: hex(0xf0d264),
-    lit: hex(0xd6e98f),
+    alarm: hex(0xff8a78),
+    warn: hex(0xf5d86a),
+    lit: hex(0xdcf08f),
 };
 
 /// High legibility: neutral text and frames. `bright` is the green value of
@@ -160,7 +160,7 @@ pub const HIGH_LEGIBILITY: Palette = Palette {
     pane: hex(0x131615),
     raised: hex(0x1e2321),
     select: hex(0x27382e),
-    frame: hex(0x828f87),
+    frame: hex(0x8a978f),
     frame_dim: hex(0x3c4540),
     dim: hex(0xb7c1ba),
     text: hex(0xf0f4f1),
@@ -188,19 +188,19 @@ pub mod size {
     /// 32.
     pub const STEP_32: f32 = 32.0;
     /// The centre of a rail item's icon, from its top.
-    pub const RAIL_ICON_Y: f32 = 16.0;
+    pub const RAIL_ICON_Y: f32 = 15.0;
     /// The centre of a rail item's label, from its top.
-    pub const RAIL_LABEL_Y: f32 = 36.0;
+    pub const RAIL_LABEL_Y: f32 = 33.0;
     /// The unsaved-file dialog.
     pub const DIALOG_H: f32 = 108.0;
     /// Gap between panes, across.
     pub const GAP_ACROSS: f32 = 8.0;
-    /// Gap between panes, down. It leaves room for the label on the frame line.
-    pub const GAP_DOWN: f32 = 18.0;
+    /// Gap between panes, down.
+    pub const GAP_DOWN: f32 = 8.0;
     /// Pane padding at the sides.
     pub const PAD_SIDE: f32 = 10.0;
     /// Pane padding at the top.
-    pub const PAD_TOP: f32 = 14.0;
+    pub const PAD_TOP: f32 = 8.0;
     /// Pane padding at the bottom.
     pub const PAD_BOTTOM: f32 = 8.0;
     /// A control.
@@ -216,15 +216,73 @@ pub mod size {
     /// The menu row in the window.
     pub const MENU_H: f32 = 24.0;
     /// The toolbar.
-    pub const TOOLBAR_H: f32 = 44.0;
+    pub const TOOLBAR_H: f32 = 42.0;
+    /// The header band, tall.
+    pub const HEADER_H: f32 = 60.0;
+    /// The header band, compact.
+    pub const HEADER_COMPACT_H: f32 = 36.0;
+    /// The header is tall from this inner window height up, in points.
+    pub const HEADER_TALL_FROM: f32 = 720.0;
+    /// The space before the wordmark and after the skyline in the header.
+    pub const HEADER_PAD: f32 = 12.0;
+    /// The space at each side of the header's divider.
+    pub const HEADER_GAP: f32 = 14.0;
+    /// The header's divider, tall.
+    pub const HEADER_DIVIDER_H: f32 = 36.0;
+    /// The header's divider, compact.
+    pub const HEADER_DIVIDER_COMPACT_H: f32 = 20.0;
+    /// The Studio wordmark in the tall header.
+    pub const WORDMARK_H: f32 = 56.0;
+    /// The Studio wordmark in the compact header.
+    pub const WORDMARK_COMPACT_H: f32 = 32.0;
+    /// The atom mark in the tall header, square.
+    pub const ATOM: f32 = 44.0;
+    /// The atom mark in the compact header, square.
+    pub const ATOM_COMPACT: f32 = 24.0;
+    /// The skyline at the right of the header.
+    pub const SKYLINE: [f32; 2] = [420.0, 60.0];
+    /// One of the four action buttons of the toolbar.
+    pub const TOOLBAR_ACTION_W: f32 = 148.0;
+    /// A divider in the toolbar.
+    pub const TOOLBAR_DIVIDER_H: f32 = 26.0;
     /// The rail.
     pub const RAIL_W: f32 = 68.0;
     /// A page button of the rail.
-    pub const RAIL_ITEM_H: f32 = 56.0;
-    /// The status bar.
-    pub const STATUS_H: f32 = 24.0;
-    /// The wordmark's height in the toolbar.
-    pub const WORDMARK_H: f32 = 26.0;
+    pub const RAIL_ITEM_H: f32 = 46.0;
+    /// A page button of the rail, across.
+    pub const RAIL_ITEM_W: f32 = 60.0;
+    /// The footer.
+    pub const FOOTER_H: f32 = 28.0;
+    /// The old name of [`FOOTER_H`], for the window until it moves to it.
+    pub const STATUS_H: f32 = FOOTER_H;
+    /// The Industries wordmark in the footer.
+    pub const FOOTER_MARK_H: f32 = 22.0;
+    /// The narrowest status line of the footer before it hides segments.
+    pub const FOOTER_MESSAGE_MIN: f32 = 360.0;
+    /// A divider in the footer.
+    pub const FOOTER_DIVIDER_H: f32 = 16.0;
+    /// A pane's title row with its 1 px rule.
+    pub const PANE_HEAD_H: f32 = 27.0;
+    /// A tab.
+    pub const TAB_H: f32 = 24.0;
+    /// A fact row of the Tape pane.
+    pub const ROW_FACT: f32 = 18.0;
+    /// The device drawing's box at zoom 1, without its glow.
+    pub const DEVICE: [f32; 2] = [392.0, 336.0];
+    /// How far the device texture reaches left of and above its box, at zoom 1.
+    pub const DEVICE_BLEED: [f32; 2] = [12.0, 14.0];
+    /// The top left of the screen opening in the device box, at zoom 1.
+    pub const DEVICE_SCREEN_AT: [f32; 2] = [36.0, 30.0];
+    /// The row of controls under the device.
+    pub const SIM_ROW_W: f32 = 380.0;
+    /// The tape drawing's box in the Tape pane, without its glow.
+    pub const TAPE_ART: [f32; 2] = [120.0, 76.0];
+    /// The label field of the tape drawing, in that box.
+    pub const TAPE_LABEL: [f32; 2] = [81.0, 18.0];
+    /// The top left of the tape's label field, in that box.
+    pub const TAPE_LABEL_AT: [f32; 2] = [10.0, 42.0];
+    /// The card drawing's box, without its glow.
+    pub const CARD_ART: [f32; 2] = [120.0, 160.0];
     /// One icon.
     pub const ICON: f32 = 16.0;
     /// The editor gutter.
@@ -232,9 +290,9 @@ pub mod size {
     /// Indent of one tree level.
     pub const TREE_INDENT: f32 = 14.0;
     /// The project dropdown in the toolbar.
-    pub const PROJECT_DROPDOWN_W: f32 = 170.0;
+    pub const PROJECT_DROPDOWN_W: f32 = 190.0;
     /// The target dropdown in the toolbar.
-    pub const TARGET_DROPDOWN_W: f32 = 190.0;
+    pub const TARGET_DROPDOWN_W: f32 = 200.0;
     /// A menu popup.
     pub const MENU_POPUP_W: f32 = 300.0;
     /// The find field.
@@ -252,17 +310,21 @@ pub mod size {
     /// Simulator pane, default and narrowest: it only grows.
     pub const SIM_W: f32 = 408.0;
     /// Tape pane.
-    pub const TAPE_H: f32 = 122.0;
+    pub const TAPE_H: f32 = 118.0;
     /// Bottom pane, default.
-    pub const BOTTOM_H: f32 = 168.0;
+    pub const BOTTOM_H: f32 = 152.0;
     /// Bottom pane, lowest. The highest is half the page.
     pub const BOTTOM_MIN: f32 = 120.0;
     /// A divider strip, and the step of its arrow keys.
     pub const DIVIDER: f32 = 8.0;
     /// The page margin, across: half a gap.
     pub const PAGE_MARGIN_ACROSS: f32 = GAP_ACROSS / 2.0;
-    /// The page margin, down: half a gap.
-    pub const PAGE_MARGIN_DOWN: f32 = GAP_DOWN / 2.0;
+    /// The page margin at the top and the bottom.
+    pub const PAGE_MARGIN_DOWN: f32 = 6.0;
+    /// The page margin after the rail.
+    pub const PAGE_MARGIN_LEFT: f32 = 4.0;
+    /// The page margin at the right.
+    pub const PAGE_MARGIN_RIGHT: f32 = 8.0;
 }
 
 /// Radii and strokes.
@@ -271,6 +333,8 @@ pub mod stroke {
     pub const PANE_CLIP: f32 = 9.0;
     /// The radius of a control.
     pub const CONTROL_RADIUS: u8 = 2;
+    /// The radius of a pane.
+    pub const PANE_RADIUS: u8 = 4;
     /// A frame.
     pub const FRAME: f32 = 1.0;
     /// The focus ring, and its distance from the control.
@@ -309,6 +373,8 @@ pub mod text {
     pub const SMALL: f32 = 12.0;
     /// Tiny text: column heads only.
     pub const TINY: f32 = 11.0;
+    /// The space added after each cell of a tracked label, in font pixels.
+    pub const LABEL_TRACKING: f32 = 2.0;
     /// Labels fall back to Plex Mono bold when the nearest whole Spleen
     /// scale is off by more than this part of the display scale.
     pub const LABEL_SCALE_TOLERANCE: f32 = 0.12;
@@ -321,11 +387,27 @@ pub mod effect {
     /// Scanline period in device pixels.
     pub const SCANLINE_PERIOD: usize = 3;
     /// Halo blur.
-    pub const HALO_BLUR: u8 = 10;
+    pub const HALO_BLUR: u8 = 12;
     /// Halo spread.
-    pub const HALO_SPREAD: u8 = 1;
-    /// Halo alpha, out of 1, of `bright`.
-    pub const HALO_ALPHA: f32 = 0.30;
+    pub const HALO_SPREAD: u8 = 0;
+    /// Halo alpha at Soft, out of 1, of `bright`.
+    pub const HALO_ALPHA: f32 = 0.38;
+    /// Halo alpha at Full, out of 1, of `bright`.
+    pub const HALO_ALPHA_FULL: f32 = 0.55;
+    /// The focused pane's halo, as a part of the halo alpha.
+    pub const HALO_PANE: f32 = 0.7;
+    /// A pressed filled button moves this far towards `ink`.
+    pub const PRESS_DARKEN: f32 = 0.22;
+    /// The label halo's tint at Soft, out of 1, of the label colour.
+    pub const LABEL_HALO_SOFT: f32 = 0.30;
+    /// The label halo's tint at Full.
+    pub const LABEL_HALO_FULL: f32 = 0.40;
+    /// The label halo's Gaussian, in font pixels.
+    pub const LABEL_HALO_SIGMA: f32 = 1.5;
+    /// The room around each glyph of the label halo atlas, in font pixels.
+    pub const LABEL_HALO_PAD: usize = 4;
+    /// Corner shading at Full, at the far corner, out of 1, black.
+    pub const CORNER_SHADE_MAX: f32 = 0.18;
     /// The scrim under a dialog, out of 1, black.
     pub const SCRIM: f32 = 0.62;
     /// A hovered filled button gets this much lighter.
@@ -473,6 +555,25 @@ impl Theme {
         lighten(c, effect::HOVER_LIGHTEN)
     }
 
+    /// A filled button's colour when pressed: moved towards `ink`.
+    pub fn pressed(&self, c: Color32) -> Color32 {
+        mix(c, self.palette().ink, effect::PRESS_DARKEN)
+    }
+
+    /// The focused pane's halo: the halo at part of its strength.
+    pub fn pane_halo(&self) -> Option<Shadow> {
+        self.halo().map(|mut h| {
+            h.color = self.palette().bright.gamma_multiply(effect::HALO_ALPHA * effect::HALO_PANE);
+            h
+        })
+    }
+
+    /// The tint of a bright caps label's halo, out of 1, or None with
+    /// effects off.
+    pub fn label_halo(&self) -> Option<f32> {
+        (self.effects() == Effects::Soft).then_some(effect::LABEL_HALO_SOFT)
+    }
+
     /// The fill under an error row: 12 percent `alarm` over `pane`.
     pub fn error_row(&self) -> Color32 {
         let p = self.palette();
@@ -605,7 +706,45 @@ mod tests {
             assert!(ratio(p.ink, p.bright) >= 4.5);
             assert!(ratio(p.frame, p.pane) >= 3.0);
             assert!(ratio(p.frame, p.select) >= 3.0);
+            assert!(ratio(p.text, p.raised) >= 4.5);
+            assert!(ratio(p.frame, p.raised) >= 3.0);
+            let pressed = mix(p.bright, p.ink, effect::PRESS_DARKEN);
+            assert!(ratio(p.ink, pressed) >= 4.5);
+            assert!(ratio(p.bright, mix(p.pane, p.bright, 0.29)) >= 4.5);
         }
+    }
+
+    /// The pressed fill is the colour moved towards `ink`, and darker.
+    #[test]
+    fn pressed_moves_towards_ink() {
+        let t = Theme::default();
+        let p = t.palette();
+        assert_eq!(t.pressed(p.bright), mix(p.bright, p.ink, effect::PRESS_DARKEN));
+        assert!(luminance(t.pressed(p.bright)) < luminance(p.bright));
+    }
+
+    #[test]
+    fn halos_go_with_effects_off() {
+        let on = Theme::default();
+        let off = Theme {
+            effects: Effects::Off,
+            ..on
+        };
+        assert!(on.pane_halo().is_some() && on.label_halo().is_some());
+        assert!(off.pane_halo().is_none() && off.label_halo().is_none());
+        let (h, f) = (on.halo().map(|s| s.color), on.pane_halo().map(|s| s.color));
+        assert!(f.zip(h).is_some_and(|(f, h)| f.a() < h.a()));
+    }
+
+    /// The colour tables hold the values of the design, spot checked.
+    #[test]
+    fn palettes_hold_the_new_values() {
+        assert_eq!(GREEN.ground, hex(0x05140a));
+        assert_eq!(GREEN.bright, hex(0x5aff7f));
+        assert_eq!(AMBER.frame, hex(0xcc8d2e));
+        assert_eq!(BLUE.pane, hex(0x091a27));
+        assert_eq!(WHITE.select, hex(0x303939));
+        assert_eq!(HIGH_LEGIBILITY.frame, hex(0x8a978f));
     }
 
     #[test]
