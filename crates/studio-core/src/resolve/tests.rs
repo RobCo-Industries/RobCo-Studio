@@ -575,6 +575,16 @@ fn resolve_index_entries() {
         ),
         ("\"root\": \"\"}", "\"root\": 0}", "tools[1].archives"),
         (
+            "\"root\": \"\"}",
+            "\"root\": \"../side\"}",
+            "tools[1].archives.linux-x64.root",
+        ),
+        (
+            "\"root\": \"\"}",
+            "\"root\": \"/abs\"}",
+            "tools[1].archives.linux-x64.root",
+        ),
+        (
             "{\"name\": \"gcc\", \"version\": \"15.2.1-1.1\"},",
             "",
             "packages[0].tools",

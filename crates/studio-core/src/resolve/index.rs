@@ -187,6 +187,13 @@ pub fn is_archive_path(s: &str) -> bool {
         && s.split('/').all(|c| !matches!(c, "" | "." | ".."))
 }
 
+/// The form of a tool archive `root`: empty, or a path by the rules of
+/// "The archive". The spec does not state the form of `root` yet; this is
+/// the rule until it does. The install checks it again before use.
+pub fn is_root(s: &str) -> bool {
+    s.is_empty() || is_archive_path(s)
+}
+
 /// Reads a `requires` array, shared with `sdk.json`. `err` builds the error
 /// for a place and a reason. An absent array is empty.
 pub(super) fn requires(
@@ -400,7 +407,7 @@ fn tool(v: &Value, at: &str, source: IndexSource) -> Result<Option<IndexTool>, E
                 url: url(a, &here, source)?.to_owned(),
                 size: uint(a, &here, "size")?,
                 sha256: formed(a, &here, "sha256", is_sha256)?.to_owned(),
-                root: string(a, &here, "root")?.to_owned(),
+                root: formed(a, &here, "root", is_root)?.to_owned(),
             },
         );
     }
