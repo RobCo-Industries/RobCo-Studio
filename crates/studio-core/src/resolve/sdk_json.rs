@@ -353,6 +353,14 @@ pub fn parse(bytes: &[u8]) -> Result<SdkJson, Error> {
         }
         files.push(f);
     }
+    // The folders above the files count too, by the archive rules: `A/x`
+    // and `a/y` would share one folder on a file system that folds case.
+    if let Some((a, b)) = super::case_clash(files.iter().map(|f| (f.path.as_str(), true))) {
+        return Err(bad(
+            &format!("files: path = {b:?}"),
+            &format!("differs only in case from {a:?}: the archive allows no such pair"),
+        ));
+    }
 
     Ok(SdkJson {
         name,

@@ -255,6 +255,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tape"
       - name: robco build
         run: cargo test --locked -p robco --test build
+      - name: robco new, then robco build in the new project
+        run: cargo test --locked -p robco --test new new_the_new_project_builds
       - name: rimg.py verify passes
         if: runner.os == 'Linux'
         run: python -I external/robco-core/tools/rimg.py verify "$RUNNER_TEMP/tape/TINY.HTP"
@@ -278,6 +280,104 @@ jobs:
           sha256sum tapes/*/TINY.HTP | tee sums.txt
           test "$(wc -l < sums.txt)" -eq 3
           test "$(cut -d' ' -f1 sums.txt | sort -u | wc -l)" -eq 1
+
+  # Pip-OS's sdk/examples/tape built by Make and by robco build, in the
+  # suite's container, with the xPack compiler the package names: the two
+  # tapes must be equal, and one raw image sealed by rimg.py and by the C
+  # sealer must be equal. tools/agreement.sh does the work and runs on a
+  # laptop too. A second run with the container's own compiler must fail.
+  agreement:
+    needs: pipos-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/robco-industries/robco-ci:ba6372158e4b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      PIPOS_COMMIT: 93a07d266be43feab3e96e186d40c8b536f54bae
+      XPACK_RELEASE: 15.2.1-1.1
+      XPACK_SHA256: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6
+      RUSTUP_VERSION: 1.28.2
+      RUSTUP_SHA256: 20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: studio
+      # Check 5 must be able to fail: one changed byte gives exit 2.
+      - name: Tests of the agreement script
+        working-directory: studio
+        run: tools/test_agreement.sh
+      # The same commit the package was built from, so both builds read
+      # one crt0.S and one set of headers.
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/Pip-OS
+          ref: ${{ env.PIPOS_COMMIT }}
+          submodules: recursive
+          persist-credentials: false
+          path: pipos
+      - uses: actions/download-artifact@v4
+        with:
+          name: pipos-package
+          path: ${{ runner.temp }}/pkg
+      - name: xPack arm-none-eabi-gcc
+        run: |
+          name="xpack-arm-none-eabi-gcc-$XPACK_RELEASE"
+          f="$name-linux-x64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/gcc"
+          python3 -I -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+            "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v$XPACK_RELEASE/$f" "$RUNNER_TEMP/gcc/$f"
+          echo "$XPACK_SHA256  $RUNNER_TEMP/gcc/$f" | sha256sum -c -
+          tar -C "$RUNNER_TEMP/gcc" -xzf "$RUNNER_TEMP/gcc/$f"
+          {
+            echo "AGREE_GCC_ARCHIVE=$RUNNER_TEMP/gcc/$f"
+            echo "AGREE_GCC_ROOT=$name"
+            echo "PIPOS_ZIP=$(ls "$RUNNER_TEMP"/pkg/pipos-*.zip)"
+            echo "PIPOS_DIR=$GITHUB_WORKSPACE/pipos"
+          } >> "$GITHUB_ENV"
+      # The container has no Rust: rustup-init at a pinned release, checked
+      # by its SHA-256, then the toolchain rust-toolchain.toml pins.
+      - name: Rust
+        working-directory: studio
+        run: |
+          mkdir -p "$RUNNER_TEMP/rustup"
+          f="$RUNNER_TEMP/rustup/rustup-init"
+          curl -fsSLo "$f" "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/x86_64-unknown-linux-gnu/rustup-init"
+          echo "$RUSTUP_SHA256  $f" | sha256sum -c -
+          chmod +x "$f"
+          "$f" -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install
+      - name: Make and robco build agree
+        working-directory: studio
+        run: |
+          AGREE_GCC_RELEASE="$XPACK_RELEASE" OUT="$RUNNER_TEMP/agreement/xpack" tools/agreement.sh
+      # The container's own arm-none-eabi-gcc in place of xPack for the
+      # Make build: the run must fail at check 3, exit 2, because the gcc
+      # program differs from the archive's, and its two tapes must differ.
+      - name: The container's compiler fails the check
+        working-directory: studio
+        run: |
+          out="$RUNNER_TEMP/agreement/container-gcc"
+          set +e
+          CROSS=arm-none-eabi- OUT="$out" tools/agreement.sh 2>"$RUNNER_TEMP/container-gcc.err"
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/container-gcc.err"
+          test "$code" -eq 2
+          grep -q '^agreement: FAILED: 3. gcc: the gcc program Make ran has SHA-256 ' "$RUNNER_TEMP/container-gcc.err"
+          test "$(sed -n 1p "$out/hashes.txt" | cut -d' ' -f1)" != "$(sed -n 2p "$out/hashes.txt" | cut -d' ' -f1)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agreement-hashes
+          path: ${{ runner.temp }}/agreement/*/hashes.txt
+          if-no-files-found: error
 
   docs:
     runs-on: ubuntu-latest

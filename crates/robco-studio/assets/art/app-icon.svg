@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="ai-t" style="color:#5aff7f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: Built from the atom and the letter R traced from a reference picture supplied by the project owner. The tile is drawn for Studio. -->
+  <title id="ai-t">RobCo Studio application icon</title>
+  <!-- The application icon: the R of the Studio wordmark inside the orbits of the atom mark, on a dark tile.
+       The R and the orbits are the shapes of wordmark.svg and atom.svg. Traced from a reference picture supplied by the project owner.
+       The tile and its frame were drawn for Studio. No font is used.
+       The tile is 824 by 824 with a 186 radius, centred on a 1024 canvas, which is the grid macOS expects.
+       Groups: "icon-ground" is the tile. "halo" is the baked glow. "orbits" and "letter" are the mark.
+       "small" is the mark for 16, 24 and 32 px: the letter alone, larger, on the same tile. Show "small" and hide
+       "orbits", "letter" and "halo" when you export those sizes.
+       Export as PNG: 16, 32, 64, 128, 256, 512 and 1024 for the macOS icon set, 16, 24, 32, 48, 64 and 256 for
+       the Windows icon file, 16, 24, 32, 48, 64, 128, 256 and 512 for the Linux icon theme, which also takes this file.
+       The colours are the green scheme's and do not follow the window's scheme: ground #091d10, lines #5aff7f.
+       Licence: same as the repository that ships it. Provenance: the letter and the orbits are traced from a reference
+       picture supplied by the project owner, the tile is drawn for Studio, 2026-11-25. -->
+  <defs>
+    <filter id="ai-blur" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="16"/></filter>
+    <radialGradient id="ai-lit" cx=".5" cy=".46" r=".62">
+      <stop offset="0" stop-color="#164524"/><stop offset=".6" stop-color="#091d10"/><stop offset="1" stop-color="#05140a"/>
+    </radialGradient>
+    <clipPath id="ai-tile"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
+    <path id="ai-r" fill-rule="evenodd" d="M298.2 728L438.8 320.7C443.5 307 458.4 296 472 296H683.8C716.5 296 733.8 322.5 722.5 355.2L675.5 491.3C668.4 511.9 651.1 531 629.8 541.8L585.2 564.3L610.7 728H498.3L473.1 526.7L403.5 728H298.2ZM610.9 367.1H537.2L494.8 490H568.5L610.9 367.1Z"/>
+    <path id="ai-r-back" d="M298.2 728L438.8 320.7C443.5 307 458.4 296 472 296H683.8C716.5 296 733.8 322.5 722.5 355.2L675.5 491.3C668.4 511.9 651.1 531 629.8 541.8L585.2 564.3L610.7 728H498.3L473.1 526.7L403.5 728H298.2Z"/>
+    <path id="ai-r-small" fill-rule="evenodd" d="M215 812L410.3 246.2C416.9 227.3 437.5 212 456.4 212H750.6C796 212 820.1 248.8 804.4 294.2L739.1 483.2C729.2 511.8 705.2 538.4 675.6 553.3L613.6 584.7L649.1 812H493L457.9 532.4L361.4 812H215ZM649.4 310.7H547L488.1 481.4H590.4L649.4 310.7Z"/>
+    <g id="ai-orbits" fill="none"><ellipse cx="512" cy="512" rx="340" ry="98.5" transform="rotate(90 512 512)"/><ellipse cx="512" cy="512" rx="340" ry="98.5" transform="rotate(28.4 512 512)"/><ellipse cx="512" cy="512" rx="340" ry="98.5" transform="rotate(-28.4 512 512)"/></g>
+    <g id="ai-dots" stroke="none"><circle cx="750.8" cy="695.5" r="28.2"/><circle cx="232.5" cy="419.3" r="17.4"/><circle cx="323.2" cy="334.2" r="19.2"/><circle cx="777" cy="330.3" r="16.9"/></g>
+  </defs>
+  <g class="icon-ground">
+    <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#ai-lit)"/>
+    <rect x="118" y="118" width="788" height="788" rx="170" fill="none" stroke="currentColor" stroke-width="10" opacity=".9"/>
+    <rect x="140" y="140" width="744" height="744" rx="150" fill="none" stroke="currentColor" stroke-width="3" opacity=".35"/>
+  </g>
+  <g clip-path="url(#ai-tile)">
+    <g class="halo" opacity=".55" filter="url(#ai-blur)">
+      <use href="#ai-orbits" stroke="currentColor" stroke-width="40"/>
+      <use href="#ai-r" fill="currentColor"/>
+    </g>
+    <g class="orbits">
+      <use href="#ai-orbits" stroke="currentColor" stroke-width="21.6"/>
+      <use href="#ai-dots" fill="currentColor"/>
+    </g>
+    <g class="letter">
+      <use href="#ai-r-back" fill="#091d10" stroke="#091d10" stroke-width="44" stroke-linejoin="round"/>
+      <use href="#ai-r" fill="currentColor"/>
+    </g>
+    <g class="small" display="none">
+      <use href="#ai-r-small" fill="currentColor"/>
+    </g>
+  </g>
+</svg>

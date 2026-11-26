@@ -1051,3 +1051,17 @@ fn plan_flags_refuse_a_flag_through_parse() {
         );
     }
 }
+
+#[test]
+fn plan_a_name_with_a_leading_dash_is_never_an_option() {
+    let m = manifest(&MANIFEST.replace("name = \"PIPES\"", "name = \"-P\""));
+    assert_eq!(m.project.name, "-P");
+    let p = match make(&m, FLAGS, Host::Unix) {
+        Ok(p) => p,
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(p.elf, "build/-P.elf");
+    for c in &p.commands {
+        assert!(!c.args.iter().any(|a| a.starts_with("-P")), "{:?}", c.args);
+    }
+}

@@ -17,6 +17,13 @@
 //!   across systems.
 //! - `ROBCO_TEST_REQUIRE_BUILD`: when set to 1, a missing variable fails
 //!   the full build test in place of skipping it. CI sets it.
+//! - `ROBCO_TEST_PROJECT` and `ROBCO_TEST_PROJECT_OUT`: when both are set,
+//!   one more test builds the project folder `ROBCO_TEST_PROJECT`, with
+//!   its own `robco.toml`, against the same fixture index. It writes the
+//!   tape and the `result` line, as `result.json`, into the folder
+//!   `ROBCO_TEST_PROJECT_OUT`, with `gcc.sha256`, the SHA-256 of the
+//!   `gcc` program it installed. `tools/agreement.sh` uses it to compare a
+//!   tape built by Make with the one `robco build` gives.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -501,6 +508,63 @@ fn build_a_tape_from_a_fixture_index() {
         assert_eq!(lines(&o).pop().unwrap()["sources"], json!(["src/main.c"]));
         assert_eq!(fs::read(f.tape()).unwrap(), tape);
     }
+}
+
+/// Copies the files of folder `from` into `to`, folders included.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let dest = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_tree(&e.path(), &dest);
+        } else {
+            fs::copy(e.path(), dest).unwrap();
+        }
+    }
+}
+
+#[test]
+fn build_the_project_the_environment_names() {
+    let (Some(project), Some(out)) = (
+        std::env::var_os("ROBCO_TEST_PROJECT"),
+        std::env::var_os("ROBCO_TEST_PROJECT_OUT"),
+    ) else {
+        return;
+    };
+    let pkg = std::env::var_os("ROBCO_TEST_PIPOS").expect("ROBCO_TEST_PIPOS with a project");
+    let gcc = std::env::var_os("ROBCO_TEST_GCC").expect("ROBCO_TEST_GCC with a project");
+    let root = std::env::var("ROBCO_TEST_GCC_ROOT").unwrap_or_default();
+    let f = Fixture::new("project");
+    fs::remove_dir_all(f.proj()).unwrap();
+    copy_tree(std::path::Path::new(&project), &f.proj());
+    f.index(&fs::read(pkg).unwrap(), &fs::read(gcc).unwrap(), &root);
+    let o = f.robco(&["build", "--index", "../index.json", "--json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    let result = lines(&o).pop().unwrap();
+    assert_eq!(result["kind"], "result");
+    let tape_rel = result["tape"].as_str().unwrap();
+    let tape = fs::read(f.proj().join(tape_rel)).unwrap();
+    let out = PathBuf::from(out);
+    fs::create_dir_all(&out).unwrap();
+    let name = std::path::Path::new(tape_rel).file_name().unwrap();
+    fs::write(out.join(name), &tape).unwrap();
+    fs::write(out.join("result.json"), format!("{result}\n")).unwrap();
+    // The gcc program robco build installed and ran, for check 3 of
+    // tools/agreement.sh: its SHA-256, and the release it was installed as.
+    let release = result["gcc"].as_str().unwrap();
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    let prog = f.cache().join(format!(
+        "tools/gcc/{release}/{}/bin/arm-none-eabi-gcc{exe}",
+        host()
+    ));
+    let hash = sha256_hex(&fs::read(&prog).unwrap());
+    fs::write(out.join("gcc.sha256"), format!("{hash}\n")).unwrap();
 }
 
 /// Makes a link at `at` under the fixture's folder that points to `target`.

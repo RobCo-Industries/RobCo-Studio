@@ -132,7 +132,7 @@ For Studio's own QEMU archive, the `NOTICE` and `licenses/` folder go with the c
 
 ## The window's toolkit and fonts
 
-`robco-studio` links `eframe` and `egui` 0.37.0, MIT OR Apache-2.0, `resvg` 0.45, Apache-2.0 OR MIT, and on macOS `muda` 0.17, Apache-2.0 OR MIT. Every crate they bring is under a licence in `deny.toml`. Two build on Windows only: `clipboard-win` 5.4.3 and `error-code` 3.4.0, both BSL-1.0, which the clipboard feature needs. The Boost Software License is permissive and compatible with GPL-3.0-or-later, so `deny.toml` allows it.
+`robco-studio` links `eframe` and `egui` 0.37.0, MIT OR Apache-2.0, `resvg` 0.45, Apache-2.0 OR MIT, `rfd` 0.18, MIT, for the folder dialog, and on macOS `muda` 0.17, Apache-2.0 OR MIT. `rfd` is built without its default features and with `xdg-portal` only: on Linux it loads `libdbus` at run time and falls back to `zenity`, so the build needs no GTK and no D-Bus headers. Its own crates are MIT, or MIT, Apache-2.0 and Zlib to choose from; the only crate new to the lock file besides `rfd` is `objc2-uniform-type-identifiers` 0.3.2, Zlib OR Apache-2.0 OR MIT, on macOS. MIT and these choices are compatible with GPL-3.0-or-later. Every crate they bring is under a licence in `deny.toml`. Two build on Windows only: `clipboard-win` 5.4.3 and `error-code` 3.4.0, both BSL-1.0, which the clipboard feature needs. The Boost Software License is permissive and compatible with GPL-3.0-or-later, so `deny.toml` allows it.
 
 The window bundles two fonts. Each comes from its official release, checked against the SHA-256 GitHub publishes for the release file.
 

@@ -120,7 +120,7 @@ The command. `main.rs` calls the library's `run`, which the program's tests also
 
 Each part is a module of its own:
 
-- `args` reads the command line by hand. Every wrong form gives `usage`.
+- `args` reads the command line by hand. Every wrong form gives `usage`. After `--` every argument is positional, so a name such as `-P` is given as `robco new holotape-c -- -P`.
 - `cache` finds the cache folder, with `ROBCO_CACHE` first.
 - `index` sorts a `--index` location and reads the index, from a local file or from an `https://` URL through `studio-net`. A download that fails, or an index longer than 8 MiB, gives `index: read`.
 - `net` starts TLS on the first download only, and sends each archive `url` to `studio-net` or, for a relative path in a local index, to the index folder.
@@ -146,35 +146,159 @@ The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and noth
 
 | Module | Holds |
 |---|---|
-| `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, effects Off and Soft. The only module that may hold a colour or a size literal. |
-| `kit` | The thin layer: pane, buttons, tabs, tree row, text field, dropdown, menu row, banner, empty state, divider, status segment. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
-| `art` | The wordmark and the icons, rasterised from their SVG files at start with `resvg`, and the Spleen 8x16 label atlas built from its BDF file. |
-| `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. |
-| `native_menu` | macOS only: the system menu bar, through `muda`. |
+| `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, the screen levels and their strengths. The only module that may hold a colour or a size literal. |
+| `kit` | The thin layer: pane, filled and outlined buttons, tabs, segmented control, zoom group, tree row, text field, dropdown, menu row, banner, empty state, divider, footer segment. A menu row can carry a mark: a check item or a radio item. A marked row shows a tick at its left in its own text colour. Every row keeps that indent, so labels line up; an unavailable row without a mark shows the lock there. A screen reader hears a menu item check box or radio item, checked or not. The segmented control also serves as a tab list. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
+| `art` | The drawings and the icons, rasterised from their SVG files with `resvg`, the Spleen 8x16 label atlas built from its BDF file, its blurred halo atlas, and the application icon. |
+| `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. It says which items have a state: a toggle, or one of a set of choices. That match names every command, as `app::verdict` does, so a new command does not compile until it says whether it has a state. `native_items` turns the model and the program's state into a flat list of native items, each plain or check, with its title, enabled state, mark and shortcut. |
+| `native_menu` | macOS only: the system menu bar, through `muda`. It builds and syncs its items from `native_items` alone. An item with a state is a `muda` check item: the pages, Show or hide files, Show or hide the bottom pane, Compact header, the phosphors, the five Screen levels, High legibility and the three scales. Adjust is plain. Items of a group sit in a submenu, as in the window. A set of choices marks the chosen one. After each frame the sync reads each mark back from `muda` and sets it from the model, so a click that `muda` flipped, or a command the program refused, ends with the model's mark. |
+| `chooser` | The folder chooser behind File, Open folder: a small trait, the system dialog through `rfd`, and a fake in the tests. |
 | `project` | The open folder, its `robco.toml` read by `studio-core`, and the rows of the Files tree. |
 | `document` | One open file: bytes to text and back, LF in the editor, CRLF kept on save. |
 | `editor` | Tabs, the text widget per document, the gutter, colours for C, find and replace, and the one question about unsaved edits. |
 | `c_lex` | A token pass over C for its colours. |
-| `app` | The window: regions, pages, the panes of the Project page, focus with F6, the dialog. |
+| `screen` | The rules of the screen levels, with no graphics: the level at start, which levels can be picked, when a frame is asked for, how persistence fades, and the curve the pointer is mapped through. |
+| `pass` | The screen pass: an egui plugin, a second `egui_wgpu::Renderer` and the WGSL passes of `screen.wgsl`. |
+| `app` | The window: its strips, pages, the panes of the Project page, focus with F6, the save question and the screen's Adjust dialog. |
+
+The window is cut into strips, top to bottom:
+
+```mermaid
+flowchart TB
+    H["Header: atom, wordmark, caps line, skyline. 60 high, 36 compact"]
+    M["Menu row: caps menu names. Absent on macOS, where the system bar has the menus"]
+    T["Toolbar: pages control, TARGET dropdown, Build, Run, Debug, Write card"]
+    P["Page, from margin to margin"]
+    F["Footer: Industries mark, division, status line, SDK, Sim, Link, Position, Settings, Help"]
+    H --> M --> T --> P --> F
+```
+
+- The header is tall when the window's inner height is 720 points or more, and compact under that or when View, Compact header is on. It takes no focus; a screen reader gets one image named "RobCo Studio".
+- Panes are rounded, with a title row and a rule. Tabs stand on the rule; the active tab, the chosen part of a segmented control and the current page are filled in `bright`, with a halo at Soft.
+- The simulator pane shows the device at 62 percent with the empty state in its screen opening while no machine runs, then the honest line and Stop, Reset, Fit and the zoom group. The Simulator menu's scale items set the same step. A step that does not fit the pane is not available, in the pane's Larger button, in the window's menu and in the macOS menu bar alike, with the same reason; one function answers for all three. The room comes from the page layout of each frame, whichever page shows, so a resize on the Card, Device or SDK page updates the menus too. When a resize leaves no room for the chosen step, it drops at once to the largest step that fits, and the status line says so once.
+- The pages control is the toolbar's first control: PROJECT, CARD, DEVICE and SDK in one outline. A screen reader gets a tab list named "Pages" with one tab per page, the current one selected. It is one stop in the Tab order, and the left and right arrows move between pages. The page shortcuts and the View menu move its selection.
+- The toolbar holds no project control. A divider stands after the pages control and another before the four actions, which share one width. At 1280 points the whole toolbar fits with room to spare.
+- The open project is the current document. The window title gives its name, then the application's, as in "PIPES - RobCo Studio", and only "RobCo Studio" with no project. File, Open folder, Cmd or Ctrl+O, opens another one through the system's folder dialog. The dialog starts in the parent of the open project, or the home folder with no project. A project's folder is made absolute when it opens, through links, so a project opened as `.` or `my-project` has its folder's name and a parent for the dialog. A chosen folder goes through the same path as one given on the command line, with the same messages. Documents with edits are asked about first, one by one, with the question quitting asks; Cancel keeps the project and its edits. Cancel in the dialog changes nothing. While the dialog is open nothing in the window acts. One rule covers every area, the root interface, the Adjust dialog, the window's questions, menus, dropdown lists and tooltips: the screen plugin's input hook holds back every pointer, key, text and screen reader event before egui sees it, from the frame after the dialog is asked for until it answers. On the first frame held, the hook ends for egui everything it saw go down: touches are cancelled, keys are released, and each pointer button is released where the pointer last was, after a move far off the window and back. egui then counts the press as moved too far for a click, so no widget is clicked, and a drag under way stops where it was. The pointer then leaves, so the moves make no drag delta. A key released this way has its repeats dropped, the tail of the old press, so a key held across the dialog does not act again by repeating. A press with no repeat flag is a new press: it acts at once and ends the mark, as does the real release, which is dropped since egui has the key up. The real release may go to the system's dialog and never come, so the mark never waits for it. Losing focus ends every mark. A touch cancelled this way has its moves and its end dropped until a new touch starts. A pointer button needs no mark: its real release after the dialog finds nothing pressed in egui, and a new press always passes. A menu or dropdown list open when the dialog opens is closed. The window also draws its whole interface disabled, under the scrim its own dialogs use, and the status line says a folder dialog is open. On Linux, where the window keeps drawing, the window can still be moved and repainted, but closing it is refused until the dialog answers. The Files tree has the project as its root row, open at first; closing it hides the tree. A folder without a valid `robco.toml` goes by its folder's name.
+- The bottom pane puts the log's filters in its tab row while the Log tab is on.
+- A long status line in the footer hides the division first, then Position, then ends in an ellipsis. Settings and Help hold the right end and never give way.
+- The status line holds one message with a level. Info and Success are plain news, then come Warning and Error. A new message takes the line when its level is the same or higher, or once the person has acted, by a key, a click or text, in a frame after the line showed the old one. Otherwise the new message is held: the line's level icon shows it as a tooltip until the next message takes the line. So at start a folder that fails to open keeps its error on the line, and the screen level's note waits under the icon. Every message goes through one setter, `Studio::say`.
+
+#### The screen
+
+View, Screen picks how the screen looks. The items are radio items, then a separator and Adjust, in the window's menu row and in the macOS menu bar alike. The level in use is marked: high legibility marks Off, and the level chosen at start by the adapter or reduce motion is marked from the first frame. When a slider of Adjust has moved and the level reads Custom, no level is marked. `Studio::checked` gives every mark, and `Studio::menu_mark` gives the window's menu the same state the macOS bar gets from `native_items`.
+
+| Level | What draws | Moves |
+|---|---|---|
+| Off | Nothing extra | No |
+| Soft | The still overlays: the scanline quad, rectangle halos, label halos, the drawings' baked halo groups. No pass. | No |
+| Still | The pass: bloom 0.35, vignette 0.50, scanlines 0.30, curvature 0.12 | No |
+| Live | Still, with persistence 0.50, noise 0.10, flicker 0.20, a rolling band 0.30, and drifting scanlines | Yes |
+| Arcade | Everything strong, with a shadow mask 0.30 and chromatic aberration 0.20 | Yes |
+
+Adjust opens a dialog with one slider for each of the ten strengths, the frame rate, 15, 30 or 60 a second, and Reset back to the level's own numbers. A moved slider makes the level read "Custom". The choice lasts for the session. Adjust is modal, under the scrim: the window behind it stays in view and takes no click. The table below says which commands act over it.
+
+The window shows at most one dialog of its own. One function, `Studio::front`, says what is in front: the folder chooser, a question, Adjust or nothing. The dialogs, the scrim, the keys and the menus' availability all ask it. The chooser beats everything. A question beats Adjust: when Quit or Open folder raises one while Adjust is open, Adjust is put aside, neither drawn nor taking input, and comes back as it was after the last answer. After a quit that ends there is no window; after a switch Adjust comes back, since the screen belongs to the window and not to the project. While a question is open, Adjust is not available, and the menus say "Answer the open question first." Escape acts on the dialog in front only.
+
+One table, `app::verdict`, says which command acts over what is in front. `Studio::run` asks it before anything else, for every source of a command: the window's menus, a shortcut, a toolbar or pane button, the macOS menu bar. `Studio::unavailable` asks it too, so the menus, the macOS menu bar and the tooltips show what `run` does. A refused command does nothing and puts its reason on the status line. A dialog's own controls are not commands: they act while their dialog is in front. The table matches every command by name, so a new command does not compile until its row is written.
+
+| In front | What acts | Every other command |
+| --- | --- | --- |
+| The folder chooser | Nothing. The hold drops the window's input already; the table refuses the macOS menu bar too. | "A folder dialog is open." |
+| A question | The question's own answers. A second Quit is refused too: it does not mean Cancel, so a Cmd+Q pressed twice by habit drops no answer. Escape and Cancel cancel. | "Answer the open question first." |
+| Adjust | Its own controls, the five Screen levels and Adjust, Quit, which raises its question in front, and Open folder, whose chooser holds Adjust as it is. A level resets the strengths to its own, so the sliders show its numbers; Soft and Off close Adjust. | "Close Adjust first." |
+| Nothing | Every command, by its own availability rules. | |
+
+No command changes the screen's settings while a question is in front, so Adjust comes back unchanged after it.
+
+Whenever something is in front, the window behind is inert to the pointer and to the keyboard alike, by one rule for every widget. The root interface is drawn disabled: egui then gives none of its widgets a click or a place in the Tab order. The scrim covers every layer behind from the pointer, so no click, hover or scroll wheel reaches them; it is disabled too, so it takes no focus. A disabled egui text field that already has focus still takes typed text, paste, IME and Tab, so the window also takes the focus away: when something comes to the front, the widget that had keyboard focus gives it up and the dialog's first control takes it, Cancel for a question and the first slider for Adjust. Tab then moves among the dialog's controls only, Escape closes the dialog, and the arrow keys move a focused slider. When the window is in front again, the focus goes back to the widget that had it. A text field gets back its whole state as it was, caret, selection and undo history: egui drops the selection of a field without focus and its undo history records that. Under the window's own dialogs the window keeps its normal look and only the scrim shades it; under the folder chooser it is also dimmed, as before. Dropped files are held by the chooser's hold and are not used elsewhere.
+
+`robco-studio --screen LEVEL` starts at a level, for pictures or a slow machine. A pass level on a machine without a real adapter still gives Soft.
+
+The draw path. eframe draws egui straight into the window's surface, with no step an application can reach between egui's picture and the screen. An egui plugin, public in egui 0.37, gives two:
+
+```mermaid
+flowchart TB
+    IN["Window input"] --> IH["Plugin input hook: input held while a folder dialog is open, pointer mapped back through the curve"]
+    IH --> UI["Studio::ui builds the frame; the kit draws no still glow at a pass level"]
+    UI --> END["egui end of pass: shapes in egui's own layer order, texture changes"]
+    END --> OH["Plugin output hook: copies the texture changes, tessellates the shapes, leaves one paint callback"]
+    OH --> EF["eframe paints: uploads textures, calls the callback's prepare"]
+    EF --> PR["prepare: second egui renderer draws into a texture, then bright, blur, blur, composite"]
+    PR --> PA["paint: one triangle into eframe's pass"]
+```
+
+- `pass::plug` adds the plugin before the first frame and puts the pass in eframe's callback resources. It is the only way in, for the window and the tests alike, and only its first call on a context counts: it asks the context for the plugin and returns when it is there. egui 0.37 keeps one plugin per type by itself, but a second pass would replace the first in eframe's resources and lose its textures; a render test plugs twice and compares the pictures. `Context::add_plugin`, `Plugin::input_hook` and `Plugin::output_hook`, `Context::tessellate`, `egui_wgpu::Callback::new_paint_callback` and `CallbackTrait::prepare` and `paint` are the calls it leans on.
+- The output hook sees the shapes after egui drained its layers in its own order, so menus, dropdown lists, tooltips and dialogs draw above the panes as they do without the pass.
+- The output hook copies every texture change for the pass's renderer: the font atlas, the Spleen label atlas, the icons, the drawings, the device and the scanline texture. With every strength at zero the pass draws what egui draws, which a render test checks.
+- The pass's renderer applies a frame's new textures before it draws the frame, and frees its dropped textures at the start of the next frame it draws, once eframe has submitted the frame that may still paint them. A texture made, painted and dropped in one frame is in that frame's picture; a render test checks it. A frame the pass does not draw, hidden, dropped or at Off or Soft, keeps its changes in the queue, and the next frame drawn takes them all once. The queue stays small while the pass does not draw. A set and a later free of the same texture cancel out. A full set replaces the earlier changes to its texture, and the partial changes after it stay in order. A partial change or a free of a texture the pass's renderer never had is dropped. Only the newest frame's changes stay as egui gave them, since that frame may be the one drawn. So an hour of level switches at Off holds the live drawings and the font atlas's changes, not one image per switch; a unit test runs that loop.
+- Each strength is 0 to 1. At zero the shader skips its work, and with bloom at zero the three bloom passes are not run.
+
+Rules of the screen, each with a test:
+
+- Live and Arcade ask for a frame at the chosen rate only while the window has focus. Off, Soft and Still ask for none, so an idle window costs nothing. Without focus the pass holds the still form of its last frame.
+- The animation clock counts only time spent drawing moving frames. The first frame after a pause adds nothing and goes on from the phase that was held: after focus comes back, after a level without motion, or after the folder dialog. One frame adds at most 1/15 of a second, one frame at the slowest rate, so a late frame or a hidden window moves the band and the scanlines one frame on, not by the time away. Persistence fades by the same clamped step, so a long pause neither wipes nor freezes the afterglow in one step.
+- Each strength alone above zero, the rest at zero, asks for frames as this table says:
+
+| Strength | Frames |
+|---|---|
+| bloom, vignette, curvature, mask, aberration | Never |
+| scanlines | Always at Live and Arcade, where they drift; never at Still |
+| noise, flicker, band | Always, at the frame rate while the window has focus |
+| persistence | After a change of the picture, until the afterglow fades |
+
+- Persistence is afterglow, so it needs frames only while the picture changes. A frame counts as a change unless the screen's own request for a frame was its only cause and it brought no input. After a change the screen asks for frames, with or without focus, until what is left of the old picture is below 1/256, one step of an 8-bit channel, then stops. At full persistence and 30 frames a second that takes under a second. So Persistence works at Still, and at Live with the other moving strengths at zero, and an idle window still costs nothing.
+- The afterglow's history is the pass's last output, and it counts only when the pass drew the frame just before, by egui's frame number, at the same size and display scale. After any frame the pass did not draw, Off or Soft, a dropped frame, a resize, a new display scale or the first frame, the frame keeps nothing of it. So an old picture never ghosts in when a moving level comes back. A frame whose first pass egui discards keeps its number and its afterglow. A render test checks both.
+- The textures of the drawings, the icons, the scanline texture and the device at each zoom step are made together for one display scale and one glow state, and hold the glow state they were made with. At the start of each frame the window compares it with what the current level needs and makes them again when they differ. A level changed by the menu, a shortcut, the Adjust dialog, high legibility or at start all end in that check. A frame is shaded by the level it was drawn for. At its start, in `prepare`, the window takes one value, `screen::Drawn`: the theme, with its level and glow state, and the strengths. Everything that draws the frame reads it: the kit's halos, the drawings, the scanline quad, the pass's strengths, and through the link the curve the input hook maps the next pointer through and the output hook maps the accessibility tree through. A menu command runs after `prepare`, so it changes the level for the next frame, and every command, from the window's menus, a shortcut or the macOS menu bar, asks for that frame. A slider of the Adjust dialog applies from the next frame the same way and asks for it. A render test switches Soft to Live and back in the middle of a frame and compares that frame and the next with plain frames of each level. A switch between Off and Soft, where nothing moves, is then drawn at once and not at the next input. The label halo atlas is made at every level; the kit decides at draw time whether to use it.
+- No double glow: at a pass level the kit draws no rectangle halo, no label halo and no scanline quad, and the drawings lose their halo groups. Bloom does that work. At Soft they are drawn as before.
+- The pointer is mapped back through the curve, so a click lands on what is drawn.
+- The accessibility tree follows the curve. The output hook replaces each node's bounds with the box around its four corners sent forward through the curve, so a screen reader's outline holds what is drawn. egui gives every node's bounds in window points, under one transform on the root node that scales to physical pixels; AccessKit reads bounds in the space of the nearest ancestor with a transform, so the bounds stay in window points. A node with its own transform is left as it is; egui sets none. With no curvature the tree is not touched.
+- Studio reads the adapter's kind at start. With a software adapter it starts in Soft, and the pass levels are not available, with the reason "This machine has no graphics adapter for the screen pass."
+- When the system asks for reduced motion, Studio starts in Still. Live and Arcade stay available.
+- High legibility forces Off and makes the other levels not available.
+- Persistence fades by the time between frames, so it fades the same at 15, 30 or 60 frames a second.
 
 Rules, each with a test:
 
 - No colour, float size or font outside `theme`. `tests/tokens.rs` searches the source.
-- Text is never dropped without asking. Closing a tab or quitting with edits opens one question, which names its document.
+- Text is never dropped without asking. Closing a tab, quitting or opening another project with edits asks one question per edited document, in turn, each naming its document. The answers are only collected: nothing is saved or dropped until the last one is in. Cancel at any question changes nothing. Once every answer is in, the documents answered Save are saved, one by one. Every save, from Save, Save all or these questions, passes one check right before it writes: the file's bytes against those of the last read or save. A file that changed, was removed or cannot be read stops the run there: nothing after it is saved or dropped, the window stays open with every edit, and Studio asks Overwrite for that file. Overwrite goes on with the rest and finishes the close, quit or switch; Cancel keeps everything. Files saved before the stop stay saved, and the status line says how many and which file stopped the run. A save that fails stops the run the same way.
 - A control that cannot act is marked disabled in the accessibility tree and says why.
-- F6 moves through toolbar, rail, the page's panes left to right and top to bottom, then the status bar.
+- F6 moves through the toolbar, the page's panes left to right and top to bottom, then the footer.
 
 Known limits:
 
 - Save writes a temporary file and renames it over the file. The old file stays whole if a save fails, and the permission bits are kept. The saved file is a new file, so it does not keep extended attributes, access control lists, an owner or group that differ from the person saving, or hard links to the old file.
 - Studio tells open files apart by their canonical path, taken at open. A file that does not exist yet stands for its folder's canonical path and its name. On macOS the canonical path carries the stored spelling, so two spellings of one name open one tab; this was checked on macOS only.
-- Save writes only a document with edits. Before it writes, it compares the file's bytes with those of the last read or save, and asks before it overwrites a file that changed, was removed or cannot be read. Another program can still write between that check and the rename. Saving from the close or quit question refuses a changed file; Cancel, then Save, to choose. Studio does not watch files and does not reload them.
+- Save writes only a document with edits. Before it writes, it compares the file's bytes with those of the last read or save, and asks before it overwrites a file that changed, was removed or cannot be read. Another program can still write between that check and the rename. Answering Save to the close or quit question refuses a file already changed; Cancel, then Save, to choose. A file that changes between the Save answer and the last answer of a close, quit or switch is asked about again, with Overwrite, before it is written. Studio does not watch files and does not reload them.
 - There is no Save as yet, and no next tab or previous tab command.
 - Save refuses a read-only file.
 - Tabs that do not fit scroll sideways and a menu at their end lists them all. A tab out of view is reached by the wheel, the menu or a click in Files; the keyboard cannot scroll the strip.
 - Each frame lays out and searches the whole text. A file near 16 MiB, or one very long line, makes the window slow.
+- On macOS and Windows the folder dialog runs on the main thread at the top of a frame and blocks it; the last frame stays on screen. On Linux it runs on a thread through the desktop portal, with `zenity` as the fallback. When neither answers within 300 ms with nothing, the status bar says no dialog opened. A portal that accepts the call and never answers keeps the window from taking commands until it is closed. The real dialog was only compiled on macOS; it was not opened on any system. The tests use a fake.
+- The Open folder button of the editor pane's empty state and the Open another folder button of its banner run File, Open folder. There is no Open recent: Studio has no settings file yet.
+- The screen pass ran only on one Mac, on Metal, in offscreen render tests. It was not opened in a real window by these tests, and it was not run on Linux or Windows. Its cost there, and on a weaker GPU, is not measured.
+- The reduced-motion setting is read on macOS only, from the Accessibility settings, once at start. Windows and Linux are not read: there Studio starts in Live on a real adapter.
+- Accessibility rectangles are boxes around the four mapped corners. The curve bends a rectangle's edges, so near a corner an edge's middle can sit a point or two outside the box. Tests check that each button's box holds the point where a click lands on its centre. No real screen reader was tried. IME candidate windows still use the flat position: in a 1280 by 720 window at Still and Live, about 4 points off at the toolbar and 10 at a corner; at Arcade about 14 and 30.
+- The afterglow counts any frame not asked for by the screen as a change, so a pointer move that changes nothing still runs it for under a second.
+- Flicker changes brightness by at most 3 percent, 30 times a second, and the band takes 6 seconds to cross. Nobody has read code for hours through Live.
+- A texture made in a frame reaches the pass's renderer in that frame. A partial change to a texture made before the plugin was added is skipped; the plugin is added before the first frame, so this does not happen in the window.
+- Studio has no settings file, so the level, the strengths and the frame rate last for the session.
 - Studio opens regular files only, links followed. A folder, a named pipe, a device or a socket is refused, and a named pipe is not waited on. A file or a `robco.toml` larger than 16 MiB is refused before it is read. The crate's docs name no limit, so 16 MiB is a default, not a measured need.
 
-`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI.
+`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, at Soft at the left and Off at the right. Its `render_the_screen_levels` writes `screen-*.png`: the Project page at each level, three Live frames half a second apart, an open menu, an open dropdown list, a tooltip and the Adjust dialog at Live, and Live at display scale 2. It also writes `menu-view-marks.png`: View and Screen open with high legibility on. Its `a_level_entered_later_draws_as_at_start` compares Soft entered from Live and Off entered from Soft with the same level at start, pixel for pixel, and writes the two later pictures as `screen-soft-from-live.png` and `screen-off-from-soft.png` when `STUDIO_SHOTS` is set.
 
-A settings file does not exist yet. It would hold the scheme, high legibility, the effects level, the pane sizes and which panes are shown, the text size, and the recent projects.
+The drawings live in `crates/robco-studio/assets/art/`. Each carries its SPDX lines and a provenance line. The two wordmarks, the atom and the skyline are traced from a reference picture supplied by the project owner. The application icon is built from the traced atom and letter R, on a tile drawn for Studio. The other drawings are drawn for Studio.
+
+| File | What |
+|---|---|
+| `wordmark.svg` | "RobCo Studio", for the header. Traced. |
+| `wordmark-industries.svg` | "RobCo Industries", for the footer. Traced. |
+| `atom.svg` | The atom mark. Traced. |
+| `skyline.svg` | The works skyline at the right of the header, standing on the header's rule. Traced. |
+| `device-frame.svg` | The wrist device around the simulator's screen, with ids for its keys, dial, slot and lamps |
+| `holotape.svg` | The tape |
+| `card.svg` | The memory card |
+| `app-icon.svg` | The application icon, with a small form for 16 to 32 px. It keeps its own ground and colours. |
+| `icons.svg` | The icons, as symbols `i-NAME` |
+
+Every file but the application icon draws in `currentColor` on a ground rectangle of class `asset-ground`, so it can be opened and looked at. One loader removes that rectangle, turns the colour white and rasterises the rest at a whole number of device pixels, and the window tints it. The glow of each drawing is its group of class `halo`, blurred by `resvg`; the loader keeps that group at Soft only. A file that keeps room around its box for the glow states the box in its comment, "fills the box 0 0 W H", and the texture reaches out of the box by that room. Caps labels in `bright` on `ground` or `pane` can draw over a second Spleen atlas, blurred once on the CPU, for their glow.
+
+A settings file does not exist yet. It would hold the scheme, high legibility, the screen level and its strengths, the pane sizes and which panes are shown, the text size, and the recent projects.

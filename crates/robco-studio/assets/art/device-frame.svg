@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-12 -14 416 362" width="416" height="362" role="img" aria-labelledby="df-t" style="color:#5aff7f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+  <title id="df-t">Wrist device around the 320 by 240 screen</title>
+  <!-- Original design of a wrist computer, front view, drawn with a filled shell so it has body. Not traced from any
+       game model. The drawing fills the box 0 0 392 336. The file keeps 12 units around that box for the glow.
+       The screen opening is exactly 320 by 240 units at x 36, y 30. Studio bakes this file into one texture per
+       zoom step, draws it behind the screen, and takes the hit areas from the ids below.
+       Seven keys and one dial, as on the board, all under the screen.
+       Levels are opacities of one colour: full 1.0, dim 0.55, faint 0.28. Fills are 9 to 30 percent.
+       Groups: "halo" is the baked glow. "shell" is the body. "controls" holds the keys and the dial.
+       Drop "halo" with effects off.
+       Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+  <rect class="asset-ground" x="-12" y="-14" width="416" height="362" fill="#091d10"/>
+  <defs>
+    <filter id="df-blur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="5"/></filter>
+    <linearGradient id="df-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="currentColor" stop-opacity=".3"/>
+      <stop offset=".5" stop-color="currentColor" stop-opacity=".15"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity=".09"/>
+    </linearGradient>
+    <path id="df-body" d="M30 4H362L384 26V310L362 332H30L8 310V26Z"/>
+  </defs>
+  <g class="halo" fill="none" stroke="currentColor" opacity=".55" filter="url(#df-blur)">
+    <use href="#df-body" stroke-width="7"/>
+    <rect x="30" y="24" width="332" height="252" rx="5" stroke-width="5"/>
+  </g>
+  <g class="shell" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-linecap="round">
+    <!-- strap lugs -->
+    <g stroke-width="1.5">
+      <path d="M8 96H3A3 3 0 0 0 0 99V233A3 3 0 0 0 3 236H8M384 96H389A3 3 0 0 1 392 99V233A3 3 0 0 1 389 236H384" fill="currentColor" fill-opacity=".1"/>
+      <path d="M0 118H8M0 214H8M384 118H392M384 214H392" opacity=".55"/>
+    </g>
+    <!-- body with clipped corners, filled so the unit has mass -->
+    <use href="#df-body" stroke-width="2.25" fill="url(#df-fill)"/>
+    <path d="M32 9H360L379 28V308L360 327H32L13 308V28Z" stroke-width="1" opacity=".4"/>
+    <!-- light on the upper left edges, weight on the lower right ones -->
+    <path d="M10.5 306V27L31 6.5H360" stroke-width="1" opacity=".8"/>
+    <path d="M386.5 28V311L363 334.5H32" stroke-width="1.5" opacity=".45"/>
+    <!-- cheeks: bolts and grip ribs -->
+    <g stroke-width="1.25">
+      <circle cx="20" cy="46" r="4"/><circle cx="372" cy="46" r="4"/><circle cx="20" cy="258" r="4"/><circle cx="372" cy="258" r="4"/>
+      <path d="M17.5 43.5l5 5M369.5 43.5l5 5M17.5 255.5l5 5M369.5 255.5l5 5" opacity=".7"/>
+      <path d="M15 128h10M15 136h10M15 144h10M15 152h10M15 160h10M15 168h10M15 176h10M367 128h10M367 136h10M367 144h10M367 152h10M367 160h10M367 168h10M367 176h10" opacity=".55"/>
+    </g>
+    <!-- top strip: power lamp, developer lamp, holotape slot, speaker -->
+    <circle id="df-lamp-pwr" cx="42" cy="14" r="3.2" fill="currentColor" stroke="none"/>
+    <circle id="df-lamp-dev" cx="56" cy="14" r="3.2" stroke-width="1.25" opacity=".55"/>
+    <rect id="df-slot" x="126" y="9.5" width="140" height="9" rx="4.5" stroke-width="1.5" fill="#000" fill-opacity=".45"/>
+    <path d="M300 9.5H348M300 14H348M300 18.5H348" stroke-width="1.5" opacity=".55"/>
+    <!-- bezel: a raised band around the screen opening -->
+    <path d="M35 22H357A5 5 0 0 1 362 27V273A5 5 0 0 1 357 278H35A5 5 0 0 1 30 273V27A5 5 0 0 1 35 22ZM36 30V270H356V30Z" fill="currentColor" fill-opacity=".16" fill-rule="evenodd" stroke="none"/>
+    <rect x="30" y="22" width="332" height="256" rx="5" stroke-width="1.75"/>
+    <rect id="df-screen" x="35.5" y="29.5" width="321" height="241" stroke-width="1" opacity=".55"/>
+    <path d="M30 22l6 8M362 22l-6 8M30 278l6-8M362 278l-6-8" stroke-width="1" opacity=".4"/>
+  </g>
+  <g class="controls" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-linecap="round">
+    <!-- direction keys -->
+    <g id="df-keys" stroke-width="1.5" fill="currentColor" fill-opacity=".12">
+      <rect id="key-up" x="68" y="282" width="24" height="22" rx="3"/>
+      <rect id="key-down" x="68" y="306" width="24" height="22" rx="3"/>
+      <rect id="key-left" x="42" y="294" width="24" height="22" rx="3"/>
+      <rect id="key-right" x="94" y="294" width="24" height="22" rx="3"/>
+      <rect id="key-back" x="146" y="282" width="72" height="22" rx="3"/>
+      <rect id="key-select" x="146" y="306" width="72" height="22" rx="3"/>
+    </g>
+    <path d="M80 288l4.5 8h-9zM80 322l4.5-8h-9zM48 305l8-4.5v9zM112 305l-8-4.5v9z" stroke="none" fill="currentColor"/>
+    <!-- key legends as strokes, so the file needs no font -->
+    <g stroke-width="1.5">
+      <path d="M180 297l-4.5-4 4.5-4M176 293h9.5a3.5 3.5 0 0 1 0 7H183"/>
+      <path d="M176 317l4.5 4.5 8-9"/>
+    </g>
+    <!-- dial: 24 detents of 15 degrees, a knob, a push cap -->
+    <g id="df-dial">
+      <circle cx="300" cy="305" r="24" stroke-width="1.5" fill="currentColor" fill-opacity=".1"/>
+      <circle cx="300" cy="305" r="20.5" stroke-width="3" stroke-dasharray="1.4 3.967" opacity=".6"/>
+      <circle cx="300" cy="305" r="15" stroke-width="1.5" fill="currentColor" fill-opacity=".12"/>
+      <circle id="key-dial-push" cx="300" cy="305" r="6.5" stroke-width="1.5"/>
+      <path d="M305 296.3L308.5 290.3" stroke-width="2"/>
+    </g>
+    <path d="M238 292v26M252 292v26" stroke-width="1" opacity=".28"/>
+    <path d="M336 292h30M336 300h30M336 308h30M336 316h30" stroke-width="1.25" opacity=".4"/>
+  </g>
+</svg>

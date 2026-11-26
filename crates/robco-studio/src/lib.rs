@@ -14,13 +14,16 @@
 pub mod app;
 pub mod art;
 pub mod c_lex;
+pub mod chooser;
 pub mod document;
 pub mod editor;
 pub mod kit;
 pub mod menus;
 #[cfg(target_os = "macos")]
 pub mod native_menu;
+pub mod pass;
 pub mod project;
+pub mod screen;
 pub mod theme;
 
 pub use app::Studio;

@@ -16,6 +16,11 @@ studio-sys.workspace = true
 # Quotes the strings of JSON lines. Already in the lock through studio-core. MIT or Apache-2.0.
 serde_json = "1"
 
+[target.'cfg(unix)'.dependencies]
+# O_NOFOLLOW, O_NONBLOCK and ELOOP, to open a package file without following
+# a link. Already in the lock through the workspace. MIT or Apache-2.0.
+libc = "0.2"
+
 [dev-dependencies]
 # Its test server, and a transport that trusts the test's certificate.
 studio-net = { workspace = true, features = ["test-trust"] }
