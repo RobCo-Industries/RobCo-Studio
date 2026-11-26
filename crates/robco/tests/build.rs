@@ -609,6 +609,46 @@ fn a_source_folder_link_out_of_the_root_is_manifest_path() {
     fails_with(&f, "manifest: path");
 }
 
+/// A manifest with these source patterns.
+#[cfg(unix)]
+fn with_sources(f: &Fixture, sources: &str) {
+    let m = MANIFEST.replace(r#"sources = ["src/*.c"]"#, &format!("sources = {sources}"));
+    f.put("proj/robco.toml", m.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_earlier_pattern_link_out_comes_before_a_later_empty_pattern() {
+    // Step 6 checks each pattern whole, `path` then `sources`, in order.
+    let f = Fixture::new("order-file");
+    f.put("away.c", MAIN_C.as_bytes());
+    link(&f, "../../away.c", "proj/src/away.c");
+    with_sources(&f, r#"["src/*.c", "none/*.c"]"#);
+    fails_with(&f, "manifest: path");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_earlier_empty_pattern_comes_before_a_later_folder_link_out() {
+    let f = Fixture::new("order-dir");
+    f.put("code/lib.c", MAIN_C.as_bytes());
+    link(&f, "../code", "proj/lib");
+    with_sources(&f, r#"["none.c", "lib/*.c"]"#);
+    fails_with(&f, "manifest: sources");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pattern_link_out_comes_before_its_own_non_c_match() {
+    // Within one pattern, `path` comes before `sources`.
+    let f = Fixture::new("order-within");
+    f.put("away.c", MAIN_C.as_bytes());
+    link(&f, "../../away.c", "proj/src/away.c");
+    f.put("proj/src/notes.txt", b"notes");
+    with_sources(&f, r#"["src/*"]"#);
+    fails_with(&f, "manifest: path");
+}
+
 #[cfg(unix)]
 #[test]
 fn an_entry_no_pattern_matches_is_not_looked_at() {
