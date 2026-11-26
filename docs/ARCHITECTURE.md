@@ -165,6 +165,12 @@ Rules, each with a test:
 Known limits:
 
 - Save writes a temporary file and renames it over the file. The old file stays whole if a save fails, and the permission bits are kept. The saved file is a new file, so it does not keep extended attributes, access control lists, an owner or group that differ from the person saving, or hard links to the old file.
+- Studio tells open files apart by their canonical path, taken at open. A file that does not exist yet stands for its folder's canonical path and its name. On macOS the canonical path carries the stored spelling, so two spellings of one name open one tab; this was checked on macOS only.
+- Save writes only a document with edits. Before it writes, it compares the file's length and modification time with those of the last read or save, and asks before it overwrites a file that changed or was removed. A change that keeps both the length and the time is not seen. Saving from the close or quit question refuses a changed file; Cancel, then Save, to choose. Studio does not watch files and does not reload them.
+- There is no Save as yet, and no next tab or previous tab command.
+- Save refuses a read-only file.
+- Tabs that do not fit scroll sideways and a menu at their end lists them all. A tab out of view is reached by the wheel, the menu or a click in Files; the keyboard cannot scroll the strip.
+- Each frame lays out and searches the whole text. A file near 16 MiB, or one very long line, makes the window slow.
 - Studio opens regular files only, links followed. A folder, a named pipe, a device or a socket is refused, and a named pipe is not waited on. A file or a `robco.toml` larger than 16 MiB is refused before it is read. The crate's docs name no limit, so 16 MiB is a default, not a measured need.
 
 `tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI.
