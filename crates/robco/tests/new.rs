@@ -1062,3 +1062,46 @@ fn new_refuses_a_cached_package_outside_its_layout() {
     let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
     assert!(d.contains("holotape-c/"), "{d}");
 }
+
+/// `templates.json` with two more files whose folders differ only in case.
+fn folder_case_json() -> String {
+    TEMPLATES_JSON.replace(
+        "{\"path\": \"icon.pbm\", \"substitute\": false},",
+        "{\"path\": \"A/foo.c\", \"substitute\": false},\n        {\"path\": \"a/bar.c\", \"substitute\": false},\n        {\"path\": \"icon.pbm\", \"substitute\": false},",
+    )
+}
+
+/// Two listed files whose folders differ only in case are refused, on a
+/// file system that folds case as on one that does not: the folder check
+/// comes before the files on disk.
+#[test]
+fn new_refuses_folders_that_differ_only_in_case() {
+    let f = Fixture::new("foldcase");
+    f.installed(&folder_case_json());
+    f.put("cache/packages/templates/0.1.0/holotape-c/A/foo.c", b"x\n");
+    f.put("cache/packages/templates/0.1.0/holotape-c/a/bar.c", b"y\n");
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("only in case"), "{d}");
+}
+
+#[test]
+fn sdk_install_refuses_folders_that_differ_only_in_case() {
+    let f = Fixture::new("inst-foldcase");
+    let mut files = package_files(&folder_case_json());
+    files.push(("holotape-c/A/foo.c".into(), b"x\n".to_vec()));
+    files.push(("holotape-c/a/bar.c".into(), b"y\n".to_vec()));
+    files.sort();
+    f.index(&package_zip(&files));
+    let o = f.robco(&[
+        "sdk",
+        "install",
+        "templates",
+        "--index",
+        "../index.json",
+        "--json",
+    ]);
+    let (code, detail, _) = failure(&o);
+    assert_eq!(code, "package: archive", "{detail}");
+    assert!(detail.contains("only in case"), "{detail}");
+    assert!(!f.pkg().exists());
+}

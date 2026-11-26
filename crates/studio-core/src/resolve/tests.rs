@@ -1663,6 +1663,9 @@ fn resolve_case_pairs_beyond_ascii() {
         assert!(e.to_string().contains("differs only in case"), "{e}");
     }
     assert!(with(&["Å.txt", "a.txt"]).is_ok());
+    // Two folders that differ only in case.
+    let e = with(&["A/foo.c", "a/bar.c"]).unwrap_err();
+    assert!(e.to_string().contains("differs only in case"), "{e}");
     // The manifest's own name, in another case beyond ASCII.
     let e = with(&["ſdk.json"]).unwrap_err();
     assert!(e.to_string().contains("names the manifest"), "{e}");
@@ -3084,4 +3087,37 @@ fn resolve_lock_field_table_rows() {
         assert_ne!(text, LOCK);
         assert!(Lock::parse(text.as_bytes()).is_ok(), "{to}");
     }
+}
+
+#[test]
+fn case_clash_compares_every_part() {
+    let files = |l: &[&'static str]| l.iter().map(|p| (*p, true)).collect::<Vec<_>>();
+    // Folders that differ only in case, at any depth, in either order.
+    for l in [
+        &["A/foo.c", "a/bar.c"][..],
+        &["a/bar.c", "A/foo.c"],
+        &["x/A/f", "x/a/g"],
+        &["Ω/f", "ω/g"],
+        // A file and a folder that differ only in case.
+        &["readme", "README/x"],
+        &["README/x", "readme"],
+        // Two files.
+        &["a.c", "A.c"],
+    ] {
+        assert!(case_clash(files(l)).is_some(), "{l:?}");
+    }
+    // A file that is also a folder of another path.
+    assert!(case_clash(files(&["a", "a/b"])).is_some());
+    assert!(case_clash(files(&["a/b", "a"])).is_some());
+    // One folder spelled one way is shared, and other names pass.
+    for l in [
+        &["A/foo.c", "A/bar.c"][..],
+        &["a/b/c", "a/b/d", "a/e"],
+        &["Å", "a"],
+    ] {
+        assert_eq!(case_clash(files(l)), None, "{l:?}");
+    }
+    // A folder entry and a file under it, as an archive lists them.
+    assert_eq!(case_clash([("A", false), ("A/f", true)]), None);
+    assert!(case_clash([("a", false), ("A/f", true)]).is_some());
 }

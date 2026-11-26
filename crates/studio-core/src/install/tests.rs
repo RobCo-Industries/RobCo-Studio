@@ -377,6 +377,20 @@ fn install_refuses_names_that_differ_in_case() {
 }
 
 #[test]
+fn install_refuses_folders_that_differ_only_in_case() {
+    let d = Dir::new("dcase");
+    let mut put = files();
+    put.push(("A/foo.c", b"x"));
+    put.push(("a/bar.c", b"y"));
+    let msg = refused(
+        &d,
+        install_zip(&d, &package_zip(&put, &put)),
+        "package: archive",
+    );
+    assert!(msg.contains("only in case"), "{msg}");
+}
+
+#[test]
 fn install_refuses_names_that_differ_only_in_unicode_case() {
     for (i, (a, b)) in [("σ", "ς"), ("Å", "å"), ("straße", "STRASSE")]
         .into_iter()

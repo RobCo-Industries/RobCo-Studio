@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 use studio_core::install::{self, Cached};
 use studio_core::manifest;
-use studio_core::resolve::{TEMPLATES, Version, sdk_json};
+use studio_core::resolve::{TEMPLATES, Version, case_clash, sdk_json};
 
 use crate::Failure;
 use crate::lines::{Out, Val};
@@ -551,7 +551,6 @@ fn template(at: &str, v: &Value) -> Result<Template, Failure> {
         Some(_) => return Err(manifest_error(format!("{at}.files is not an array"))),
     };
     let mut files: Vec<TemplateFile> = Vec::with_capacity(list.len());
-    let mut folded = BTreeSet::new();
     for (j, f) in list.iter().enumerate() {
         let fat = format!("{at}.files[{j}]");
         let fo = f
@@ -572,15 +571,17 @@ fn template(at: &str, v: &Value) -> Result<Template, Failure> {
                 "{fat}.path {path}: the files are sorted by path with no path twice"
             )));
         }
-        if !folded.insert(path.to_lowercase()) {
-            return Err(manifest_error(format!(
-                "{fat}.path {path}: another path of {id} differs from it only in case"
-            )));
-        }
         files.push(TemplateFile {
             path: path.to_owned(),
             substitute,
         });
+    }
+    // No two paths may differ only in case in any part, the folders above
+    // them included, by the rule the installer keeps for archive entries.
+    if let Some((a, b)) = case_clash(files.iter().map(|f| (f.path.as_str(), true))) {
+        return Err(manifest_error(format!(
+            "{at}.files: {b} and {a} of {id} differ only in case"
+        )));
     }
     if !files.iter().any(|f| f.path == PROJECT_MANIFEST) {
         return Err(manifest_error(format!(

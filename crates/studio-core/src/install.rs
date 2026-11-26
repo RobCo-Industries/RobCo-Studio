@@ -1013,6 +1013,13 @@ fn extract_package(
             at += p + 1;
         }
     }
+    // No two paths may differ only in case in any part, folders above a
+    // file included, or a file system that folds case merges them.
+    if let Some((a, b)) = resolve::case_clash(seen.iter().map(|(n, f)| (n.as_str(), *f))) {
+        return Err(bad(format!(
+            "{b}: {a} differs from a part of it only in case"
+        )));
+    }
 
     let Some(manifest) = files.iter().find(|f| f.name == MANIFEST) else {
         return Err(bad(format!("no {MANIFEST} at the archive root")));
