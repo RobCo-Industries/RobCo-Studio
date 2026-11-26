@@ -202,6 +202,18 @@ impl Strengths {
         "Chromatic aberration",
     ];
 
+    /// The places of the four strengths that move, in the order of
+    /// [`Strengths::NAMES`]: Persistence, Noise, Flicker, Rolling band.
+    pub const MOVING: [usize; 4] = [4, 5, 6, 7];
+    /// The places of the two strengths that draw with no screen pass:
+    /// Bloom by its halos and Scanlines by its quad.
+    pub const WITHOUT_PASS: [usize; 2] = [0, 2];
+
+    /// Some strength is past [`crt::STRONGER`].
+    pub fn stronger(&self) -> bool {
+        (0..Self::NAMES.len()).any(|i| self.get(i) > crt::STRONGER.get(i))
+    }
+
     /// The strength at `i`, in the order of [`Strengths::NAMES`].
     pub fn get_mut(&mut self, i: usize) -> Option<&mut f32> {
         Some(match i {
@@ -300,6 +312,21 @@ pub mod crt {
     pub const INVERSE_STEPS: usize = 50;
     /// A slider moves by this step.
     pub const SLIDER_STEP: f64 = 0.01;
+    /// Past the themes that ship: a strength over its number here makes
+    /// the editor say that text is harder to read. A strength the themes
+    /// that ship leave at 0 counts from above 0; the 1s never count.
+    pub const STRONGER: Strengths = Strengths {
+        bloom: 1.0,
+        vignette: 0.5,
+        scanlines: 0.3,
+        curvature: 0.12,
+        persistence: 1.0,
+        noise: 0.1,
+        flicker: 1.0,
+        band: 1.0,
+        mask: 0.0,
+        aberration: 0.0,
+    };
 }
 
 /// The colour roles of one theme.
@@ -620,6 +647,22 @@ pub mod size {
     pub const METER_W: f32 = 56.0;
     /// The space between the tape drawing and its facts.
     pub const TAPE_FACTS_GAP: f32 = 16.0;
+    /// A quick colour of the theme editor, high.
+    pub const SWATCH: f32 = 24.0;
+    /// The rail of a slider, high.
+    pub const RAIL_H: f32 = 12.0;
+    /// One slider's row: its name, its rail and its number box.
+    pub const SLIDER_ROW: f32 = 28.0;
+    /// A slider's number box, wide.
+    pub const NUMBER_W: f32 = 52.0;
+    /// The name column of a colour slider.
+    pub const COLOUR_NAME_W: f32 = 84.0;
+    /// The name column of a strength slider: "Chromatic aberration" fits.
+    pub const STRENGTH_NAME_W: f32 = 168.0;
+    /// The handle of a slider, wide.
+    pub const HANDLE_W: f32 = 8.0;
+    /// The box of a checkbox.
+    pub const CHECK_BOX: f32 = 14.0;
 }
 
 /// Radii and strokes.
@@ -699,6 +742,9 @@ pub mod effect {
     pub const TAPE_IDLE: f32 = 0.5;
     /// The scrim under a dialog, out of 1, black.
     pub const SCRIM: f32 = 0.62;
+    /// The scrim under the theme editor: none, since the window behind is
+    /// the preview. It still takes every click.
+    pub const SCRIM_THEME: f32 = 0.0;
     /// A hovered filled button gets this much lighter.
     pub const HOVER_LIGHTEN: f32 = 0.12;
 }
@@ -904,6 +950,11 @@ impl Theme {
     /// The black of the dialog scrim.
     pub fn scrim(&self) -> Color32 {
         Color32::BLACK.gamma_multiply(effect::SCRIM)
+    }
+
+    /// The scrim under the theme editor, which draws nothing.
+    pub fn scrim_theme(&self) -> Color32 {
+        Color32::BLACK.gamma_multiply(effect::SCRIM_THEME)
     }
 
     /// A filled button's colour when hovered.

@@ -161,6 +161,64 @@ pub const HUE_WORDS: [(&str, f64); 12] = [
     ("rose", 345.0),
 ];
 
+/// The eight quick colours of the theme editor, each with its name.
+pub const QUICK: [(&str, Color32); 8] = [
+    ("Green", hex(0x5aff7f)),
+    ("Amber", hex(0xffb93f)),
+    ("Blue", hex(0x66c9ff)),
+    ("White", hex(0xf4ffff)),
+    ("Red", hex(0xff9383)),
+    ("Rose", hex(0xff91b0)),
+    ("Violet", hex(0xbaa4ff)),
+    ("Teal", hex(0x00e0c0)),
+];
+
+/// The colours along the hue rail, from 0 to 360 degrees.
+pub const HUE_STOPS: usize = 25;
+
+/// The hue rail's colours: every hue at full saturation and the deepest
+/// lightness that stays readable. Made once.
+pub fn hue_rail() -> &'static [Color32; HUE_STOPS] {
+    static RAIL: std::sync::OnceLock<[Color32; HUE_STOPS]> = std::sync::OnceLock::new();
+    RAIL.get_or_init(|| {
+        std::array::from_fn(|i| from_sliders(360.0 * i as f64 / (HUE_STOPS - 1) as f64, 1.0, 0.0))
+    })
+}
+
+/// The two ends of the saturation and lightness rails at `hue` degrees,
+/// `sat` and `light` out of 1.
+pub fn short_rails(hue: f64, sat: f64, light: f64) -> [[Color32; 2]; 2] {
+    [
+        [from_sliders(hue, 0.0, light), from_sliders(hue, 1.0, light)],
+        [from_sliders(hue, sat, 0.0), from_sliders(hue, sat, 1.0)],
+    ]
+}
+
+/// A colour as `#rrggbb`.
+pub fn hex_text(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// What a person typed as a base colour: 3 or 6 hex digits, with or
+/// without `#`, in any case, spaces at the ends ignored. Returns the
+/// colour and how many digits it had, or None.
+pub fn parse_hex(text: &str) -> Option<(Color32, usize)> {
+    let t = text.trim();
+    let t = t.strip_prefix('#').unwrap_or(t);
+    if !t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(t, 16).ok()?;
+    match t.len() {
+        6 => Some((hex(v), 6)),
+        3 => {
+            let d = |s: u32| ((v >> s) & 0xf) as u8 * 17;
+            Some((Color32::from_rgb(d(8), d(4), d(0)), 3))
+        }
+        _ => None,
+    }
+}
+
 /// The colour of `0xrrggbb`.
 pub const fn hex(v: u32) -> Color32 {
     Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
