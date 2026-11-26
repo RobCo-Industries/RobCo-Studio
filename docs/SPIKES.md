@@ -4,7 +4,7 @@ A spike is throwaway code that answers one question about how Studio can be buil
 
 Each spike has its own page in [`docs/spikes`](spikes/). This page is the index. Every statement here comes from those pages. Where they differ, the spike page is right.
 
-## The seven spikes
+## The eight spikes
 
 | Spike | Question | Answer | The fact that carries it |
 |---|---|---|---|
@@ -15,6 +15,7 @@ Each spike has its own page in [`docs/spikes`](spikes/). This page is the index.
 | [K5](spikes/K5.md) | Is QMP `screendump` fast enough for the simulator? | Yes | 145 to 260 frames a second at 640 by 480 flat out. At 30 a second the guest runs 5 % to 20 % slower |
 | [K6](spikes/K6.md) | Can a Rust card writer write and verify a disk, and refuse a system disk? | Yes, on virtual disks in CI | 60 MiB written and read back equal on three runners. The system disk refused on each. No real card reader |
 | [K7](spikes/K7.md) | Does a plain text editor hold up in egui? | Yes at 5,000 lines, on one Mac | 113 to 117 fps while typing at 5,000 lines. 57 to 60 fps at 20,000 lines |
+| [K8](spikes/K8.md) | Can the whole window pass through an animated CRT shader in eframe? | Yes, with no fork, on one Mac | The passes cost 0.4 ms a frame at 1280 by 720. Animating at 60 a second cost 13 % of one core in one run |
 
 ## Each spike in short
 
@@ -75,6 +76,15 @@ Each spike has its own page in [`docs/spikes`](spikes/). This page is the index.
 - Three reviews found faults of one kind: state that outlives the thing it belongs to. All are fixed with tests.
 - Not proven: rates on Ubuntu and Windows, 10,000 lines, a slower machine, mouse selection, colours and font on screen, the system clipboard.
 
+### K8: a CRT shader over the whole window
+
+- Measured on one Mac, an M1 Max laptop. A paint callback renders egui's shapes offscreen and runs five passes: about 0.4 ms of GPU time per frame at 1280 by 720, about 1 ms at 2560 by 1440.
+- Animating at 60 frames a second cost 13 % of one core in one run, against 0 % idle. 30 a second cost 6 %, 15 a second 3 %.
+- Proven in CI on Ubuntu, macOS and Windows: format, clippy, the WGSL validates, and a click through the curve lands on the button. The offscreen render and its curvature pixel check pass on macOS and Windows. Ubuntu has no GPU adapter, so it did not run there.
+- On Windows' software adapter the passes take 209 ms to 1,373 ms a frame. Studio must turn the effect off on a CPU adapter.
+- The shadow mask and the chromatic aberration hurt text. Code stays readable at the tasteful setting.
+- Not proven: a weaker or non-Apple GPU, a large open window, hours of reading through the effect, the draw order of overlapping areas of one order, the flicker against a flash standard.
+
 ## Choices these results leave open
 
 The owner decides. Each point lists the options as its page gives them. No option is picked here.
@@ -113,6 +123,10 @@ The owner decides. Each point lists the options as its page gives them. No optio
 ### QEMU on Windows, from K1
 
 - How does Studio make QEMU die with its parent on Windows? RobCo-Core's harness uses a `/bin/sh` watcher and process groups, which Windows lacks, and the K1 plugin bypasses them. Options: a Windows Job Object that kills QEMU when Studio exits, or a watcher process of Studio's own. Neither was tested. [K1](spikes/K1.md#the-method)
+
+### The CRT look, from K8
+
+- With curvature on, AccessKit rectangles stop matching the drawn picture. The spike left two ways open: turn curvature off when AccessKit is active, or map the rectangles too. Studio maps the rectangles through the curve. [K8](spikes/K8.md#what-it-means-for-studio)
 
 ## What the spikes changed in the code that follows
 
