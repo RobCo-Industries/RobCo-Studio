@@ -5,7 +5,7 @@
 //!
 //! It implements `robco build`, `robco sdk list` and `robco sdk install` of RobCo-Core
 //! `docs/spec/STUDIO_CLI.md`, and prints the version for `robco --version`
-//! and `robco version`. Every action is delegated to `studio-core`. It must
+//! and `robco version`, with the RobCo-Core commit it was built with. Every action is delegated to `studio-core`. It must
 //! never depend on the window program or any window or toolkit crate. It
 //! holds no `unsafe` code.
 #![forbid(unsafe_code)]
@@ -24,6 +24,11 @@ use std::fmt::Display;
 use std::io::Write;
 
 pub use net::Net;
+
+/// The RobCo-Core commit this program was built with: 40 hex digits, read
+/// from the submodule by the build script, or `unknown` when the source
+/// had no git files.
+pub const ROBCO_CORE_COMMIT: &str = env!("ROBCO_CORE_COMMIT");
 
 use studio_core::codes::{self, ErrorCode};
 
@@ -74,7 +79,17 @@ pub fn run(
     let mut out = Out::new(args::wants_json(args), stdout, stderr);
     let command = match args::parse(args) {
         Ok(Command::Version) => {
-            out.text(&format!("robco {}", studio_core::VERSION));
+            out.line(
+                "version",
+                vec![
+                    ("version", lines::Val::s(studio_core::VERSION)),
+                    ("robco_core", lines::Val::s(ROBCO_CORE_COMMIT)),
+                ],
+                &format!(
+                    "robco {} robco-core {ROBCO_CORE_COMMIT}",
+                    studio_core::VERSION
+                ),
+            );
             return 0;
         }
         Ok(c) => c,

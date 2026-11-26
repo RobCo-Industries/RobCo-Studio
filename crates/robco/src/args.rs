@@ -54,6 +54,9 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let (command, rest) = match words.as_slice() {
         ["--version"] | ["-V"] | ["version"] => return Ok(Command::Version),
+        ["--version" | "-V" | "version", "--json"] | ["--json", "--version" | "-V" | "version"] => {
+            return Ok(Command::Version);
+        }
         ["sdk", "list", rest @ ..] => ("sdk list", rest),
         ["sdk", "install", rest @ ..] => ("sdk install", rest),
         ["build", rest @ ..] => ("build", rest),
