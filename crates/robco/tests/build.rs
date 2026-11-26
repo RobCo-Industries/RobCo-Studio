@@ -1005,3 +1005,17 @@ fn a_source_that_is_a_folder_is_manifest_sources() {
     with_sources(&f, r#"["src/*.c"]"#);
     passes_step_2(&f);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_wildcard_match_with_a_back_slash_is_manifest_sources() {
+    let f = Fixture::new("back-slash");
+    warm_cache(&f, "");
+    f.put("proj/src/a\\b.c", MAIN_C.as_bytes());
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("manifest: sources".to_owned(), 3));
+    let s = String::from_utf8_lossy(&o.stdout);
+    assert!(s.contains("src/*.c: matches src/a\\\\b.c"), "{s}");
+    assert!(steps(&o).is_empty(), "{:?}", steps(&o));
+    assert!(!f.proj().join("build").exists());
+}

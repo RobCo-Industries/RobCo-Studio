@@ -424,6 +424,20 @@ fn list_dir(
             continue;
         }
         match manifest_file(root, "build.sources", &project_path)? {
+            // The path rules of STUDIO_PROJECT.md bind what the manifest
+            // writes, and a name a `*` matches becomes a source path, an
+            // object path under `build/` and an argument. So it gets the
+            // rule that the separator is `/`: a `\\` would read as a
+            // separator on Windows and leaves the plan's outputs.
+            Found::File(_) if project_path.contains('\\') => {
+                return Err(Failure::new(
+                    "manifest: sources",
+                    format!(
+                        "{}: matches {project_path}, whose name holds \\, which a project path may not hold",
+                        patterns.join(", ")
+                    ),
+                ));
+            }
             Found::File(_) => out.push(project_path),
             // A pattern without `*` names this one entry, so it must be a
             // file; a wildcard keeps only regular files, as the spec says.
