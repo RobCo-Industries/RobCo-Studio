@@ -259,8 +259,7 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
             Some(manifest::read_icon(rel, data.as_deref()).map_err(|e| manifest_failure(&e))?)
         }
     };
-    let mut files = Vec::new();
-    list_files(root, "", &mut files)?;
+    let mut files = source_files(root, &manifest.build.sources)?;
     files.sort();
     let project = Project {
         manifest,
@@ -281,9 +280,45 @@ fn plan_sources(p: &Project) -> Result<Vec<String>, Failure> {
     manifest::expand_sources(&p.manifest.build.sources, &files).map_err(|e| manifest_failure(&e))
 }
 
-/// Every regular file under `dir`, relative to the project root with `/`.
-/// A link is not followed.
-fn list_files(root: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failure> {
+/// The regular files of the folders the source patterns name, relative to
+/// the project root with `/`. A pattern's `*` stands only in its last
+/// component, so a pattern reaches one folder and no other folder is read.
+/// A folder on the way that is missing, a link or not a folder gives no
+/// files, and the pattern then matches nothing. A link is not followed.
+fn source_files(root: &Path, patterns: &[String]) -> Result<Vec<String>, Failure> {
+    let mut dirs: Vec<&str> = patterns
+        .iter()
+        .map(|p| p.rsplit_once('/').map_or("", |(d, _)| d))
+        .collect();
+    dirs.sort_unstable();
+    dirs.dedup();
+    let mut out = Vec::new();
+    for rel in dirs {
+        if real_dir(root, rel)? {
+            list_dir(root, rel, &mut out)?;
+        }
+    }
+    Ok(out)
+}
+
+/// True when every component of `rel` under the root is a folder and not
+/// a link. A missing component gives false.
+fn real_dir(root: &Path, rel: &str) -> Result<bool, Failure> {
+    let mut path = root.to_path_buf();
+    for part in rel.split('/').filter(|p| !p.is_empty()) {
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(md) if md.is_dir() => {}
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(read_failure(&path, &e)),
+        }
+    }
+    Ok(true)
+}
+
+/// The regular files of one folder, not of its subfolders.
+fn list_dir(root: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failure> {
     let dir = if rel.is_empty() {
         root.to_path_buf()
     } else {
@@ -296,18 +331,15 @@ fn list_files(root: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failu
             // A name that is not UTF-8 cannot match a pattern.
             continue;
         };
-        let path = if rel.is_empty() {
-            name
-        } else {
-            format!("{rel}/{name}")
-        };
         let kind = entry
             .file_type()
             .map_err(|e| read_failure(&entry.path(), &e))?;
-        if kind.is_dir() {
-            list_files(root, &path, out)?;
-        } else if kind.is_file() {
-            out.push(path);
+        if kind.is_file() {
+            out.push(if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            });
         }
     }
     Ok(())
@@ -621,6 +653,59 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// A project folder removed when the test ends.
+    #[cfg(unix)]
+    struct Dir(PathBuf);
+
+    #[cfg(unix)]
+    impl Dir {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("robco-unit-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(p.join("src")).unwrap();
+            fs::write(p.join("robco.toml"), MANIFEST).unwrap();
+            fs::write(p.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
+            Self(p)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_folder_no_pattern_reaches_is_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("unreadable");
+        let nm = d.0.join("node_modules");
+        fs::create_dir(&nm).unwrap();
+        fs::set_permissions(&nm, fs::Permissions::from_mode(0o000)).unwrap();
+        let got = read_project(&d.0);
+        fs::set_permissions(&nm, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            got.map(|p| p.files).ok(),
+            Some(vec!["src/main.c".to_owned()])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_folder_a_pattern_reaches_fails_and_is_named() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("unreadable-src");
+        let src = d.0.join("src");
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o000)).unwrap();
+        let got = read_project(&d.0);
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+        let e = got.err().unwrap();
+        assert_eq!(e.code, "io: read");
+        assert!(e.detail.contains("src"), "{}", e.detail);
     }
 
     #[test]
