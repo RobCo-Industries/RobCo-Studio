@@ -194,6 +194,17 @@ fn plan_unix_matches_fixture() {
     assert_eq!(p.elf, "build/PIPES.elf");
     assert_eq!(p.raw, "build/PIPES.bin");
     assert_eq!(p.dirs, ["build", "build/obj", "build/obj/src"]);
+    assert_eq!(
+        p.outputs,
+        [
+            "build/obj/crt0.o",
+            "build/obj/src/main.c.o",
+            "build/obj/src/draw.c.o",
+            "build/obj/src/game.c.o",
+            "build/PIPES.elf",
+            "build/PIPES.bin",
+        ]
+    );
     assert_eq!(p.commands, want);
 }
 
@@ -539,13 +550,7 @@ fn plan_dirs_source_at_root() {
 fn plan_dirs_hold_every_output() {
     for host in [Host::Unix, Host::Windows] {
         let p = ok(host);
-        let mut outputs: Vec<&str> = vec![p.elf.as_str(), p.raw.as_str()];
-        for c in &p.commands {
-            if let Some(i) = c.args.iter().position(|a| a == "-o") {
-                outputs.push(&c.args[i + 1]);
-            }
-        }
-        for out in outputs {
+        for out in &p.outputs {
             let parent = &out[..out.rfind('/').unwrap_or(0)];
             assert!(p.dirs.iter().any(|d| d == parent), "{out}");
         }
@@ -592,15 +597,457 @@ fn plan_flags_paths_checked() {
 }
 
 #[test]
-fn plan_flags_paths_in_field_order_after_types() {
-    // A bad path and a later type error: the type error wins.
+fn plan_flags_a_bad_value_wins_over_a_later_type_error() {
+    // Each field is checked whole before the next: the earlier bad path wins.
     let text = String::from_utf8_lossy(FLAGS)
         .replace("\"include\"", "\"../x\"")
         .replace("\"PIPOS_ABI_TARGET\"", "1");
-    assert_eq!(flags_err(&text).detail(), "abi_define: expected a string");
-    // Two bad paths: the first field of the table wins.
-    let text = String::from_utf8_lossy(FLAGS)
-        .replace("\"lib/libpip.a\"", "\"/x\"")
-        .replace("\"include\"", "\"../x\"");
     assert!(flags_err(&text).detail().starts_with("include_dirs:"));
+}
+
+/// One value fault per field of the spec's table, in the table's order.
+fn faults() -> Vec<(&'static str, Value)> {
+    use serde_json::json;
+    vec![
+        ("cflags", json!(["-B"])),
+        ("include_dirs", json!(["../x"])),
+        ("ldflags", json!(["-specs=x"])),
+        ("linker_scripts", json!({"holotape": "/x.ld"})),
+        ("crt0", json!("-x.S")),
+        (
+            "crt0_defines",
+            json!({"holotape-game": ["A=1\n#include \"/etc/x\""]}),
+        ),
+        ("libs", json!(["/x.a"])),
+        ("system_libs", json!(["-specs=/tmp/inject.specs"])),
+        ("abi_define", json!("X=1")),
+    ]
+}
+
+#[test]
+fn plan_flags_two_faults_report_the_first_of_the_table() {
+    let base: Value = match serde_json::from_slice(FLAGS) {
+        Ok(v) => v,
+        Err(e) => panic!("{e}"),
+    };
+    let faults = faults();
+    for (one, _) in &faults {
+        let mut f = base.clone();
+        if let (Value::Object(m), Some((_, v))) = (&mut f, faults.iter().find(|x| x.0 == *one)) {
+            m.insert((*one).into(), v.clone());
+        }
+        assert!(flags_err(&f.to_string()).detail().starts_with(one), "{one}");
+    }
+    for pair in faults.windows(2) {
+        let mut f = base.clone();
+        if let Value::Object(m) = &mut f {
+            for (k, v) in pair {
+                m.insert((*k).into(), v.clone());
+            }
+        }
+        let e = flags_err(&f.to_string());
+        assert_eq!(e.code(), "manifest");
+        assert!(
+            e.detail().starts_with(pair[0].0),
+            "{} then {}: {e}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+}
+
+#[test]
+fn plan_system_libs_take_library_flags_only() {
+    assert_passes(
+        "system_libs",
+        &["-lgcc", "-lc", "-lstdc++", "-lgcc_s", "-lm-2"],
+    );
+    let bad = [
+        "-specs=/tmp/inject.specs",
+        "-l",
+        "-lGCC",
+        "-l../x",
+        "-l/tmp/x",
+        "-lgcc,x",
+        "-L/tmp",
+        "-Wl,--gc-sections",
+        "-O2",
+        "gcc",
+    ];
+    for f in bad {
+        match shape_ok("system_libs", f) {
+            Ok(()) => panic!("{f:?} passed"),
+            Err(e) => assert_eq!(
+                e.detail(),
+                format!("system_libs: {f:?}: not in the allowed flag shapes")
+            ),
+        }
+    }
+    // A library flag is not a cflag or an ldflag.
+    assert!(shape_ok("cflags", "-lgcc").is_err());
+    assert!(shape_ok("ldflags", "-lgcc").is_err());
+    let e = path_err("\"-lgcc\"", "\"-specs=/tmp/inject.specs\"");
+    assert_eq!(e.code(), "manifest");
+    assert_eq!(
+        e.detail(),
+        "system_libs: \"-specs=/tmp/inject.specs\": not in the allowed flag shapes"
+    );
+}
+
+#[test]
+fn plan_package_paths_refuse_options_and_streams() {
+    let fields = [
+        ("\"include\"", "include_dirs"),
+        ("\"lib/holotape.ld\"", "linker_scripts.holotape"),
+        ("\"lib/crt0.S\"", "crt0"),
+        ("\"lib/libpip.a\"", "libs"),
+    ];
+    let bad = [
+        ("-specs=x", "a part starts with -"),
+        ("lib/-x", "a part starts with -"),
+        ("lib/a:b", "holds a : or a control character"),
+        ("lib/a\\nb", "holds a : or a control character"),
+    ];
+    for (from, field) in fields {
+        for (value, reason) in bad {
+            let e = path_err(from, &format!("\"{value}\""));
+            assert_eq!(e.code(), "manifest", "{field} {value}");
+            let shown = serde_json::from_str::<String>(&format!("\"{value}\"")).unwrap_or_default();
+            assert_eq!(e.detail(), format!("{field}: {shown:?}: {reason}"));
+        }
+    }
+}
+
+#[test]
+fn plan_inside_is_by_components() {
+    let u = Host::Unix;
+    assert!(inside(u, "/c/pkg", "/c/pkg/lib/x.a"));
+    assert!(!inside(u, "/c/pkg", "/c/pkg"));
+    assert!(!inside(u, "/c/pkg", "/c/pkg/../x"));
+    assert!(!inside(u, "/c/pkg", "/c/pkg/lib/../../x"));
+    assert!(!inside(u, "/c/pkg", "/c/pkgx/lib"));
+    assert!(!inside(u, "/c/pkg", "/../../c/pkg/x"));
+    let w = Host::Windows;
+    assert!(inside(w, "C:\\c\\pkg", "C:\\c\\pkg\\lib\\x.a"));
+    assert!(!inside(w, "C:\\c\\pkg", "C:\\c\\pkg\\..\\x"));
+    assert!(!inside(w, "C:\\c\\pkg", "C:\\c\\pkg/lib\\..\\..\\x"));
+}
+
+#[test]
+fn plan_defines_and_abi_define_are_names() {
+    for (from, to) in [
+        (
+            "\"PIP_IMG_SUBTYPE=0\"",
+            "\"PIP_IMG_SUBTYPE=0\\n#include \\\"/etc/x\\\"\"",
+        ),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"PIP_IMG_SUBTYPE\""),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"1X=0\""),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"X=/etc/passwd\""),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"X=\\\"a\\\"b\\\"\""),
+    ] {
+        let e = path_err(from, to);
+        assert_eq!(e.code(), "manifest", "{to}");
+        assert!(
+            e.detail().starts_with("crt0_defines.holotape-game: "),
+            "{e}"
+        );
+    }
+    let e = path_err("\"PIPOS_ABI_TARGET\"", "\"X=1\"");
+    assert_eq!(
+        e.detail(),
+        "abi_define: \"X=1\": not a C name, [A-Za-z_][A-Za-z0-9_]*"
+    );
+    // The values Pip-OS ships pass.
+    assert!(parse_flags(FLAGS).is_ok());
+}
+
+#[test]
+fn plan_sources_with_a_leading_at_or_dash_get_dot_slash() {
+    let m = manifest(&MANIFEST.replace(
+        "[\"src/main.c\", \"src/*.c\"]",
+        "[\"@main.c\", \"-x.c\", \"src/main.c\"]",
+    ));
+    let files = ["@main.c", "-x.c", "src/main.c", "robco.toml"];
+    let p = match make_with(&m, FLAGS, Host::Unix, &files) {
+        Ok(p) => p,
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(p.sources, ["@main.c", "-x.c", "src/main.c"]);
+    for (i, (arg, object)) in [
+        ("./@main.c", "build/obj/@main.c.o"),
+        ("./-x.c", "build/obj/-x.c.o"),
+        ("src/main.c", "build/obj/src/main.c.o"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let a = &p.commands[i + 1].args;
+        let at = a.iter().position(|x| x == "-c").unwrap_or(usize::MAX);
+        assert_eq!(a.get(at + 1).map(String::as_str), Some(arg));
+        assert_eq!(a.get(at + 3).map(String::as_str), Some(object));
+        assert!(p.outputs.contains(&object.to_string()));
+    }
+    assert!(
+        !p.commands
+            .iter()
+            .any(|c| c.args.iter().any(|x| x == "@main.c"))
+    );
+    assert!(p.dirs.iter().all(|d| d.starts_with("build")));
+}
+
+#[test]
+fn plan_source_with_a_leading_dash_is_not_an_option() {
+    let m = manifest(&MANIFEST.replace("[\"src/main.c\", \"src/*.c\"]", "[\"*.c\"]"));
+    let p = match make_with(&m, FLAGS, Host::Unix, &["-specs=x.c", "robco.toml"]) {
+        Ok(p) => p,
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(p.sources, ["-specs=x.c"]);
+    let c = &p.commands[1];
+    assert_eq!(c.step, Step::Compile("-specs=x.c".into()));
+    assert!(c.args.contains(&"./-specs=x.c".to_string()));
+    assert!(!c.args.contains(&"-specs=x.c".to_string()));
+}
+
+fn shape_ok(key: &str, flag: &str) -> Result<(), FlagsError> {
+    check_flags(key, &[flag.to_string()])
+}
+
+fn assert_passes(key: &str, flags: &[&str]) {
+    for f in flags {
+        if let Err(e) = shape_ok(key, f) {
+            panic!("{key} {f:?}: {e}");
+        }
+    }
+}
+
+#[test]
+fn plan_flag_shape_machine() {
+    assert_passes(
+        "cflags",
+        &["-marm", "-mcpu=arm1176jzf-s", "-mfpu=vfp+x.y_z"],
+    );
+}
+
+#[test]
+fn plan_flag_shape_feature() {
+    assert_passes(
+        "cflags",
+        &["-ffreestanding", "-fno-builtin", "-fvisibility=hidden"],
+    );
+}
+
+#[test]
+fn plan_flag_shape_std() {
+    assert_passes("cflags", &["-std=gnu11", "-std=c++17"]);
+}
+
+#[test]
+fn plan_flag_shape_optimize() {
+    assert_passes(
+        "cflags",
+        &["-O", "-O0", "-O2", "-Os", "-Og", "-Oz", "-Ofast"],
+    );
+}
+
+#[test]
+fn plan_flag_shape_debug() {
+    assert_passes("cflags", &["-g", "-g3", "-ggdb", "-ggdb2", "-gdwarf-4"]);
+}
+
+#[test]
+fn plan_flag_shape_warning() {
+    assert_passes(
+        "cflags",
+        &[
+            "-Wall",
+            "-Wno-unused-parameter",
+            "-Wformat=2",
+            "-w",
+            "-pedantic",
+            "-pedantic-errors",
+        ],
+    );
+}
+
+#[test]
+fn plan_flag_shape_word() {
+    assert_passes(
+        "cflags",
+        &[
+            "-nostdlib",
+            "-nostartfiles",
+            "-nodefaultlibs",
+            "-nostdinc",
+            "-nolibc",
+            "-static",
+        ],
+    );
+}
+
+#[test]
+fn plan_flag_shape_define() {
+    assert_passes("cflags", &["-DNDEBUG", "-D_X=1", "-DV=1.2+rc-1"]);
+}
+
+#[test]
+fn plan_flag_shape_undefine() {
+    assert_passes("cflags", &["-UNDEBUG", "-U_X"]);
+}
+
+#[test]
+fn plan_flag_shape_linker() {
+    assert_passes(
+        "ldflags",
+        &[
+            "-Wl,--gc-sections",
+            "-Wl,--gc-sections,--no-warn-rwx-segments",
+        ],
+    );
+}
+
+/// The flags Pip-OS ships, from `sdk/pipos-app.mk`: PIP_CODEFLAGS as
+/// `cflags`, PIP_LDFLAGS with PIP_LD_RWX as `ldflags`.
+#[test]
+fn plan_flags_of_pipos_pass() {
+    let arch = [
+        "-mcpu=arm1176jzf-s",
+        "-marm",
+        "-mfloat-abi=soft",
+        "-mgeneral-regs-only",
+        "-mno-unaligned-access",
+    ];
+    let mut cflags = arch.to_vec();
+    cflags.extend([
+        "-std=gnu11",
+        "-ffreestanding",
+        "-nostdlib",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-fno-tree-loop-distribute-patterns",
+        "-O2",
+        "-g",
+        "-Wall",
+        "-Wextra",
+    ]);
+    let mut ldflags = arch.to_vec();
+    ldflags.extend([
+        "-nostdlib",
+        "-Wl,--gc-sections",
+        "-Wl,--no-warn-rwx-segments",
+    ]);
+    assert_passes("cflags", &cflags);
+    assert_passes("ldflags", &ldflags);
+}
+
+/// Every name of the feature list passes, and nothing else does.
+#[test]
+fn plan_flag_features_are_a_closed_list() {
+    let good: Vec<String> = super::FEATURES.iter().map(|n| format!("-f{n}")).collect();
+    let good: Vec<&str> = good.iter().map(String::as_str).collect();
+    assert_passes("cflags", &good);
+    let bad = [
+        "-fopt-info=secrets",
+        "-fopt-info",
+        "-frandom-seed=x",
+        "-fcompare-debug",
+        "-fplugin=x",
+        "-fdump-tree-all",
+        "-fstack-usage",
+        "-fsyntax-only",
+        "-fsanitize=address",
+        "-flto",
+        "-fvisibility=protected",
+        "-fno-plugin",
+        "-ffreestanding=1",
+        "-fPIC=x",
+        "-f",
+        "-ffree standing",
+    ];
+    for f in bad {
+        assert!(shape_ok("cflags", f).is_err(), "{f:?} passed");
+    }
+}
+
+/// A linker word outside the list is refused, even one that looks
+/// harmless, since ld may read the next part as its value.
+#[test]
+fn plan_flag_linker_words_are_a_closed_list() {
+    for f in [
+        "-Wl,--output,--x",
+        "-Wl,--script,--x",
+        "-Wl,--cref",
+        "-Wl,--print-map",
+        "-Wl,--gc-sections,--trace",
+    ] {
+        assert!(shape_ok("ldflags", f).is_err(), "{f:?} passed");
+    }
+}
+
+#[test]
+fn plan_flags_refused_outside_the_shapes() {
+    let bad = [
+        "-Wl,-Map=/tmp/x.map",
+        "-Wl,-Map,x.map",
+        "-Wl,--build-id=none",
+        "-Wl,-T,x.ld",
+        "-Wa,-ahl=x",
+        "-Wp,-MD,x",
+        "-Xlinker",
+        "-fplugin=x",
+        "-fdump-rtl-all",
+        "-fsyntax-only",
+        "-ffile-prefix-map=a=b",
+        "-wrapper",
+        "-B",
+        "-Bdir",
+        "-o",
+        "-ox",
+        "-c",
+        "-S",
+        "-E",
+        "-x",
+        "-include",
+        "-I.",
+        "-L.",
+        "-lfoo",
+        "-T",
+        "@file",
+        "-specs=x",
+        "--sysroot=x",
+        "-save-temps",
+        "-pipe",
+        "",
+        "-O2 -g",
+        "-O2\n",
+        "-mcpu=../x",
+        "-DNAME=/etc/passwd",
+    ];
+    for key in ["cflags", "ldflags"] {
+        for f in bad {
+            match shape_ok(key, f) {
+                Ok(()) => panic!("{key} {f:?} passed"),
+                Err(e) => {
+                    assert_eq!(e.code(), "manifest");
+                    assert_eq!(
+                        e.detail(),
+                        format!("{key}: {f:?}: not in the allowed flag shapes")
+                    );
+                }
+            }
+        }
+    }
+    assert!(shape_ok("cflags", "-Wl,--gc-sections").is_err());
+}
+
+#[test]
+fn plan_flags_refuse_a_flag_through_parse() {
+    for (from, key) in [("\"-O2\"", "cflags"), ("\"-Wl,--gc-sections\"", "ldflags")] {
+        let e = path_err(from, "\"-Wl,-Map=/tmp/tape.map\"");
+        assert_eq!(e.code(), "manifest");
+        assert_eq!(
+            e.detail(),
+            format!("{key}: \"-Wl,-Map=/tmp/tape.map\": not in the allowed flag shapes")
+        );
+    }
 }
