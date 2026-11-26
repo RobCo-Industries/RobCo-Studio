@@ -991,3 +991,74 @@ fn new_json_after_double_dash_is_a_plain_argument() {
     assert!(o.stderr.is_empty());
     assert!(f.in_work().is_empty());
 }
+
+/// A package that breaks "Layout of templates": `extra` is added to the
+/// files of the good package, listed in `sdk.json`.
+fn layout_cases() -> Vec<(&'static str, String)> {
+    vec![
+        ("README.txt", "README.txt".to_owned()),
+        ("unlisted", "holotape-b/robco.toml".to_owned()),
+        ("licence", "LICENSES/OTHER.txt".to_owned()),
+    ]
+}
+
+#[test]
+fn sdk_install_refuses_a_templates_package_outside_its_layout() {
+    for (tag, extra) in layout_cases() {
+        let f = Fixture::new(&format!("inst-{tag}"));
+        let mut files = package_files(TEMPLATES_JSON);
+        files.push((extra.clone(), b"extra\n".to_vec()));
+        files.sort();
+        f.index(&package_zip(&files));
+        let o = f.robco(&[
+            "sdk",
+            "install",
+            "templates",
+            "--index",
+            "../index.json",
+            "--json",
+        ]);
+        let (code, detail, _) = failure(&o);
+        assert_eq!(code, "package: manifest", "{tag}: {detail}");
+        assert!(detail.contains(&extra), "{tag}: {detail}");
+        assert!(!f.pkg().exists(), "{tag}");
+    }
+}
+
+#[test]
+fn new_refuses_a_cached_package_outside_its_layout() {
+    for (tag, extra) in layout_cases() {
+        let f = Fixture::new(&format!("cache-{tag}"));
+        f.good();
+        f.put(
+            &format!("cache/packages/templates/0.1.0/{extra}"),
+            b"extra\n",
+        );
+        let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+        let root = extra.split('/').next().unwrap();
+        let named = if tag == "licence" {
+            extra.as_str()
+        } else {
+            root
+        };
+        assert!(d.contains(named), "{tag}: {d}");
+    }
+    // An extra folder at the root, empty, is refused too.
+    let f = Fixture::new("cache-dir");
+    f.good();
+    fs::create_dir_all(f.pkg().join("docs")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("docs"), "{d}");
+    // A missing licence file is refused.
+    let f = Fixture::new("cache-nolicence");
+    f.good();
+    fs::remove_file(f.pkg().join("LICENSES/MIT.txt")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("LICENSES/MIT.txt"), "{d}");
+    // A listed template whose folder is missing is still refused.
+    let f = Fixture::new("cache-nofolder");
+    f.good();
+    fs::remove_dir_all(f.pkg().join("holotape-c")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("holotape-c/"), "{d}");
+}

@@ -1070,6 +1070,11 @@ fn extract_package(
             f.path
         )));
     }
+    // After the two checks above, so an unlisted entry or a listed one
+    // that is absent keeps its own error.
+    if entry.name == resolve::TEMPLATES {
+        check_templates_layout(&mut zip, &files, &dirs, limits)?;
+    }
 
     let outside = |n: &str| {
         bad(format!(
@@ -1125,7 +1130,7 @@ fn check_template_sizes(files: &[sdk_json::FileEntry], limits: Limits) -> Result
     let mut per: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
     for f in files {
         let (first, rest) = f.path.split_once('/').unwrap_or((f.path.as_str(), ""));
-        if f.path == "templates.json" {
+        if f.path == TEMPLATES_LIST {
             if f.size > limits.templates_list {
                 return Err(over(format!(
                     "templates.json: {} bytes, over the limit of {} bytes",
@@ -1157,6 +1162,109 @@ fn check_template_sizes(files: &[sdk_json::FileEntry], limits: Limits) -> Result
                 "{first}/: more than {} bytes in all",
                 limits.template_bytes
             )));
+        }
+    }
+    Ok(())
+}
+
+/// The file of a `templates` package that lists its templates.
+pub const TEMPLATES_LIST: &str = "templates.json";
+/// The files at the root of a `templates` package, by "Layout of
+/// templates" of `docs/spec/SDK_PACKAGE.md`.
+pub const TEMPLATES_ROOT_FILES: &[&str] = &[MANIFEST, TEMPLATES_LIST];
+/// The licences folder at the root of a `templates` package.
+pub const TEMPLATES_LICENCES_DIR: &str = "LICENSES";
+/// The files of the licences folder: the layout names `LICENSES/MIT.txt`
+/// only, so it must hold that file and holds nothing else.
+pub const TEMPLATES_LICENCES: &[&str] = &["MIT.txt"];
+
+/// "Layout of templates": whether a `templates` package may hold `path`, a
+/// `/` path from its root, a folder when `folder` is true. The root holds
+/// `sdk.json`, `templates.json`, `LICENSES/` and one folder per id that
+/// `templates.json` lists in `ids`, and "The archive holds nothing else".
+/// `cached` also allows the [`RECORD`] that a finished install writes at
+/// the root. What lies under a template folder is checked elsewhere, by
+/// `files` of `templates.json`.
+pub fn templates_layout_allows(path: &str, folder: bool, ids: &[&str], cached: bool) -> bool {
+    let (first, rest) = match path.split_once('/') {
+        Some((f, r)) => (f, Some(r)),
+        None => (path, None),
+    };
+    if ids.contains(&first) {
+        return rest.is_some() || folder;
+    }
+    match rest {
+        None if folder => first == TEMPLATES_LICENCES_DIR,
+        None => TEMPLATES_ROOT_FILES.contains(&first) || (cached && first == RECORD),
+        Some(r) => first == TEMPLATES_LICENCES_DIR && !folder && TEMPLATES_LICENCES.contains(&r),
+    }
+}
+
+/// The ids that `templates.json` lists, in its order. Only what the layout
+/// check needs is read here: `robco new` checks the rest of the file.
+pub fn template_ids(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("not UTF-8 JSON: {e}"))?;
+    let list = v
+        .get("templates")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("templates is missing or not an array")?;
+    list.iter()
+        .map(|t| {
+            t.get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| "a template has no string id".to_owned())
+        })
+        .collect()
+}
+
+/// "Layout of templates" for an archive: every file and folder must be one
+/// the layout allows, and each licence file must be there. Fails with
+/// `package: manifest` and names the entry.
+fn check_templates_layout(
+    zip: &mut zip::ZipArchive<File>,
+    files: &[PackageFile],
+    dirs: &[String],
+    limits: Limits,
+) -> Result<(), Error> {
+    let bad = |d: String| Error::Manifest(resolve::Error::PackageManifest(d));
+    let Some(list) = files.iter().find(|f| f.name == TEMPLATES_LIST) else {
+        return Err(bad(format!(
+            "{TEMPLATES_LIST}: a templates package must hold it"
+        )));
+    };
+    let mut lf = zip
+        .by_index(list.index)
+        .map_err(|e| Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {e}")))?;
+    let mut bytes = Vec::new();
+    let n = copy_bounded(&mut lf, &mut bytes, limits.templates_list).map_err(|e| {
+        Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {}", e.inner()))
+    })?;
+    if n > limits.templates_list {
+        return Err(bad(format!(
+            "{TEMPLATES_LIST} holds more than the limit of {} bytes",
+            limits.templates_list
+        )));
+    }
+    drop(lf);
+    let ids = template_ids(&bytes).map_err(|d| bad(format!("{TEMPLATES_LIST}: {d}")))?;
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let entries = files
+        .iter()
+        .map(|f| (f.name.as_str(), false))
+        .chain(dirs.iter().map(|d| (d.as_str(), true)));
+    for (name, folder) in entries {
+        if !templates_layout_allows(name, folder, &ids, false) {
+            return Err(bad(format!(
+                "{name}: the layout of a templates package does not hold it"
+            )));
+        }
+    }
+    for l in TEMPLATES_LICENCES {
+        let p = format!("{TEMPLATES_LICENCES_DIR}/{l}");
+        if !files.iter().any(|f| f.name == p) {
+            return Err(bad(format!("{p}: a templates package must hold it")));
         }
     }
     Ok(())

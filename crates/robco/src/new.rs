@@ -158,6 +158,7 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
         )
     })?;
     let templates = parse_templates(&list)?;
+    check_root(&pkg, &templates)?;
     for t in &templates {
         check_folder(&pkg, t)?;
     }
@@ -667,6 +668,66 @@ fn check_folder(pkg: &Path, t: &Template) -> Result<(), Failure> {
             "{}/{extra}: the package holds it, and files does not list it",
             t.id
         )));
+    }
+    Ok(())
+}
+
+/// "Layout of templates": the package root and its licences folder hold
+/// only what [`install::templates_layout_allows`] allows, the same rule
+/// the installer applies, and every licence file is there. A template
+/// folder that `templates.json` does not list is refused here; a listed
+/// one is checked by [`check_folder`].
+fn check_root(pkg: &Path, templates: &[Template]) -> Result<(), Failure> {
+    let layout_error = |d: String| Failure::new(TEMPLATES_MANIFEST, d);
+    let ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
+    let entries = |dir: &Path, rel: &str| -> Result<Vec<(String, bool)>, Failure> {
+        let mut v = Vec::new();
+        for entry in fs::read_dir(dir).map_err(|e| read_failure(dir, &e))? {
+            let entry = entry.map_err(|e| read_failure(dir, &e))?;
+            let name = entry.file_name().into_string().map_err(|n| {
+                layout_error(format!("{rel}{}: not a UTF-8 name", n.to_string_lossy()))
+            })?;
+            let kind = entry
+                .file_type()
+                .map_err(|e| read_failure(&entry.path(), &e))?;
+            if !kind.is_dir() && !kind.is_file() {
+                return Err(layout_error(format!(
+                    "{rel}{name}: a link or not a regular file"
+                )));
+            }
+            v.push((format!("{rel}{name}"), kind.is_dir()));
+        }
+        Ok(v)
+    };
+    let refuse = |name: &str| {
+        layout_error(format!(
+            "{name}: the layout of a templates package does not hold it"
+        ))
+    };
+    let mut licences = false;
+    for (name, folder) in entries(pkg, "")? {
+        if !install::templates_layout_allows(&name, folder, &ids, true) {
+            return Err(refuse(&name));
+        }
+        licences |= folder && name == install::TEMPLATES_LICENCES_DIR;
+    }
+    let dir = install::TEMPLATES_LICENCES_DIR;
+    let mut held = BTreeSet::new();
+    if licences {
+        for (name, folder) in entries(&pkg.join(dir), &format!("{dir}/"))? {
+            if !install::templates_layout_allows(&name, folder, &ids, true) {
+                return Err(refuse(&name));
+            }
+            held.insert(name);
+        }
+    }
+    for l in install::TEMPLATES_LICENCES {
+        let p = format!("{dir}/{l}");
+        if !held.contains(&p) {
+            return Err(layout_error(format!(
+                "{p}: a templates package must hold it"
+            )));
+        }
     }
     Ok(())
 }

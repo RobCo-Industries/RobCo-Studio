@@ -63,12 +63,16 @@ fn opts() -> SimpleFileOptions {
     SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)
 }
 
+/// The `templates.json` of the small package: one template.
+const TEMPLATES_JSON: &[u8] = b"{\"format\": 1, \"templates\": [{\"id\": \"holotape-c\"}]}\n";
+
 /// The files of a small `templates` package.
 fn files() -> Vec<(&'static str, &'static [u8])> {
     vec![
         ("holotape-c/robco.toml", b"[project]\nname = \"x\"\n"),
         ("holotape-c/src/main.c", b"int main(void) { return 0; }\n"),
-        ("templates.json", b"{\"format\": 1}\n"),
+        ("LICENSES/MIT.txt", b"MIT\n"),
+        ("templates.json", TEMPLATES_JSON),
     ]
 }
 
@@ -200,7 +204,7 @@ fn install_refuses_another_archive_in_the_cache_and_changes_nothing() {
     let d = Dir::new("other");
     install_zip(&d, &good_zip()).unwrap();
     let before = fs::read(pkg_dir(&d).join(RECORD)).unwrap();
-    let other = package_zip(&files(), &files()[..2]);
+    let other = package_zip(&files(), &files()[..3]);
     let e = entry_for("x.zip", &other);
     let r = package(&d.cache(), &e, &d.local(), Pin::Index).unwrap_err();
     assert_eq!(r.error_code(), "package: hash");
@@ -422,7 +426,7 @@ fn install_refuses_a_listed_file_that_is_absent() {
     let d = Dir::new("absent");
     let msg = refused(
         &d,
-        install_zip(&d, &package_zip(&files(), &files()[..2])),
+        install_zip(&d, &package_zip(&files(), &files()[..3])),
         "package: hash",
     );
     assert!(msg.contains("templates.json"), "{msg}");
@@ -520,7 +524,7 @@ fn install_replaces_an_unfinished_folder() {
         assert_eq!(install_zip(&d, &good_zip()), Ok(State::Installed));
         assert_eq!(
             fs::read(dir.join("templates.json")).unwrap(),
-            b"{\"format\": 1}\n"
+            TEMPLATES_JSON
         );
         assert!(d.temp_is_empty());
     }
@@ -571,7 +575,7 @@ fn install_two_at_once() {
     assert_eq!(cached(&pkg_dir(&d)), Ok(Cached::Holds(sha256_hex(&bytes))));
     assert_eq!(
         fs::read(pkg_dir(&d).join("templates.json")).unwrap(),
-        b"{\"format\": 1}\n"
+        TEMPLATES_JSON
     );
     assert!(d.temp_is_empty());
 }
@@ -1518,14 +1522,20 @@ fn a_package_file_never_writes_more_than_its_size_and_one_byte() {
 
 #[test]
 fn install_refuses_a_package_file_one_byte_over_or_under_its_size() {
-    let listed: &[(&str, &[u8])] = &[("templates.json", b"0123456789")];
+    let with = |licence: &'static [u8]| {
+        let mut v = files();
+        v.retain(|(p, _)| *p != "LICENSES/MIT.txt");
+        v.push(("LICENSES/MIT.txt", licence));
+        v
+    };
+    let listed = with(b"0123456789");
     for (put, ok) in [
         (&b"0123456789"[..], true),
         (&b"0123456789x"[..], false),
         (&b"012345678"[..], false),
     ] {
         let d = Dir::new("file-size");
-        let r = install_zip(&d, &package_zip(listed, &[("templates.json", put)]));
+        let r = install_zip(&d, &package_zip(&listed, &with(put)));
         if ok {
             assert_eq!(r, Ok(State::Installed));
         } else {
@@ -1817,7 +1827,7 @@ fn progress_of_a_good_package_and_of_one_in_the_cache() {
         (Ok(State::Present), strings(&["skip"]))
     );
     // Another archive in the cache fails where it would have installed.
-    let other = package_zip(&files(), &files()[..2]);
+    let other = package_zip(&files(), &files()[..3]);
     assert_eq!(
         watch_zip(&d, &other),
         (Err("package: hash".to_owned()), strings(&["start Install"]))
@@ -2136,7 +2146,7 @@ fn progress_puts_each_early_failure_in_a_step() {
 
 #[test]
 fn install_refuses_a_templates_package_over_its_template_limits() {
-    let list = b"{\"format\": 1}\n".len() as u64;
+    let list = TEMPLATES_JSON.len() as u64;
     let main = b"int main(void) { return 0; }\n".len() as u64;
     let toml = b"[project]\nname = \"x\"\n".len() as u64;
     let set = |l: &mut Limits, which: usize, v: u64| match which {
