@@ -4,6 +4,7 @@ members = [
     "crates/studio-sys",
     "crates/studio-disk",
     "crates/studio-core",
+    "crates/studio-net",
     "crates/robco",
     "crates/robco-studio",
 ]
@@ -24,6 +25,7 @@ publish = false
 studio-sys = { path = "crates/studio-sys" }
 studio-disk = { path = "crates/studio-disk" }
 studio-core = { path = "crates/studio-core" }
+studio-net = { path = "crates/studio-net" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

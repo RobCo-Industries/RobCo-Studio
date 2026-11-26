@@ -4,6 +4,16 @@
 
 [graph]
 all-features = true
+# The five hosts the index names. Without this list cargo-deny also checks
+# crates that only other targets build, such as webpki-root-certs
+# (CDLA-Permissive-2.0), which rustls-platform-verifier takes on wasm32 only.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 
 [licenses]
 confidence-threshold = 0.93
