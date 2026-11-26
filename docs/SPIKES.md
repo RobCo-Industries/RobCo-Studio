@@ -126,7 +126,7 @@ The owner decides. Each point lists the options as its page gives them. No optio
 
 ### The CRT look, from K8
 
-- With curvature on, AccessKit rectangles stop matching the drawn picture. Turn curvature off when AccessKit is active, or map the rectangles too. [K8](spikes/K8.md#what-it-means-for-studio)
+- With curvature on, AccessKit rectangles stop matching the drawn picture. The spike left two ways open: turn curvature off when AccessKit is active, or map the rectangles too. Studio maps the rectangles through the curve. [K8](spikes/K8.md#what-it-means-for-studio)
 
 ## What the spikes changed in the code that follows
 
