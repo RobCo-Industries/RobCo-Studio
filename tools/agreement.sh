@@ -66,7 +66,37 @@ set -euo pipefail
 die() { echo "agreement: $*" >&2; exit 1; }
 fail() { echo "agreement: FAILED: $*" >&2; exit 2; }
 
-# The first byte that differs, and the header field it falls in.
+# The field that holds file offset $2 of image $1, by RobCo-Core's
+# IMAGE_FORMAT.md and its names: the stub, the 64-byte rimg_header_t at
+# 0x20, the 192-byte META block at 0x60 when flags bit 0 of $1 is set, then
+# code and data.
+FIELDS="0x00 branch_stub 0x20 magic 0x28 hdr_version 0x2a hdr_size 0x2c flags
+0x30 load_addr 0x34 file_size 0x38 mem_size 0x3c crc32 0x40 abi_version
+0x44 image_version 0x48 subtype 0x4c name 0x5c reserved"
+field_at() {
+    local at=$2 field="" start name meta
+    meta=$(python3 -I -c '
+import sys
+d = open(sys.argv[1], "rb").read(0x30)
+print(1 if len(d) >= 0x30 and d[0x2c] & 1 else 0)' "$1")
+    # shellcheck disable=SC2086 # FIELDS is a list of words.
+    set -- $FIELDS
+    while [ "$#" -ge 2 ]; do
+        start=$(($1)) name=$2
+        shift 2
+        [ "$at" -lt "$start" ] || field=$name
+    done
+    if [ "$at" -ge $((0x60)) ]; then
+        if [ "$meta" = 1 ] && [ "$at" -lt $((0xa0)) ]; then field="META title"
+        elif [ "$meta" = 1 ] && [ "$at" -lt $((0x120)) ]; then field="META icon"
+        else field="code and data"
+        fi
+    fi
+    [ "$field" != branch_stub ] || field="branch stub"
+    echo "$field"
+}
+
+# The first byte that differs, and the field it falls in.
 first_diff() {
     local at
     at=$(cmp "$1" "$2" 2>/dev/null | sed -En "s/.* (byte|char) ([0-9]+).*/\2/p" || true)
@@ -75,20 +105,7 @@ first_diff() {
         return
     fi
     at=$((at - 1))
-    local field="code or data after the header"
-    if [ "$at" -lt 32 ]; then field="branch stub"
-    elif [ "$at" -lt 92 ]; then
-        case $(((at - 32) / 4)) in
-            0 | 1) field="magic" ;; 2) field="header_size" ;; 3) field="flags" ;;
-            4) field="load_addr" ;; 5) field="file_size" ;; 6) field="mem_size" ;;
-            7) field="crc32" ;; 8) field="abi_version" ;; 9) field="image_version" ;;
-            10) field="subtype" ;; *) field="name" ;;
-        esac
-    elif [ "$at" -lt 96 ]; then field="META block start"
-    elif [ "$at" -lt 160 ]; then field="META title"
-    elif [ "$at" -lt 288 ]; then field="META icon"
-    fi
-    printf 'first difference at byte 0x%x, %s\n' "$at" "$field"
+    printf 'first difference at byte 0x%x, %s\n' "$at" "$(field_at "$1" "$at")"
 }
 
 # Check 5: the file sealed by rimg.py ($1) and by the C sealer ($2).
