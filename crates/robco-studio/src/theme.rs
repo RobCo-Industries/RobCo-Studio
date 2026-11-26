@@ -40,13 +40,233 @@ impl Scheme {
     }
 }
 
-/// How much of the screen look is drawn.
+/// How the screen looks: the levels of View, Screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Effects {
-    /// No scanlines and no halo.
+pub enum Screen {
+    /// Nothing extra: no halo, no scanlines.
     Off,
-    /// Faint scanlines and a halo on lit things. The default.
+    /// Still overlays: faint scanlines, a halo on lit things, the baked
+    /// glow of the drawings. No screen pass. The default with no graphics
+    /// adapter.
     Soft,
+    /// The screen pass with the effects that do not move.
+    Still,
+    /// The screen pass with motion. The default on a graphics adapter.
+    Live,
+    /// The screen pass, everything strong.
+    Arcade,
+}
+
+impl Screen {
+    /// Every level, in menu order.
+    pub const ALL: [Screen; 5] = [
+        Screen::Off,
+        Screen::Soft,
+        Screen::Still,
+        Screen::Live,
+        Screen::Arcade,
+    ];
+
+    /// The level's name in the menu and on the status line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Screen::Off => "Off",
+            Screen::Soft => "Soft",
+            Screen::Still => "Still",
+            Screen::Live => "Live",
+            Screen::Arcade => "Arcade",
+        }
+    }
+
+    /// The level whose name is `name`, in any case.
+    pub fn from_name(name: &str) -> Option<Screen> {
+        Screen::ALL
+            .into_iter()
+            .find(|l| l.name().eq_ignore_ascii_case(name))
+    }
+
+    /// The level draws through the screen pass.
+    pub fn pass(self) -> bool {
+        matches!(self, Screen::Still | Screen::Live | Screen::Arcade)
+    }
+
+    /// The level moves: the scanlines drift.
+    pub fn moving(self) -> bool {
+        matches!(self, Screen::Live | Screen::Arcade)
+    }
+
+    /// The strengths of the level. Zero for the levels with no pass.
+    pub fn strengths(self) -> Strengths {
+        match self {
+            Screen::Off | Screen::Soft => Strengths::NONE,
+            Screen::Still => crt::STILL,
+            Screen::Live => crt::LIVE,
+            Screen::Arcade => crt::ARCADE,
+        }
+    }
+}
+
+/// The ten strengths of the screen pass, each from 0 to 1. Zero turns an
+/// effect off.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Strengths {
+    /// A glow around bright pixels.
+    pub bloom: f32,
+    /// Darker corners.
+    pub vignette: f32,
+    /// Dark lines across.
+    pub scanlines: f32,
+    /// The bulge of the glass.
+    pub curvature: f32,
+    /// The last frame fades instead of vanishing.
+    pub persistence: f32,
+    /// Grain that changes every frame.
+    pub noise: f32,
+    /// Brightness that wavers.
+    pub flicker: f32,
+    /// A bright band that rolls down the screen.
+    pub band: f32,
+    /// Red, green and blue columns of a colour tube.
+    pub mask: f32,
+    /// Red and blue pulled apart at the edges.
+    pub aberration: f32,
+}
+
+impl Strengths {
+    /// Every effect off.
+    pub const NONE: Strengths = Strengths {
+        bloom: 0.0,
+        vignette: 0.0,
+        scanlines: 0.0,
+        curvature: 0.0,
+        persistence: 0.0,
+        noise: 0.0,
+        flicker: 0.0,
+        band: 0.0,
+        mask: 0.0,
+        aberration: 0.0,
+    };
+
+    /// The ten names, in the order of [`Strengths::get`].
+    pub const NAMES: [&'static str; 10] = [
+        "Bloom",
+        "Vignette",
+        "Scanlines",
+        "Curvature",
+        "Persistence",
+        "Noise",
+        "Flicker",
+        "Rolling band",
+        "Shadow mask",
+        "Chromatic aberration",
+    ];
+
+    /// The strength at `i`, in the order of [`Strengths::NAMES`].
+    pub fn get_mut(&mut self, i: usize) -> Option<&mut f32> {
+        Some(match i {
+            0 => &mut self.bloom,
+            1 => &mut self.vignette,
+            2 => &mut self.scanlines,
+            3 => &mut self.curvature,
+            4 => &mut self.persistence,
+            5 => &mut self.noise,
+            6 => &mut self.flicker,
+            7 => &mut self.band,
+            8 => &mut self.mask,
+            9 => &mut self.aberration,
+            _ => return None,
+        })
+    }
+
+    /// The strength at `i`, in the order of [`Strengths::NAMES`].
+    pub fn get(&self, i: usize) -> Option<f32> {
+        let mut c = *self;
+        c.get_mut(i).map(|v| *v)
+    }
+
+    /// The same with every effect that moves turned off: what an
+    /// unfocused window holds.
+    pub fn still(&self) -> Strengths {
+        Strengths {
+            persistence: 0.0,
+            noise: 0.0,
+            flicker: 0.0,
+            band: 0.0,
+            ..*self
+        }
+    }
+}
+
+/// The screen pass's numbers.
+pub mod crt {
+    use super::Strengths;
+
+    /// Still: the pass with the effects that do not move.
+    pub const STILL: Strengths = Strengths {
+        bloom: 0.35,
+        vignette: 0.50,
+        scanlines: 0.30,
+        curvature: 0.12,
+        persistence: 0.0,
+        noise: 0.0,
+        flicker: 0.0,
+        band: 0.0,
+        mask: 0.0,
+        aberration: 0.0,
+    };
+    /// Live: the pass with motion.
+    pub const LIVE: Strengths = Strengths {
+        persistence: 0.50,
+        noise: 0.10,
+        flicker: 0.20,
+        band: 0.30,
+        ..STILL
+    };
+    /// Arcade: everything strong.
+    pub const ARCADE: Strengths = Strengths {
+        bloom: 0.60,
+        vignette: 0.80,
+        scanlines: 0.60,
+        curvature: 0.40,
+        persistence: 0.80,
+        noise: 0.40,
+        flicker: 0.50,
+        band: 0.60,
+        mask: 0.30,
+        aberration: 0.20,
+    };
+    /// The frame rates the Adjust dialog offers, a second.
+    pub const RATES: [u32; 3] = [15, 30, 60];
+    /// The longest step one frame adds to the screen's clock, in seconds:
+    /// one frame at the slowest rate. A late frame, or the first one after
+    /// the window was hidden, then moves the picture one frame on, not by
+    /// the whole time away.
+    pub const MAX_STEP: f32 = 1.0 / RATES[0] as f32;
+    /// The frame rate of Live and Arcade unless changed.
+    pub const RATE: u32 = 30;
+    /// Curvature 1 moves a corner of the glass by this part of the half
+    /// width. Keep in step with `curve` in `screen.wgsl`.
+    pub const CURVE: f32 = 0.12;
+    /// What persistence 1 keeps of the last frame after one frame at
+    /// [`PERSIST_RATE`].
+    pub const PERSIST_KEEP: f32 = 0.82;
+    /// The frame rate at which [`PERSIST_KEEP`] holds. At other rates the
+    /// fade is scaled by the time between frames.
+    pub const PERSIST_RATE: f32 = 30.0;
+    /// The afterglow ends below this share of the old picture: less than
+    /// one step of an 8-bit channel.
+    pub const AFTERGLOW_END: f32 = 1.0 / 256.0;
+    /// The time between frames that persistence assumes at most and at
+    /// least, in seconds.
+    pub const PERSIST_DT: [f32; 2] = [1.0 / 240.0, 0.25];
+    /// The scanline period, in points.
+    pub const SCAN_PERIOD: f32 = 3.0;
+    /// How fast the scanlines drift down, in points a second.
+    pub const SCAN_DRIFT: f32 = 6.0;
+    /// The steps of the pointer's inverse mapping.
+    pub const INVERSE_STEPS: usize = 50;
+    /// A slider moves by this step.
+    pub const SLIDER_STEP: f64 = 0.01;
 }
 
 /// The colour roles of one scheme.
@@ -86,70 +306,70 @@ const fn hex(v: u32) -> Color32 {
 
 /// The green scheme.
 pub const GREEN: Palette = Palette {
-    ground: hex(0x040906),
-    pane: hex(0x07110b),
-    raised: hex(0x0d1f14),
-    select: hex(0x143a22),
-    frame: hex(0x2f9150),
-    frame_dim: hex(0x1b4a2b),
-    dim: hex(0x74c08c),
-    text: hex(0xabedbd),
-    bright: hex(0x5cff8f),
-    ink: hex(0x03170a),
-    alarm: hex(0xff8170),
-    warn: hex(0xf0d264),
-    lit: hex(0xd6e98f),
+    ground: hex(0x05140a),
+    pane: hex(0x091d10),
+    raised: hex(0x0f3019),
+    select: hex(0x164524),
+    frame: hex(0x40ba60),
+    frame_dim: hex(0x216134),
+    dim: hex(0x82d893),
+    text: hex(0xa2f8ae),
+    bright: hex(0x5aff7f),
+    ink: hex(0x021a08),
+    alarm: hex(0xff8a78),
+    warn: hex(0xf5d86a),
+    lit: hex(0xdcf08f),
 };
 
 /// The amber scheme.
 pub const AMBER: Palette = Palette {
-    ground: hex(0x0a0703),
-    pane: hex(0x120c05),
-    raised: hex(0x22160a),
-    select: hex(0x40290d),
-    frame: hex(0xa87324),
-    frame_dim: hex(0x573a12),
-    dim: hex(0xcf9f5a),
-    text: hex(0xffd9a3),
-    bright: hex(0xffb23e),
-    ink: hex(0x1c0f00),
-    alarm: hex(0xff8691),
-    warn: hex(0xfff0c0),
-    lit: hex(0xf5e96b),
+    ground: hex(0x140c03),
+    pane: hex(0x1d1306),
+    raised: hex(0x30200a),
+    select: hex(0x46300f),
+    frame: hex(0xcc8d2e),
+    frame_dim: hex(0x6b4915),
+    dim: hex(0xe0ad66),
+    text: hex(0xffdb9e),
+    bright: hex(0xffb93f),
+    ink: hex(0x1f1100),
+    alarm: hex(0xff8f98),
+    warn: hex(0xfff2c4),
+    lit: hex(0xf8ec70),
 };
 
 /// The blue scheme.
 pub const BLUE: Palette = Palette {
-    ground: hex(0x04070a),
-    pane: hex(0x071018),
-    raised: hex(0x0d1d2b),
-    select: hex(0x143650),
-    frame: hex(0x3b86b8),
-    frame_dim: hex(0x1c435e),
-    dim: hex(0x7fb6d6),
-    text: hex(0xb5e0f7),
-    bright: hex(0x6cc9ff),
-    ink: hex(0x03121c),
-    alarm: hex(0xff8170),
-    warn: hex(0xf0d264),
-    lit: hex(0xd6e98f),
+    ground: hex(0x050f18),
+    pane: hex(0x091a27),
+    raised: hex(0x0f2a3e),
+    select: hex(0x163d5a),
+    frame: hex(0x4c9fd6),
+    frame_dim: hex(0x24526f),
+    dim: hex(0x8cc3e3),
+    text: hex(0xb9e5fb),
+    bright: hex(0x66c9ff),
+    ink: hex(0x02131f),
+    alarm: hex(0xff8a78),
+    warn: hex(0xf5d86a),
+    lit: hex(0xdcf08f),
 };
 
 /// The white scheme.
 pub const WHITE: Palette = Palette {
-    ground: hex(0x070808),
-    pane: hex(0x0e1010),
-    raised: hex(0x1a1d1d),
-    select: hex(0x2c3333),
-    frame: hex(0x7f8b8b),
-    frame_dim: hex(0x3b4242),
-    dim: hex(0xb0bcbc),
-    text: hex(0xe2ecec),
+    ground: hex(0x0b0e0e),
+    pane: hex(0x131717),
+    raised: hex(0x202626),
+    select: hex(0x303939),
+    frame: hex(0x96a4a4),
+    frame_dim: hex(0x495252),
+    dim: hex(0xbcc8c8),
+    text: hex(0xe8f1f1),
     bright: hex(0xf4ffff),
     ink: hex(0x0b1010),
-    alarm: hex(0xff8170),
-    warn: hex(0xf0d264),
-    lit: hex(0xd6e98f),
+    alarm: hex(0xff8a78),
+    warn: hex(0xf5d86a),
+    lit: hex(0xdcf08f),
 };
 
 /// High legibility: neutral text and frames. `bright` is the green value of
@@ -160,7 +380,7 @@ pub const HIGH_LEGIBILITY: Palette = Palette {
     pane: hex(0x131615),
     raised: hex(0x1e2321),
     select: hex(0x27382e),
-    frame: hex(0x828f87),
+    frame: hex(0x8a978f),
     frame_dim: hex(0x3c4540),
     dim: hex(0xb7c1ba),
     text: hex(0xf0f4f1),
@@ -177,9 +397,9 @@ pub mod size {
     pub const WINDOW: [f32; 2] = [1280.0, 720.0];
     /// The spacing unit. Steps are 4, 8, 12, 16 and 24.
     pub const UNIT: f32 = 4.0;
-    /// The widest a status bar segment gets; longer text is cut.
+    /// The widest a footer segment gets; longer text is cut.
     pub const SEGMENT_MAX: f32 = 180.0;
-    /// The narrowest the status message gets while segments remain.
+    /// The narrowest the footer message gets while segments remain.
     pub const MESSAGE_MIN: f32 = 160.0;
     /// Spacing steps.
     pub const STEP_6: f32 = 6.0;
@@ -191,20 +411,16 @@ pub mod size {
     pub const STEP_24: f32 = 24.0;
     /// 32.
     pub const STEP_32: f32 = 32.0;
-    /// The centre of a rail item's icon, from its top.
-    pub const RAIL_ICON_Y: f32 = 16.0;
-    /// The centre of a rail item's label, from its top.
-    pub const RAIL_LABEL_Y: f32 = 36.0;
     /// The unsaved-file dialog.
     pub const DIALOG_H: f32 = 108.0;
     /// Gap between panes, across.
     pub const GAP_ACROSS: f32 = 8.0;
-    /// Gap between panes, down. It leaves room for the label on the frame line.
-    pub const GAP_DOWN: f32 = 18.0;
+    /// Gap between panes, down.
+    pub const GAP_DOWN: f32 = 8.0;
     /// Pane padding at the sides.
     pub const PAD_SIDE: f32 = 10.0;
     /// Pane padding at the top.
-    pub const PAD_TOP: f32 = 14.0;
+    pub const PAD_TOP: f32 = 8.0;
     /// Pane padding at the bottom.
     pub const PAD_BOTTOM: f32 = 8.0;
     /// A control.
@@ -220,32 +436,101 @@ pub mod size {
     /// The menu row in the window.
     pub const MENU_H: f32 = 24.0;
     /// The toolbar.
-    pub const TOOLBAR_H: f32 = 44.0;
-    /// The rail.
-    pub const RAIL_W: f32 = 68.0;
-    /// A page button of the rail.
-    pub const RAIL_ITEM_H: f32 = 56.0;
-    /// The status bar.
-    pub const STATUS_H: f32 = 24.0;
-    /// The wordmark's height in the toolbar.
-    pub const WORDMARK_H: f32 = 26.0;
+    pub const TOOLBAR_H: f32 = 42.0;
+    /// The header band, tall.
+    pub const HEADER_H: f32 = 60.0;
+    /// The header band, compact.
+    pub const HEADER_COMPACT_H: f32 = 36.0;
+    /// The header is tall from this inner window height up, in points.
+    pub const HEADER_TALL_FROM: f32 = 720.0;
+    /// The space before the atom and after the skyline in the header.
+    pub const HEADER_PAD: f32 = 12.0;
+    /// The space at each side of the header's divider.
+    pub const HEADER_GAP: f32 = 14.0;
+    /// The header's divider, tall.
+    pub const HEADER_DIVIDER_H: f32 = 36.0;
+    /// The header's divider, compact.
+    pub const HEADER_DIVIDER_COMPACT_H: f32 = 20.0;
+    /// The Studio wordmark in the tall header.
+    pub const WORDMARK_H: f32 = 56.0;
+    /// The Studio wordmark in the compact header.
+    pub const WORDMARK_COMPACT_H: f32 = 32.0;
+    /// The atom mark in the tall header, square.
+    pub const ATOM: f32 = 52.0;
+    /// The atom mark in the compact header, square.
+    pub const ATOM_COMPACT: f32 = 24.0;
+    /// The skyline at the right of the header.
+    pub const SKYLINE: [f32; 2] = [392.0, 60.0];
+    /// The middle of the skyline's own rule, in its file's units from its
+    /// top. It lies on the header's rule.
+    pub const SKYLINE_RULE_Y: f32 = 59.0;
+    /// The one width of the four action buttons of the toolbar.
+    pub const TOOLBAR_ACTION_W: f32 = 132.0;
+    /// The space at each side of a divider in the toolbar.
+    pub const TOOLBAR_DIVIDER_GAP: f32 = 16.0;
+    /// A divider in the toolbar.
+    pub const TOOLBAR_DIVIDER_H: f32 = 26.0;
+    /// The footer.
+    pub const FOOTER_H: f32 = 28.0;
+    /// The Industries wordmark in the footer.
+    pub const FOOTER_MARK_H: f32 = 22.0;
+    /// The narrowest status line of the footer before it hides segments.
+    pub const FOOTER_MESSAGE_MIN: f32 = 360.0;
+    /// A divider in the footer.
+    pub const FOOTER_DIVIDER_H: f32 = 16.0;
+    /// A pane's title row with its 1 px rule.
+    pub const PANE_HEAD_H: f32 = 27.0;
+    /// A tab.
+    pub const TAB_H: f32 = 24.0;
+    /// A fact row of the Tape pane.
+    pub const ROW_FACT: f32 = 18.0;
+    /// The device drawing's box at zoom 1, without its glow.
+    pub const DEVICE: [f32; 2] = [392.0, 336.0];
+    /// How far the device texture reaches left of and above its box, at zoom 1.
+    pub const DEVICE_BLEED: [f32; 2] = [12.0, 14.0];
+    /// The top left of the screen opening in the device box, at zoom 1.
+    pub const DEVICE_SCREEN_AT: [f32; 2] = [36.0, 30.0];
+    /// The screen opening of the device at zoom 1: the machine's pixels.
+    pub const DEVICE_SCREEN: [f32; 2] = [320.0, 240.0];
+    /// The row of controls under the device.
+    pub const SIM_ROW_W: f32 = 380.0;
+    /// The tape drawing's box in the Tape pane, without its glow.
+    pub const TAPE_ART: [f32; 2] = [120.0, 76.0];
+    /// The label field of the tape drawing, in that box.
+    pub const TAPE_LABEL: [f32; 2] = [81.0, 18.0];
+    /// The top left of the tape's label field, in that box.
+    pub const TAPE_LABEL_AT: [f32; 2] = [10.0, 42.0];
+    /// The least room on each side of the longest project name on the
+    /// tape's label field.
+    pub const TAPE_LABEL_MARGIN: f32 = 4.0;
+    /// The card drawing's box, without its glow.
+    pub const CARD_ART: [f32; 2] = [120.0, 160.0];
     /// One icon.
     pub const ICON: f32 = 16.0;
+    /// The application icon given to the window, in pixels.
+    pub const APP_ICON: u32 = 256;
+    /// The application icon shows its small form up to this size, in pixels.
+    pub const APP_ICON_SMALL_MAX: u32 = 32;
     /// The editor gutter.
     pub const GUTTER_W: f32 = 52.0;
     /// Indent of one tree level.
     pub const TREE_INDENT: f32 = 14.0;
-    /// The project dropdown in the toolbar.
-    pub const PROJECT_DROPDOWN_W: f32 = 170.0;
     /// The target dropdown in the toolbar.
-    pub const TARGET_DROPDOWN_W: f32 = 190.0;
+    pub const TARGET_DROPDOWN_W: f32 = 192.0;
     /// A menu popup.
     pub const MENU_POPUP_W: f32 = 300.0;
+    /// The check mark of a menu row, and the lock in its place.
+    pub const MENU_MARK: f32 = 16.0;
+    /// From a menu row's left edge to its label. The mark sits in this
+    /// indent, which every row keeps, marked or not, so labels line up.
+    pub const MENU_MARK_INDENT: f32 = 28.0;
     /// The find field.
     pub const FIND_W: f32 = 190.0;
     /// The narrowest find or replace field: below it, the find bar's
     /// buttons wrap to a further row.
     pub const FIND_MIN: f32 = 100.0;
+    /// The log's filter field in the bottom pane's tab row.
+    pub const LOG_FILTER_W: f32 = 150.0;
     /// A dialog.
     pub const DIALOG_W: f32 = 440.0;
     /// The width of an empty state's sentence.
@@ -259,25 +544,57 @@ pub mod size {
     /// Simulator pane, default and narrowest: it only grows.
     pub const SIM_W: f32 = 408.0;
     /// Tape pane.
-    pub const TAPE_H: f32 = 122.0;
+    pub const TAPE_H: f32 = 118.0;
     /// Bottom pane, default.
-    pub const BOTTOM_H: f32 = 168.0;
+    pub const BOTTOM_H: f32 = 152.0;
     /// Bottom pane, lowest. The highest is half the page.
     pub const BOTTOM_MIN: f32 = 120.0;
     /// A divider strip, and the step of its arrow keys.
     pub const DIVIDER: f32 = 8.0;
-    /// The page margin, across: half a gap.
-    pub const PAGE_MARGIN_ACROSS: f32 = GAP_ACROSS / 2.0;
-    /// The page margin, down: half a gap.
-    pub const PAGE_MARGIN_DOWN: f32 = GAP_DOWN / 2.0;
+    /// The page margin at the top and the bottom.
+    pub const PAGE_MARGIN_DOWN: f32 = 6.0;
+    /// The page margin at the left.
+    pub const PAGE_MARGIN_LEFT: f32 = 4.0;
+    /// The page margin at the right.
+    pub const PAGE_MARGIN_RIGHT: f32 = 8.0;
+    /// The space between the header's marks, and between the skyline and
+    /// the window's right edge.
+    pub const HEADER_MARK_GAP: f32 = 8.0;
+    /// The space between the two caps lines of the header.
+    pub const HEADER_LINE_GAP: f32 = 3.0;
+    /// The skyline hides when less than this would stay before it.
+    pub const SKYLINE_ROOM: f32 = 24.0;
+    /// A menu name's shape in the menu row.
+    pub const MENU_ITEM_H: f32 = 22.0;
+    /// The padding at each side of a menu name, a tab and a button.
+    pub const LABEL_PAD: f32 = 10.0;
+    /// The space between an icon and the label after it.
+    pub const ICON_GAP: f32 = 7.0;
+    /// The toolbar's four actions: their space from the edge and apart.
+    pub const TOOLBAR_GAP: f32 = 8.0;
+    /// Tabs start this far in from the pane's left edge.
+    pub const TAB_INSET: f32 = 6.0;
+    /// The space between two tabs.
+    pub const TAB_GAP: f32 = 4.0;
+    /// The padding of a footer segment.
+    pub const FOOTER_SEG_PAD: f32 = 9.0;
+    /// The middle part of the zoom group, which names the step.
+    pub const ZOOM_NAME_W: f32 = 36.0;
+    /// The space between the device and the honest line, and between the
+    /// line and the row under it.
+    pub const SIM_ROW_GAP: f32 = 4.0;
+    /// The meter after the slot fact of the Tape pane.
+    pub const METER_W: f32 = 56.0;
+    /// The space between the tape drawing and its facts.
+    pub const TAPE_FACTS_GAP: f32 = 16.0;
 }
 
 /// Radii and strokes.
 pub mod stroke {
-    /// The clipped top right corner of a pane.
-    pub const PANE_CLIP: f32 = 9.0;
     /// The radius of a control.
-    pub const CONTROL_RADIUS: u8 = 2;
+    pub const CONTROL_RADIUS: u8 = 3;
+    /// The radius of a pane.
+    pub const PANE_RADIUS: u8 = 4;
     /// A frame.
     pub const FRAME: f32 = 1.0;
     /// The focus ring, and its distance from the control.
@@ -286,8 +603,6 @@ pub mod stroke {
     pub const FOCUS_GAP: f32 = 2.0;
     /// The bar at the left edge of a selected row.
     pub const SELECT_BAR: f32 = 3.0;
-    /// The bar on top of the active tab.
-    pub const TAB_BAR: f32 = 2.0;
     /// The editor caret.
     pub const CARET: f32 = 2.0;
     /// An icon's stroke on its 16 px grid.
@@ -312,10 +627,12 @@ pub mod text {
     pub const CODE: f32 = 13.0;
     /// Code line height.
     pub const CODE_LINE: f32 = 19.0;
-    /// Small text: logs, hints, the status bar.
+    /// Small text: logs, hints, the footer.
     pub const SMALL: f32 = 12.0;
-    /// Tiny text: column heads only.
+    /// Tiny text: column heads and the line under the device.
     pub const TINY: f32 = 11.0;
+    /// The space added after each cell of a tracked label, in font pixels.
+    pub const LABEL_TRACKING: f32 = 2.0;
     /// Labels fall back to Plex Mono bold when the nearest whole Spleen
     /// scale is off by more than this part of the display scale.
     pub const LABEL_SCALE_TOLERANCE: f32 = 0.12;
@@ -328,11 +645,25 @@ pub mod effect {
     /// Scanline period in device pixels.
     pub const SCANLINE_PERIOD: usize = 3;
     /// Halo blur.
-    pub const HALO_BLUR: u8 = 10;
+    pub const HALO_BLUR: u8 = 12;
     /// Halo spread.
-    pub const HALO_SPREAD: u8 = 1;
-    /// Halo alpha, out of 1, of `bright`.
-    pub const HALO_ALPHA: f32 = 0.30;
+    pub const HALO_SPREAD: u8 = 0;
+    /// Halo alpha at Soft, out of 1, of `bright`.
+    pub const HALO_ALPHA: f32 = 0.38;
+    /// The focused pane's halo, as a part of the halo alpha.
+    pub const HALO_PANE: f32 = 0.7;
+    /// A pressed filled button moves this far towards `ink`.
+    pub const PRESS_DARKEN: f32 = 0.22;
+    /// The label halo's tint at Soft, out of 1, of the label colour.
+    pub const LABEL_HALO_SOFT: f32 = 0.30;
+    /// The label halo's Gaussian, in font pixels.
+    pub const LABEL_HALO_SIGMA: f32 = 1.5;
+    /// The room around each glyph of the label halo atlas, in font pixels.
+    pub const LABEL_HALO_PAD: usize = 4;
+    /// The device with no machine running, out of 1, of `bright`.
+    pub const DEVICE_IDLE: f32 = 0.62;
+    /// A tape that is not built, out of 1, of `bright`.
+    pub const TAPE_IDLE: f32 = 0.5;
     /// The scrim under a dialog, out of 1, black.
     pub const SCRIM: f32 = 0.62;
     /// A hovered filled button gets this much lighter.
@@ -372,7 +703,7 @@ pub enum Type {
     CodeBold,
     /// Code in italic.
     CodeItalic,
-    /// Logs, hints, tags, the status bar.
+    /// Logs, hints, tags, the footer.
     Small,
     /// Column heads only.
     Tiny,
@@ -380,15 +711,15 @@ pub enum Type {
     LabelFallback,
 }
 
-/// The scheme, the mode and the effects of the running window.
+/// The scheme, the mode and the screen level of the running window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     /// The phosphor.
     pub scheme: Scheme,
-    /// Neutral text and frames, effects off.
+    /// Neutral text and frames, the screen Off.
     pub high_legibility: bool,
-    /// Effects, unless high legibility forces them off.
-    pub effects: Effects,
+    /// The screen level, unless high legibility forces it Off.
+    pub screen: Screen,
 }
 
 impl Default for Theme {
@@ -396,7 +727,7 @@ impl Default for Theme {
         Self {
             scheme: Scheme::Green,
             high_legibility: false,
-            effects: Effects::Soft,
+            screen: Screen::Soft,
         }
     }
 }
@@ -420,13 +751,20 @@ impl Theme {
         p
     }
 
-    /// The effects actually drawn: high legibility forces Off.
-    pub fn effects(&self) -> Effects {
+    /// The screen level actually drawn: high legibility forces Off.
+    pub fn screen(&self) -> Screen {
         if self.high_legibility {
-            Effects::Off
+            Screen::Off
         } else {
-            self.effects
+            self.screen
         }
+    }
+
+    /// The kit draws its still glow: rectangle halos, label halos, the
+    /// scanline quad and the drawings' baked halo groups. Only at Soft:
+    /// the screen pass's bloom does that work at the pass levels.
+    pub fn still_glow(&self) -> bool {
+        self.screen() == Screen::Soft
     }
 
     /// The font of a text role. High legibility raises body and code to 14.
@@ -460,9 +798,24 @@ impl Theme {
         CornerRadius::same(stroke::CONTROL_RADIUS)
     }
 
-    /// The halo under a lit thing, or None with effects off.
+    /// The radius of a pane.
+    pub fn pane_radius(&self) -> CornerRadius {
+        CornerRadius::same(stroke::PANE_RADIUS)
+    }
+
+    /// The radius of a tab: its two top corners.
+    pub fn tab_radius(&self) -> CornerRadius {
+        CornerRadius {
+            nw: stroke::CONTROL_RADIUS,
+            ne: stroke::CONTROL_RADIUS,
+            sw: 0,
+            se: 0,
+        }
+    }
+
+    /// The halo under a lit thing, or None but at Soft.
     pub fn halo(&self) -> Option<Shadow> {
-        (self.effects() == Effects::Soft).then(|| Shadow {
+        self.still_glow().then(|| Shadow {
             offset: [0, 0],
             blur: effect::HALO_BLUR,
             spread: effect::HALO_SPREAD,
@@ -480,6 +833,28 @@ impl Theme {
         lighten(c, effect::HOVER_LIGHTEN)
     }
 
+    /// A filled button's colour when pressed: moved towards `ink`.
+    pub fn pressed(&self, c: Color32) -> Color32 {
+        mix(c, self.palette().ink, effect::PRESS_DARKEN)
+    }
+
+    /// The focused pane's halo: the halo at part of its strength.
+    pub fn pane_halo(&self) -> Option<Shadow> {
+        self.halo().map(|mut h| {
+            h.color = self
+                .palette()
+                .bright
+                .gamma_multiply(effect::HALO_ALPHA * effect::HALO_PANE);
+            h
+        })
+    }
+
+    /// The tint of a bright caps label's halo, out of 1, or None but at
+    /// Soft.
+    pub fn label_halo(&self) -> Option<f32> {
+        self.still_glow().then_some(effect::LABEL_HALO_SOFT)
+    }
+
     /// The fill under an error row: 12 percent `alarm` over `pane`.
     pub fn error_row(&self) -> Color32 {
         let p = self.palette();
@@ -487,9 +862,9 @@ impl Theme {
     }
 
     /// The scanline texture: `SCANLINE_PERIOD` rows of one device pixel,
-    /// black with alpha in the first row. None with effects off.
+    /// black with alpha in the first row. None but at Soft.
     pub fn scanline_image(&self) -> Option<egui::ColorImage> {
-        if self.effects() == Effects::Off {
+        if !self.still_glow() {
             return None;
         }
         let mut px = vec![Color32::TRANSPARENT; effect::SCANLINE_PERIOD];
@@ -531,8 +906,8 @@ impl Theme {
             v.faint_bg_color = p.raised;
             v.code_bg_color = p.pane;
             v.window_stroke = me.frame(p.frame);
-            v.window_corner_radius = CornerRadius::ZERO;
-            v.menu_corner_radius = CornerRadius::ZERO;
+            v.window_corner_radius = me.pane_radius();
+            v.menu_corner_radius = me.control_radius();
             v.window_shadow = Shadow::NONE;
             v.popup_shadow = Shadow::NONE;
             v.selection.bg_fill = p.select;
@@ -612,19 +987,102 @@ mod tests {
             assert!(ratio(p.ink, p.bright) >= 4.5);
             assert!(ratio(p.frame, p.pane) >= 3.0);
             assert!(ratio(p.frame, p.select) >= 3.0);
+            assert!(ratio(p.text, p.raised) >= 4.5);
+            assert!(ratio(p.frame, p.raised) >= 3.0);
+            let pressed = mix(p.bright, p.ink, effect::PRESS_DARKEN);
+            assert!(ratio(p.ink, pressed) >= 4.5);
+            assert!(ratio(p.bright, mix(p.pane, p.bright, 0.29)) >= 4.5);
         }
     }
 
+    /// The pressed fill is the colour moved towards `ink`, and darker.
     #[test]
-    fn high_legibility_turns_effects_off() {
+    fn pressed_moves_towards_ink() {
+        let t = Theme::default();
+        let p = t.palette();
+        assert_eq!(
+            t.pressed(p.bright),
+            mix(p.bright, p.ink, effect::PRESS_DARKEN)
+        );
+        assert!(luminance(t.pressed(p.bright)) < luminance(p.bright));
+    }
+
+    #[test]
+    fn halos_only_at_soft() {
+        let on = Theme::default();
+        assert!(on.pane_halo().is_some() && on.label_halo().is_some());
+        assert!(on.scanline_image().is_some());
+        for level in [Screen::Off, Screen::Still, Screen::Live, Screen::Arcade] {
+            let off = Theme {
+                screen: level,
+                ..on
+            };
+            assert!(
+                off.pane_halo().is_none() && off.label_halo().is_none(),
+                "{level:?}"
+            );
+            assert!(off.scanline_image().is_none(), "{level:?}");
+        }
+        let (h, f) = (on.halo().map(|s| s.color), on.pane_halo().map(|s| s.color));
+        assert!(f.zip(h).is_some_and(|(f, h)| f.a() < h.a()));
+    }
+
+    /// The colour tables hold the values of the design, spot checked.
+    #[test]
+    fn palettes_hold_the_new_values() {
+        assert_eq!(GREEN.ground, hex(0x05140a));
+        assert_eq!(GREEN.bright, hex(0x5aff7f));
+        assert_eq!(AMBER.frame, hex(0xcc8d2e));
+        assert_eq!(BLUE.pane, hex(0x091a27));
+        assert_eq!(WHITE.select, hex(0x303939));
+        assert_eq!(HIGH_LEGIBILITY.frame, hex(0x8a978f));
+    }
+
+    #[test]
+    fn high_legibility_turns_the_screen_off() {
         let t = Theme {
             high_legibility: true,
+            screen: Screen::Arcade,
             ..Theme::default()
         };
-        assert_eq!(t.effects(), Effects::Off);
+        assert_eq!(t.screen(), Screen::Off);
         assert!(t.halo().is_none());
         assert!(t.scanline_image().is_none());
         assert_eq!(t.palette().text, HIGH_LEGIBILITY.text);
+    }
+
+    /// The levels hold their numbers: Still, Live and Arcade.
+    #[test]
+    fn levels_hold_their_numbers() {
+        let still = Screen::Still.strengths();
+        assert_eq!(
+            [
+                still.bloom,
+                still.vignette,
+                still.scanlines,
+                still.curvature
+            ],
+            [0.35, 0.50, 0.30, 0.12]
+        );
+        for i in 4..10 {
+            assert_eq!(still.get(i), Some(0.0), "{}", Strengths::NAMES[i]);
+        }
+        let live = Screen::Live.strengths();
+        let want = [0.35, 0.50, 0.30, 0.12, 0.50, 0.10, 0.20, 0.30, 0.0, 0.0];
+        let arcade = [0.60, 0.80, 0.60, 0.40, 0.80, 0.40, 0.50, 0.60, 0.30, 0.20];
+        for i in 0..10 {
+            assert_eq!(live.get(i), Some(want[i]), "{}", Strengths::NAMES[i]);
+            assert_eq!(Screen::Arcade.strengths().get(i), Some(arcade[i]));
+            assert_eq!(Screen::Off.strengths().get(i), Some(0.0));
+            assert_eq!(Screen::Soft.strengths().get(i), Some(0.0));
+        }
+        assert_eq!(Strengths::NONE.get(10), None);
+        assert!(Screen::Live.moving() && Screen::Arcade.moving() && !Screen::Still.moving());
+        assert!(!Screen::Soft.pass() && !Screen::Off.pass() && Screen::Still.pass());
+        assert_eq!(Screen::from_name("live"), Some(Screen::Live));
+        assert_eq!(Screen::from_name("full"), None);
+        assert_eq!(live.still().noise, 0.0);
+        assert_eq!(live.still().bloom, live.bloom);
     }
 
     #[test]

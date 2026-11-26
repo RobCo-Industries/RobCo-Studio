@@ -366,6 +366,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tape"
       - name: robco build
         run: cargo test --locked -p robco --test build
+      - name: robco new, then robco build in the new project
+        run: cargo test --locked -p robco --test new new_the_new_project_builds
       - name: rimg.py verify passes
         if: runner.os == 'Linux'
         run: python -I external/robco-core/tools/rimg.py verify "$RUNNER_TEMP/tape/TINY.HTP"

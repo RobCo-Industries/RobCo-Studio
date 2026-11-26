@@ -1,32 +1,72 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `robco-studio [FOLDER]` opens the Studio window, on FOLDER as the project
-//! when one is given. `robco-studio --version` prints the version.
+//! `robco-studio [--screen LEVEL] [FOLDER]` opens the Studio window, on
+//! FOLDER as the project when one is given, with the screen at LEVEL: off,
+//! soft, still, live or arcade. `robco-studio --version` prints the
+//! version.
 #![forbid(unsafe_code)]
 
-use robco_studio::{Studio, theme};
+use robco_studio::Studio;
+use robco_studio::screen::{self, Adapter};
+use robco_studio::theme::{self, Screen};
 use std::path::PathBuf;
+
+const USAGE: &str = "usage: robco-studio [--screen off|soft|still|live|arcade] [FOLDER]";
 
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args_os().skip(1);
-    let folder = match args.next() {
-        Some(a) if a == "--version" => {
+    let mut folder = None;
+    let mut asked = None;
+    while let Some(a) = args.next() {
+        if a == "--version" {
             println!("robco-studio {}", studio_core::VERSION);
             return std::process::ExitCode::SUCCESS;
         }
-        Some(a) => Some(PathBuf::from(a)),
-        None => None,
-    };
+        if a == "--screen" {
+            let level = args.next();
+            match level
+                .as_ref()
+                .and_then(|l| l.to_str())
+                .and_then(Screen::from_name)
+            {
+                Some(l) => asked = Some(l),
+                None => {
+                    eprintln!(
+                        "robco-studio: --screen takes off, soft, still, live or arcade\n{USAGE}"
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+        } else if folder.is_none() {
+            folder = Some(PathBuf::from(a));
+        } else {
+            eprintln!("robco-studio: one folder at most\n{USAGE}");
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size(theme::size::WINDOW)
+        .with_min_inner_size(theme::size::WINDOW)
+        .with_title("RobCo Studio");
+    if let Some(icon) = robco_studio::art::app_icon(theme::size::APP_ICON) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size(theme::size::WINDOW)
-            .with_min_inner_size(theme::size::WINDOW)
-            .with_title("RobCo Studio"),
+        viewport,
         ..Default::default()
     };
     let studio = Studio::new(folder.as_deref());
     let start = Box::new(
         |cc: &eframe::CreationContext<'_>| -> Result<Box<dyn eframe::App>, _> {
+            let mut studio = studio;
+            let rs = cc.wgpu_render_state.as_ref();
+            let adapter = rs.map_or(Adapter::Unknown, |rs| {
+                Adapter::of(rs.adapter.get_info().device_type)
+            });
+            // The pass is made only where it can run.
+            let gpu = rs.filter(|_| adapter == Adapter::Hardware);
+            let reduce = screen::system_reduce_motion();
+            studio.start_screen(&cc.egui_ctx, adapter, gpu, reduce, asked);
             Ok(Box::new(Window::new(studio, &cc.egui_ctx)))
         },
     );
@@ -49,7 +89,7 @@ struct Window {
 impl Window {
     #[cfg(target_os = "macos")]
     fn new(mut studio: Studio, ctx: &eframe::egui::Context) -> Self {
-        let menu = match robco_studio::native_menu::NativeMenu::install(ctx.clone()) {
+        let menu = match robco_studio::native_menu::NativeMenu::install(ctx.clone(), &studio) {
             Ok(m) => {
                 studio.menu_row = false;
                 Some(m)
@@ -78,5 +118,9 @@ impl eframe::App for Window {
             self.studio.pending.extend(m.take_commands());
         }
         self.studio.ui(ui);
+        #[cfg(target_os = "macos")]
+        if let Some(m) = &mut self._menu {
+            m.sync(&self.studio);
+        }
     }
 }
