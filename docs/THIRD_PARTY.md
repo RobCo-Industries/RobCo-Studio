@@ -143,6 +143,14 @@ The window bundles two fonts. Each comes from its official release, checked agai
 
 They live in `crates/robco-studio/assets/fonts/`. `REUSE.toml` names their licences. The OFL lets a font ship inside a program as long as the font is not sold alone and its licence goes with it. "Plex" is a Reserved Font Name: the files are not changed, so the name stays.
 
+## The robco program
+
+`robco` is GPL-3.0-or-later. Each release program contains Rust crates and RobCo-Core's C, among it FatFs. Their licences ask that a binary carry their notices. So each program of a pre-release comes with `robco-<system>-NOTICES.txt`.
+
+[`tools/release/notices.py`](../tools/release/notices.py) writes the file on the runner that built the program. `cargo tree --locked --offline` names the crates compiled into `robco` for that target: normal dependencies only, without build and test dependencies and without procedural macros. `cargo metadata` gives each crate's declared licence and its source folder, from which the script copies every `LICENSE`, `LICENCE`, `COPYING`, `NOTICE` and `UNLICENSE` file. It fetches nothing: cargo has already downloaded the crates for the build. The licence files of RobCo-Core and FatFs come last. A crate that declares no licence fails the step.
+
+On 2026-11-26 the macOS program holds 51 crates, Linux 47 and Windows 56. Each of them ships at least one licence file. No new tool was needed, so `cargo-about` and `cargo-license` are not used.
+
 ## Open points
 
 - **Needs legal review**: that downloading xPack's archive for the user is not distribution by Studio.
