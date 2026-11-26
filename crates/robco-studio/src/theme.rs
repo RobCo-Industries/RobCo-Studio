@@ -177,6 +177,10 @@ pub mod size {
     pub const WINDOW: [f32; 2] = [1280.0, 720.0];
     /// The spacing unit. Steps are 4, 8, 12, 16 and 24.
     pub const UNIT: f32 = 4.0;
+    /// The widest a status bar segment gets; longer text is cut.
+    pub const SEGMENT_MAX: f32 = 180.0;
+    /// The narrowest the status message gets while segments remain.
+    pub const MESSAGE_MIN: f32 = 160.0;
     /// Spacing steps.
     pub const STEP_6: f32 = 6.0;
     /// 12.

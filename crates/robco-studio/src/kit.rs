@@ -1077,29 +1077,39 @@ impl<'a> Kit<'a> {
         resp
     }
 
-    /// Paint one segment of the status bar from `x`, right to left. Returns
-    /// the new right edge.
-    pub fn status_segment(
-        &self,
-        ui: &mut Ui,
-        right: f32,
-        rect: Rect,
-        icon: Option<Icon>,
-        text: &str,
-    ) -> f32 {
-        let p = self.p();
-        let painter = ui.painter();
-        let g = painter.layout_no_wrap(text.to_owned(), self.theme.font(Type::Small), p.text);
-        let pad = size::UNIT * 2.0;
+    /// The width one status bar segment wants for `text`, uncut.
+    pub fn status_segment_width(&self, ui: &Ui, icon: Option<Icon>, text: &str) -> f32 {
+        let g = ui.painter().layout_no_wrap(
+            text.to_owned(),
+            self.theme.font(Type::Small),
+            self.p().text,
+        );
+        Self::status_segment_chrome(icon) + g.size().x
+    }
+
+    /// The padding and icon width of a segment, around its text.
+    fn status_segment_chrome(icon: Option<Icon>) -> f32 {
         let icon_w = if icon.is_some() {
             size::ICON + size::UNIT
         } else {
             0.0
         };
-        let w = pad * 2.0 + icon_w + g.size().x;
-        let r = Rect::from_min_max(
-            egui::pos2(right - w, rect.top()),
-            egui::pos2(right, rect.bottom()),
+        size::UNIT * 2.0 * 2.0 + icon_w
+    }
+
+    /// Paint one segment of the status bar in `r`. Text that does not fit
+    /// is cut with an ellipsis and shown whole in a tooltip.
+    pub fn status_segment(&self, ui: &mut Ui, r: Rect, icon: Option<Icon>, text: &str) {
+        let p = self.p();
+        let painter = ui.painter().clone();
+        let pad = size::UNIT * 2.0;
+        let icon_w = Self::status_segment_chrome(icon) - pad * 2.0;
+        let (g, cut) = self.fit(
+            &painter,
+            text,
+            Type::Small,
+            p.text,
+            r.width() - Self::status_segment_chrome(icon),
         );
         painter.line_segment(
             [r.left_top(), r.left_bottom()],
@@ -1107,7 +1117,7 @@ impl<'a> Kit<'a> {
         );
         if let Some(i) = icon {
             self.art.icon(
-                painter,
+                &painter,
                 Rect::from_min_size(
                     egui::pos2(r.left() + pad, r.top()),
                     egui::vec2(size::ICON, r.height()),
@@ -1119,7 +1129,7 @@ impl<'a> Kit<'a> {
         let y = r.center().y - g.size().y / 2.0;
         painter.galley(egui::pos2(r.left() + pad + icon_w, y), g, p.text);
         // In the accessibility tree too: an invisible label over the segment.
-        ui.put(
+        let resp = ui.put(
             r,
             egui::Label::new(
                 egui::RichText::new(text)
@@ -1127,6 +1137,8 @@ impl<'a> Kit<'a> {
                     .font(self.theme.font(Type::Small)),
             ),
         );
-        r.left()
+        if cut {
+            resp.on_hover_text(text);
+        }
     }
 }

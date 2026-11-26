@@ -651,23 +651,28 @@ impl Studio {
             [rect.left_top(), rect.right_top()],
             kit.theme.frame(p.frame_dim),
         );
-        let mut right = rect.right();
         let caret = (self.page == Page::Project
             && self.focused_place(ui.ctx()) == Some(Place::Editor))
         .then(|| self.editor.current().and_then(|d| d.caret))
         .flatten();
+        // Right to left, from the corner.
+        let mut segs: Vec<(Option<Icon>, String)> = Vec::new();
         if let Some((l, c)) = caret {
-            right = kit.status_segment(&mut s, right, rect, None, &format!("Ln {l}, Col {c}"));
+            segs.push((None, format!("Ln {l}, Col {c}")));
         }
-        right = kit.status_segment(&mut s, right, rect, Some(Icon::Cable), "Link off");
-        right = kit.status_segment(&mut s, right, rect, Some(Icon::Wrist), "Sim off");
-        right = kit.status_segment(&mut s, right, rect, None, "SDK not checked");
+        segs.push((Some(Icon::Cable), "Link off".to_owned()));
+        segs.push((Some(Icon::Wrist), "Sim off".to_owned()));
+        segs.push((None, "SDK not checked".to_owned()));
         if let Some(pr) = &self.project {
             if let Manifest::Read { target, .. } = &pr.manifest {
-                right = kit.status_segment(&mut s, right, rect, None, target);
+                segs.push((None, target.clone()));
             }
-            right = kit.status_segment(&mut s, right, rect, None, &pr.name());
+            segs.push((None, pr.name()));
         }
+        let wants: Vec<f32> = segs
+            .iter()
+            .map(|(i, t)| kit.status_segment_width(&s, *i, t))
+            .collect();
         let (level, text) = &self.status;
         let icon = Rect::from_min_size(
             egui::pos2(rect.left() + size::UNIT * 2.0, rect.top()),
@@ -675,9 +680,16 @@ impl Studio {
         );
         kit.art
             .icon(s.painter(), icon, level.icon(), level.color(&p));
+        let lay = status_layout(icon.right() + size::UNIT * 2.0, rect.right(), &wants);
+        for ((i, t), x) in segs.iter().zip(&lay.segs) {
+            if let Some((l, r)) = *x {
+                let r = Rect::from_min_max(egui::pos2(l, rect.top()), egui::pos2(r, rect.bottom()));
+                kit.status_segment(&mut s, r, *i, t);
+            }
+        }
         let msg = Rect::from_min_max(
-            egui::pos2(icon.right() + size::UNIT * 2.0, rect.top()),
-            egui::pos2(right - size::UNIT * 2.0, rect.bottom()),
+            egui::pos2(lay.msg.0, rect.top()),
+            egui::pos2(lay.msg.1, rect.bottom()),
         );
         s.scope_builder(
             UiBuilder::new()
@@ -1153,6 +1165,51 @@ pub struct Panes {
     pub show_bottom: bool,
 }
 
+/// Where the status bar's parts go, as left and right edges.
+#[derive(Debug)]
+pub struct StatusLayout {
+    /// One per segment, in the order given; `None` for one left out.
+    pub segs: Vec<Option<(f32, f32)>>,
+    /// The message.
+    pub msg: (f32, f32),
+}
+
+/// Lay out the status bar between `left`, where the message starts, and
+/// `right`. `wants` are the segments' widths, from the right corner
+/// leftwards. Each segment is capped at [`size::SEGMENT_MAX`]. While the message
+/// would get less than [`size::MESSAGE_MIN`], the leftmost segment left is
+/// dropped: the project name first, the caret last. No part ever gets a
+/// negative width, and none leaves `left..right`.
+pub fn status_layout(left: f32, right: f32, wants: &[f32]) -> StatusLayout {
+    let left = left.min(right);
+    let gap = size::UNIT * 2.0;
+    let widths: Vec<f32> = wants
+        .iter()
+        .map(|w| w.clamp(0.0, size::SEGMENT_MAX))
+        .collect();
+    let mut keep = widths.len();
+    while keep > 0 && right - widths[..keep].iter().sum::<f32>() - gap - left < size::MESSAGE_MIN {
+        keep -= 1;
+    }
+    let mut x = right;
+    let segs = widths
+        .iter()
+        .enumerate()
+        .map(|(k, w)| {
+            (k < keep).then(|| {
+                let l = x - w;
+                let seg = (l, x);
+                x = l;
+                seg
+            })
+        })
+        .collect();
+    StatusLayout {
+        segs,
+        msg: (left, (x - gap).max(left)),
+    }
+}
+
 /// Lay out the project page in `page`. The window's minimum size fits
 /// every pane; given less anyway, Files is left out first, the simulator
 /// shrinks, and no rectangle gets a negative width or height.
@@ -1321,5 +1378,42 @@ mod tests {
             Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0 - 76.0, 720.0 - 100.0)),
         );
         assert!(p.show_files && p.editor.width() > size::FILES_MIN);
+    }
+
+    /// Long segment text and narrow bars never give a negative width or
+    /// push the message out.
+    #[test]
+    fn status_bar_never_turns_inside_out() {
+        let long = [10_000.0, 2_000.0, 60.0, 70.0, 80.0];
+        for width in [1280.0, 800.0, 500.0, 300.0, 200.0, 100.0, 20.0, 0.0] {
+            for wants in [&long[..], &[50.0; 6][..], &[][..]] {
+                let left = 40.0;
+                let l = status_layout(left, width, wants);
+                assert!(l.msg.0 <= l.msg.1, "{width}: {l:?}");
+                assert!(
+                    l.msg.0 >= left.min(width) && l.msg.1 <= width.max(0.0),
+                    "{width}: {l:?}"
+                );
+                let mut edge = width;
+                for s in l.segs.iter().flatten() {
+                    assert!(
+                        s.0 <= s.1 && s.1 - s.0 <= size::SEGMENT_MAX,
+                        "{width}: {l:?}"
+                    );
+                    assert!(s.1 <= edge && s.0 >= l.msg.1, "{width}: {l:?}");
+                    edge = s.0;
+                }
+                if l.segs.iter().any(Option::is_some) {
+                    assert!(l.msg.1 - l.msg.0 >= size::MESSAGE_MIN, "{width}: {l:?}");
+                }
+            }
+        }
+        // Wide enough: every segment shows, the long ones capped.
+        let l = status_layout(40.0, 1280.0, &long);
+        assert!(l.segs.iter().all(Option::is_some), "{l:?}");
+        // The leftmost segment gives way first.
+        let l = status_layout(40.0, 500.0, &long);
+        assert_eq!(l.segs.last(), Some(&None), "{l:?}");
+        assert!(l.segs[0].is_some(), "{l:?}");
     }
 }
