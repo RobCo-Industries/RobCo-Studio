@@ -30,7 +30,7 @@
 //! idle window still costs nothing. The afterglow runs without focus too:
 //! it ends by itself.
 
-use crate::theme::{Screen, Strengths, crt};
+use crate::theme::{Screen, Strengths, Theme, crt};
 use eframe::egui::{self, Pos2, Rect};
 use std::time::Duration;
 
@@ -331,16 +331,29 @@ impl Settings {
             .inert = hold;
     }
 
+    /// What draws a frame from the theme and these settings as they are
+    /// now. Take it once, at the frame's start.
+    pub fn drawn(&self, theme: Theme) -> Drawn {
+        Drawn {
+            theme,
+            strengths: self.strengths,
+        }
+    }
+
     /// End the frame: hand the frame to the pass at a pass level, set the
     /// curve the next input is mapped through, and ask for the next frame
-    /// by the rules. Call last in the frame.
-    pub fn end_frame(&mut self, ctx: &egui::Context, level: Screen) {
+    /// by the rules. `drawn` is what drew this frame, taken at its start:
+    /// a level or a strength changed since applies from the next frame.
+    /// Call last in the frame.
+    pub fn end_frame(&mut self, ctx: &egui::Context, drawn: &Drawn) {
+        let level = drawn.level();
+        let strengths = &drawn.strengths;
         self.plug(ctx, None);
         let (now, focused, input) = ctx.input(|i| (i.time, i.focused, !i.events.is_empty()));
         // The screen's own request for a frame is no change of the picture.
         let causes = ctx.repaint_causes();
         let own = !input && !causes.is_empty() && causes.iter().all(|c| c.file == file!());
-        let frame = self.clock.frame(now, level, &self.strengths, focused, !own);
+        let frame = self.clock.frame(now, level, strengths, focused, !own);
         {
             let mut link = self
                 .link
@@ -348,15 +361,36 @@ impl Settings {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             link.frame = level.pass().then_some(frame);
             link.curvature = if level.pass() {
-                self.strengths.curvature
+                strengths.curvature
             } else {
                 0.0
             };
         }
-        let moving = animated(level, &self.strengths);
+        let moving = animated(level, strengths);
         if let Some(d) = next_frame(moving, self.clock.glowing(), focused, self.rate) {
             ctx.request_repaint_after(d);
         }
+    }
+}
+
+/// What draws one frame: the theme, with its level and so its glow
+/// state, and the strengths. The window takes it once, at the frame's
+/// start, and hands it to everything that draws: the kit's halos, the
+/// drawings, the scanline quad, the pass, and through the link the
+/// pointer and accessibility mappings. A command that changes the level
+/// in the middle of a frame changes it for the next one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drawn {
+    /// The theme the frame is drawn with.
+    pub theme: Theme,
+    /// The strengths the pass runs at, at a pass level.
+    pub strengths: Strengths,
+}
+
+impl Drawn {
+    /// The level the frame is drawn at.
+    pub fn level(&self) -> Screen {
+        self.theme.screen()
     }
 }
 

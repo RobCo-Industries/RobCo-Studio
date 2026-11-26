@@ -565,7 +565,12 @@ fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
                     egui::Color32::WHITE,
                 );
                 drop(tex);
-                s.end_frame(&ctx, Screen::Still);
+                let theme = robco_studio::theme::Theme {
+                    screen: Screen::Still,
+                    ..Default::default()
+                };
+                let drawn = s.drawn(theme);
+                s.end_frame(&ctx, &drawn);
             },
             settings,
         );
@@ -706,4 +711,66 @@ fn the_afterglow_starts_empty_when_the_pass_resumes() {
         kept, fresh,
         "the afterglow is kept through a discarded pass"
     );
+}
+
+/// A frame is shaded by the level it was drawn for. A command that
+/// switches Soft to Live in the middle of a frame leaves that frame a
+/// plain Soft frame, with no pass over Soft's halos and scanline quad; the
+/// next frame is a plain Live frame. And the reverse. Live's moving
+/// strengths and persistence are zero, so the pictures compare exactly.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_frame_is_shaded_by_the_level_that_drew_it() {
+    use robco_studio::menus::Command;
+    use robco_studio::theme::{Screen, Strengths};
+    let still_live = Strengths {
+        noise: 0.0,
+        flicker: 0.0,
+        band: 0.0,
+        scanlines: 0.0,
+        persistence: 0.0,
+        ..Screen::Live.strengths()
+    };
+    let settle = |h: &mut Harness<'static, Studio>, level: Screen| {
+        if level == Screen::Live {
+            h.state_mut().screen.strengths = still_live;
+        }
+        h.run_steps(3);
+    };
+    // A plain frame at `level`, with `status` in the footer.
+    let plain = |level: Screen, status: &(robco_studio::kit::Level, String)| {
+        let mut h = screen_harness(None, 1.0, level);
+        settle(&mut h, level);
+        h.state_mut().status = status.clone();
+        h.step();
+        h.render().unwrap()
+    };
+    let differ = |a: &[u8], b: &[u8]| {
+        assert_eq!(a.len(), b.len());
+        a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count()
+    };
+    for (from, to) in [(Screen::Soft, Screen::Live), (Screen::Live, Screen::Soft)] {
+        let mut h = screen_harness(None, 1.0, from);
+        if h.state().theme.screen != from {
+            return; // A software adapter: no pass.
+        }
+        settle(&mut h, from);
+        h.state_mut().pending.push(Command::Screen(to));
+        h.step();
+        let mid = h.render().unwrap();
+        let status = h.state().status.clone();
+        assert_eq!(h.state().theme.screen, to);
+        let n = differ(mid.as_raw(), plain(from, &status).as_raw());
+        assert_eq!(
+            n, 0,
+            "{from:?} to {to:?}: the switch frame is not {from:?}'s"
+        );
+        if to == Screen::Live {
+            h.state_mut().screen.strengths = still_live;
+        }
+        h.step();
+        let next = h.render().unwrap();
+        let n = differ(next.as_raw(), plain(to, &status).as_raw());
+        assert_eq!(n, 0, "{from:?} to {to:?}: the next frame is not {to:?}'s");
+    }
 }

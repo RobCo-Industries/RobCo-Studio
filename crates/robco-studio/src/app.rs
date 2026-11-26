@@ -174,6 +174,8 @@ pub struct Studio {
     /// The screen pass and its settings beyond the level.
     pub screen: screen::Settings,
     art: Option<Art>,
+    /// What draws this frame, taken in `prepare`.
+    drawn: screen::Drawn,
     styled: Option<Theme>,
     fonts: bool,
     focus_request: Option<Place>,
@@ -345,6 +347,10 @@ impl Studio {
             pending: Vec::new(),
             screen: screen::Settings::default(),
             art: None,
+            drawn: screen::Drawn {
+                theme: Theme::default(),
+                strengths: Screen::Soft.strengths(),
+            },
             styled: None,
             fonts: false,
             focus_request: None,
@@ -696,20 +702,24 @@ impl Studio {
     }
 
     fn prepare(&mut self, ctx: &egui::Context) {
+        // The one value that draws this frame. A command or a slider later
+        // in the frame changes the level or the strengths for the next one.
+        self.drawn = self.screen.drawn(self.theme);
+        let theme = self.drawn.theme;
         if !self.fonts {
             Theme::install_fonts(ctx);
             self.fonts = true;
         }
-        if self.styled != Some(self.theme) {
-            self.theme.apply(ctx);
-            self.styled = Some(self.theme);
+        if self.styled != Some(theme) {
+            theme.apply(ctx);
+            self.styled = Some(theme);
         }
         let ppp = ctx.pixels_per_point();
         // The art holds the display scale and glow state it was made
         // with, so a level changed in the middle of a frame is seen here,
         // at the start of the next one, whatever changed it.
-        if !self.art.as_ref().is_some_and(|a| a.fits(ppp, &self.theme)) {
-            self.art = Some(Art::new(ctx, &self.theme));
+        if !self.art.as_ref().is_some_and(|a| a.fits(ppp, &theme)) {
+            self.art = Some(Art::new(ctx, &theme));
         }
         let title = match &self.project {
             Some(p) => format!("{} - RobCo Studio", p.name()),
@@ -719,6 +729,12 @@ impl Studio {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
+    }
+
+    /// What draws the current frame: the level, its theme and the
+    /// strengths, as taken at the frame's start.
+    pub fn drawn(&self) -> screen::Drawn {
+        self.drawn
     }
 
     /// The window's title as last sent: the project's name, then the
@@ -750,7 +766,7 @@ impl Studio {
         let Some(art) = self.art.take() else {
             return;
         };
-        let theme = self.theme;
+        let theme = self.drawn.theme;
         let kit = Kit {
             theme: &theme,
             art: &art,
@@ -805,7 +821,7 @@ impl Studio {
         // The one rule for every area while the chooser is open or due:
         // the next frame's input is held before egui sees it.
         self.screen.hold_input(self.choosing());
-        self.screen.end_frame(&ctx, self.theme.screen());
+        self.screen.end_frame(&ctx, &self.drawn);
     }
 
     /// The header band: wordmark, atom, divider, the caps line and the
@@ -2019,8 +2035,14 @@ impl Studio {
                     });
             });
         let custom_before = self.screen_custom();
+        let before = (self.screen.strengths, self.screen.rate);
         self.screen.strengths = if reset { level.strengths() } else { s };
         self.screen.rate = rate;
+        // The pass runs at the strengths that drew this frame: a moved
+        // slider applies from the next frame, so ask for it.
+        if (self.screen.strengths, self.screen.rate) != before {
+            ctx.request_repaint();
+        }
         if self.screen_custom() != custom_before {
             self.status = (Level::Info, screen::news(level, self.screen_custom()));
         }
@@ -2320,6 +2342,41 @@ mod tests {
             assert_eq!(h.state().theme.screen(), to);
             let soft = to == Screen::Soft;
             assert_eq!(made(&h), Some((soft, soft)), "{from:?} to {to:?}");
+        }
+    }
+
+    /// A command in the middle of a frame changes the level for the next
+    /// frame only: the frame it runs in keeps the level, the strengths
+    /// and the curve the pointer is mapped through that drew it. Soft to
+    /// Live and back.
+    #[test]
+    fn the_drawn_value_holds_for_the_whole_frame() {
+        let mut h = egui_kittest::Harness::builder()
+            .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(None));
+        h.state_mut().screen.adapter = screen::Adapter::Hardware;
+        let curve = |h: &egui_kittest::Harness<'_, Studio>| {
+            h.state()
+                .screen
+                .link()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .curvature
+        };
+        for (from, to) in [(Screen::Soft, Screen::Live), (Screen::Live, Screen::Soft)] {
+            h.state_mut().set_screen(from);
+            h.run_steps(2);
+            let before = h.state().drawn();
+            assert_eq!(before.level(), from);
+            let c = curve(&h);
+            h.state_mut().pending.push(Command::Screen(to));
+            h.step();
+            assert_eq!(h.state().theme.screen(), to, "the command ran");
+            assert_eq!(h.state().drawn(), before, "{from:?} to {to:?}");
+            assert_eq!(curve(&h), c, "the curve changed mid frame");
+            h.step();
+            assert_eq!(h.state().drawn().level(), to);
+            assert_eq!(h.state().drawn().strengths, to.strengths());
+            assert_eq!(curve(&h) > 0.0, to.pass());
         }
     }
 
