@@ -574,9 +574,11 @@ fn clear_unfinished(temp: &Path, dir: &Path) -> Result<Option<String>, Error> {
 }
 
 /// A writer that hashes and counts what it passes to a file, and refuses
-/// more bytes than the index gives.
-struct Hashing {
-    file: File,
+/// more bytes than the index gives. A failure of the file itself, in
+/// `write` or `flush`, is kept in `failed`, so that the caller reports
+/// `io: write` and not a mismatch of the download.
+struct Hashing<W> {
+    file: W,
     hasher: Sha256,
     count: u64,
     limit: u64,
@@ -584,23 +586,34 @@ struct Hashing {
     failed: Option<io::Error>,
 }
 
-impl Write for Hashing {
+impl<W: Write> Hashing<W> {
+    fn keep(&mut self, e: io::Error) -> io::Error {
+        let kind = e.kind();
+        self.failed = Some(e);
+        io::Error::from(kind)
+    }
+}
+
+impl<W: Write> Write for Hashing<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // The index gives the size: a transport that gives one byte more
+        // is refused before that byte is written.
         if self.count + buf.len() as u64 > self.limit {
             self.too_long = true;
             return Err(io::Error::other("longer than the index says"));
         }
         if let Err(e) = self.file.write_all(buf) {
-            let kind = e.kind();
-            self.failed = Some(e);
-            return Err(io::Error::from(kind));
+            return Err(self.keep(e));
         }
         self.hasher.update(buf);
         self.count += buf.len() as u64;
         Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        match self.file.flush() {
+            Ok(()) => Ok(()),
+            Err(e) => Err(self.keep(e)),
+        }
     }
 }
 
@@ -613,6 +626,24 @@ fn download(temp: &Path, item: &Item<'_>, transport: &dyn Transport) -> Result<P
         .create_new(true)
         .open(&part)
         .map_err(|e| write_err(&part, &e))?;
+    let file = fetch_checked(&part, item, transport, file)?;
+    // The sync is the last write that can fail: a close error after it
+    // loses nothing that the sync did not already report.
+    file.sync_all().map_err(|e| write_err(&part, &e))?;
+    drop(file);
+    let archive = temp.join("archive");
+    fs::rename(&part, &archive).map_err(|e| write_err(&archive, &e))?;
+    Ok(archive)
+}
+
+/// Fetches the archive into `file`, which writes `part`, and checks its
+/// size and hash. Returns `file` on a match.
+fn fetch_checked<W: Write>(
+    part: &Path,
+    item: &Item<'_>,
+    transport: &dyn Transport,
+    file: W,
+) -> Result<W, Error> {
     let mut w = Hashing {
         file,
         hasher: Sha256::new(),
@@ -623,7 +654,7 @@ fn download(temp: &Path, item: &Item<'_>, transport: &dyn Transport) -> Result<P
     };
     let fetched = transport.fetch(item.url, &mut w);
     if let Some(e) = w.failed.take() {
-        return Err(write_err(&part, &e));
+        return Err(write_err(part, &e));
     }
     let mismatch = |why: String| {
         item.kind
@@ -648,11 +679,7 @@ fn download(temp: &Path, item: &Item<'_>, transport: &dyn Transport) -> Result<P
     if got != item.sha256 {
         return Err(mismatch(format!("has SHA-256 {got}, not {}", item.sha256)));
     }
-    w.file.sync_all().map_err(|e| write_err(&part, &e))?;
-    drop(w);
-    let archive = temp.join("archive");
-    fs::rename(&part, &archive).map_err(|e| write_err(&archive, &e))?;
-    Ok(archive)
+    Ok(w.file)
 }
 
 /// One file entry of a package archive.

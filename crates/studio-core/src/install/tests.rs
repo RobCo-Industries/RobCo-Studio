@@ -1409,3 +1409,47 @@ fn links_take_the_kind_of_their_target_in_any_order() {
         "tool: archive"
     );
 }
+
+// Failures of the cache file while a download streams.
+
+/// A file that takes every byte and fails on `flush`.
+struct FailsOnFlush;
+
+impl Write for FailsOnFlush {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::StorageFull))
+    }
+}
+
+/// Writes every byte, then flushes, as a transport that buffers does.
+struct Flushes(Vec<u8>);
+
+impl Transport for Flushes {
+    fn fetch(&self, _url: &str, out: &mut dyn Write) -> Result<(), String> {
+        out.write_all(&self.0).map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn install_reports_a_failed_flush_as_a_write_error() {
+    let bytes = good_zip();
+    let sha = sha256_hex(&bytes);
+    let item = Item {
+        kind: Kind::Package,
+        label: "package templates 0.1.0".to_owned(),
+        dir: PathBuf::from("unused"),
+        url: "p.zip",
+        size: bytes.len() as u64,
+        sha256: &sha,
+    };
+    let part = Path::new("archive.part");
+    let r = fetch_checked(part, &item, &Flushes(bytes.clone()), FailsOnFlush);
+    let e = r.err().unwrap();
+    assert_eq!(e.error_code(), "io: write", "{e}");
+    // The same transport with a file that flushes is a match.
+    assert!(fetch_checked(part, &item, &Flushes(bytes), Vec::new()).is_ok());
+}
