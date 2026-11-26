@@ -19,6 +19,10 @@ eframe = { version = "=0.37.0", default-features = false, features = [
     "wgpu",
     "x11",
 ] }
+# The system's folder chooser for File, Open folder. MIT.
+# No defaults: on Linux only the portal backend, which loads libdbus at run
+# time and falls back to zenity, so the build needs no GTK and no D-Bus headers.
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 # Rasterises the wordmark and the icons at start-up. Apache-2.0 OR MIT.
 resvg = { version = "0.45", default-features = false }
 
