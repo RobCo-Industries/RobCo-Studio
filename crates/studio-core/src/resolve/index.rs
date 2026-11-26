@@ -173,18 +173,40 @@ fn is_control(c: char) -> bool {
 }
 
 /// The path rules of "The archive": relative, `/` as the separator, no
-/// empty, `.` or `..` component, no drive letter. It also refuses every
-/// character below U+0020 and U+007F. The spec does not name control
-/// characters yet; this stricter rule will be written into it at its next
-/// update.
+/// empty, `.` or `..` component, no drive letter. Each component must also
+/// pass [`is_portable_name`], so no file system reads one as more than a
+/// plain name: `dir/C:payload` is refused, since Windows reads `C:payload`
+/// as a path on drive `C:`. That also refuses every character below U+0020
+/// and U+007F. The spec does not state these stricter rules yet.
 pub fn is_archive_path(s: &str) -> bool {
-    let b = s.as_bytes();
-    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
-    !s.is_empty()
-        && !drive
-        && !s.contains('\\')
-        && !s.chars().any(is_control)
-        && s.split('/').all(|c| !matches!(c, "" | "." | ".."))
+    !s.is_empty() && s.split('/').all(is_portable_name)
+}
+
+/// Whether `s` is one plain name on Linux, macOS and Windows alike, so a
+/// path fails the same way on every system. It refuses `< > : " / \ |
+/// ? *`, every control character, a name that ends in a dot or a space,
+/// `.` and `..` among them, and the device names of Windows, `CON`, `PRN`,
+/// `AUX`, `NUL`, `COM1` to `COM9` and `LPT1` to `LPT9`, in any case and
+/// with or without an ending such as `.txt`.
+///
+/// The spec does not state this rule yet. Until it does, every cache
+/// folder name and every component of an archive path must pass it.
+pub fn is_portable_name(s: &str) -> bool {
+    const DEVICES: [&str; 4] = ["con", "prn", "aux", "nul"];
+    if s.is_empty()
+        || s.ends_with(['.', ' '])
+        || s.chars().any(|c| {
+            c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+    let stem = s.split('.').next().unwrap_or(s).trim_end_matches(' ');
+    let stem = stem.to_ascii_lowercase();
+    let numbered = stem.len() == 4
+        && (stem.starts_with("com") || stem.starts_with("lpt"))
+        && matches!(stem.as_bytes()[3], b'1'..=b'9');
+    !(DEVICES.contains(&stem.as_str()) || numbered)
 }
 
 /// The form of a tool archive `root`: empty, or a path by the rules of

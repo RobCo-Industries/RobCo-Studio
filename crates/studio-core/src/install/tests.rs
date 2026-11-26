@@ -140,7 +140,7 @@ fn install_zip(d: &Dir, bytes: &[u8]) -> Result<State, Error> {
 }
 
 fn pkg_dir(d: &Dir) -> PathBuf {
-    package_dir(&d.cache(), "templates", "0.1.0")
+    package_dir(&d.cache(), "templates", "0.1.0").unwrap()
 }
 
 /// The failure left nothing: no package folder and no temporary folder.
@@ -163,7 +163,7 @@ fn install_a_good_package() {
     assert_eq!(install_zip(&d, &bytes), Ok(State::Installed));
     let dir = pkg_dir(&d);
     for (p, b) in files() {
-        assert_eq!(fs::read(join(&dir, p)).unwrap(), b);
+        assert_eq!(fs::read(join_inside(&dir, p, || ()).unwrap()).unwrap(), b);
     }
     assert_eq!(
         fs::read_to_string(dir.join(RECORD)).unwrap(),
@@ -313,6 +313,21 @@ fn install_refuses_a_symbolic_link_entry() {
     let bytes = z.finish().unwrap().into_inner();
     let msg = refused(&d, install_zip(&d, &bytes), "package: archive");
     assert!(msg.contains("holotape-c/link"), "{msg}");
+}
+
+/// A component that Windows reads as a drive, `C:payload`, is refused on
+/// every system before anything is extracted.
+#[test]
+fn install_refuses_a_drive_in_a_component() {
+    let d = Dir::new("drive");
+    let mut put = files();
+    put.push(("holotape-c/C:payload", b"x"));
+    let msg = refused(
+        &d,
+        install_zip(&d, &package_zip(&files(), &put)),
+        "package: archive",
+    );
+    assert!(msg.contains("holotape-c/C:payload"), "{msg}");
 }
 
 #[test]
@@ -679,6 +694,46 @@ fn install_keeps_the_install_that_took_the_place() {
     holds_whole(&d, &bytes);
 }
 
+/// The join refuses, by itself, a name the system reads as more than one
+/// plain component, whatever the name rule says.
+#[test]
+fn install_join_refuses_what_is_not_one_plain_name() {
+    let base = Path::new("base").join("x");
+    let abs = std::env::temp_dir();
+    let abs = abs.to_str().unwrap();
+    for bad in [abs, "..", ".", "", "a/b"] {
+        assert_eq!(join_parts(&base, &[bad], || "bad"), Err("bad"), "{bad:?}");
+        assert_eq!(
+            join_parts(&base, &["ok", bad], || "bad"),
+            Err("bad"),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(join_inside(&base, "a//b", || "bad"), Err("bad"));
+    assert_eq!(join_inside(&base, "a/../b", || "bad"), Err("bad"));
+    assert_eq!(
+        join_inside(&base, "a/b.c", || "bad"),
+        Ok(base.join("a").join("b.c"))
+    );
+    assert_eq!(join_inside(&base, "", || "bad"), Ok(base.clone()));
+}
+
+/// On Windows, `C:payload` is a path on drive `C:`: a push of it would
+/// drop the base. The join refuses it, and so does a whole entry name.
+#[cfg(windows)]
+#[test]
+fn install_join_refuses_a_drive_relative_name() {
+    let base = std::env::temp_dir().join("x");
+    for bad in [
+        "C:payload",
+        "dir/C:payload",
+        "C:\\payload",
+        "\\\\srv\\share\\x",
+    ] {
+        assert_eq!(join_inside(&base, bad, || "bad"), Err("bad"), "{bad:?}");
+    }
+}
+
 /// B takes the unfinished folder aside before A does: A's rename finds
 /// nothing, and A installs into the free place.
 #[test]
@@ -764,7 +819,7 @@ fn tool_tgz(entries: &[T<'_>]) -> Vec<u8> {
 }
 
 fn tool_path_of(d: &Dir) -> PathBuf {
-    tool_dir(&d.cache(), "gcc", "15.2.1-1.1", "linux-x64")
+    tool_dir(&d.cache(), "gcc", "15.2.1-1.1", "linux-x64").unwrap()
 }
 
 fn install_tool(d: &Dir, bytes: &[u8], root: &str) -> Result<State, Error> {
@@ -830,6 +885,27 @@ fn install_a_tar_tool_with_an_empty_root_and_a_link_inside() {
             .file_type()
             .is_symlink()
     );
+}
+
+/// Every component of a tool entry, and of a link target, must be one
+/// plain name on every system.
+#[test]
+fn install_refuses_tool_names_that_are_not_plain() {
+    let cases = [
+        tool_tgz(&[T::Dir("bin/"), T::File("bin/C:payload", b"x")]),
+        tool_tgz(&[T::Dir("bin/"), T::File("bin/nul", b"x")]),
+        tool_tgz(&[T::Dir("bin/"), T::Dir("a /"), T::File("a /x", b"x")]),
+        tool_tgz(&[
+            T::Dir("bin/"),
+            T::File("bin/y", b"x"),
+            T::Link("bin/l", "nul/../y"),
+        ]),
+        tool_zip(&[("bin/", b""), ("bin/a:b", b"x")]),
+    ];
+    for bytes in cases {
+        let d = Dir::new("tool-plain");
+        tool_refused(&d, install_tool(&d, &bytes, ""), "tool: archive");
+    }
 }
 
 #[test]

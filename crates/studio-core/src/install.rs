@@ -40,7 +40,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
 
 use crate::codes::ErrorCode;
-use crate::resolve::index::{Archive, IndexPackage, is_archive_path, is_root};
+use crate::resolve::index::{
+    Archive, IndexPackage, is_archive_path, is_portable_name as is_portable, is_root,
+};
 use crate::resolve::{self, sdk_json};
 use crate::resolve::{is_host_name, is_package_name, is_tool_version};
 
@@ -79,7 +81,9 @@ impl Transport for LocalFiles {
                 "nothing was fetched from {url}: no network transport"
             ));
         }
-        let path = self.base.join(url);
+        let path = join_inside(&self.base, url, || {
+            format!("nothing was fetched from {url}: not a path inside the index folder")
+        })?;
         let mut file = File::open(&path)
             .map_err(|e| format!("nothing was fetched from {}: {}", path.display(), e.kind()))?;
         io::copy(&mut file, out)
@@ -186,13 +190,15 @@ fn write_err(path: &Path, e: &io::Error) -> Error {
 }
 
 /// The folder of an installed package: `<cache>/packages/<name>/<version>/`.
-pub fn package_dir(cache: &Path, name: &str, version: &str) -> PathBuf {
-    cache.join("packages").join(name).join(version)
+/// `None` when a name is not one plain component of a path.
+pub fn package_dir(cache: &Path, name: &str, version: &str) -> Option<PathBuf> {
+    join_parts(cache, &["packages", name, version], || ()).ok()
 }
 
 /// The folder of an installed tool: `<cache>/tools/<name>/<version>/<host>/`.
-pub fn tool_dir(cache: &Path, name: &str, version: &str, host: &str) -> PathBuf {
-    cache.join("tools").join(name).join(version).join(host)
+/// `None` when a name is not one plain component of a path.
+pub fn tool_dir(cache: &Path, name: &str, version: &str, host: &str) -> Option<PathBuf> {
+    join_parts(cache, &["tools", name, version, host], || ()).ok()
 }
 
 /// The SHA-256 of some bytes, as 64 lower case hex digits.
@@ -316,7 +322,12 @@ pub fn package(
     let item = Item {
         kind: Kind::Package,
         label: format!("package {} {version}", entry.name),
-        dir: package_dir(cache, &entry.name, &version),
+        dir: package_dir(cache, &entry.name, &version).ok_or_else(|| {
+            Error::PackageArchive(format!(
+                "package {} {version}: not a cache folder name",
+                entry.name
+            ))
+        })?,
         url: &entry.url,
         size: entry.size,
         sha256: &entry.sha256,
@@ -357,7 +368,11 @@ pub fn tool(
     let item = Item {
         kind: Kind::Tool,
         label: format!("tool {name} {version} {host}"),
-        dir: tool_dir(cache, name, version, host),
+        dir: tool_dir(cache, name, version, host).ok_or_else(|| {
+            Error::ToolArchive(format!(
+                "tool {name} {version} {host}: not a cache folder name"
+            ))
+        })?,
         url: &archive.url,
         size: archive.size,
         sha256: &archive.sha256,
@@ -652,33 +667,6 @@ fn is_folder_name(s: &str) -> bool {
     is_tool_version(s) && is_portable(s)
 }
 
-/// Whether `s` can name a folder on Linux, macOS and Windows alike, so an
-/// install fails the same way on every system. It refuses `< > : " / \ |
-/// ? *`, every control character, a name that ends in a dot or a space,
-/// `.` and `..` among them, and the device names of Windows, `CON`, `PRN`,
-/// `AUX`, `NUL`, `COM1` to `COM9` and `LPT1` to `LPT9`, in any case and
-/// with or without an ending such as `.txt`.
-///
-/// The spec does not state this rule yet. Until it does, a cache folder
-/// name must pass it.
-fn is_portable(s: &str) -> bool {
-    const DEVICES: [&str; 4] = ["con", "prn", "aux", "nul"];
-    if s.is_empty()
-        || s.ends_with(['.', ' '])
-        || s.chars().any(|c| {
-            c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
-        })
-    {
-        return false;
-    }
-    let stem = s.split('.').next().unwrap_or(s).trim_end_matches(' ');
-    let stem = stem.to_ascii_lowercase();
-    let numbered = stem.len() == 4
-        && (stem.starts_with("com") || stem.starts_with("lpt"))
-        && matches!(stem.as_bytes()[3], b'1'..=b'9');
-    !(DEVICES.contains(&stem.as_str()) || numbered)
-}
-
 /// Checks a package archive by "The archive", reads `sdk.json` and checks
 /// it, then extracts every listed file into `out` and checks its size and
 /// hash. Nothing is extracted before every entry and `sdk.json` passed.
@@ -787,12 +775,17 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
         )));
     }
 
+    let outside = |n: &str| {
+        bad(format!(
+            "{n}: the entry would land outside the extraction folder"
+        ))
+    };
     for d in &dirs {
-        let p = join(out, d);
+        let p = join_inside(out, d, || outside(d))?;
         fs::create_dir_all(&p).map_err(|e| write_err(&p, &e))?;
     }
     for f in &files {
-        let p = join(out, &f.name);
+        let p = join_inside(out, &f.name, || outside(&f.name))?;
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent).map_err(|e| write_err(parent, &e))?;
         }
@@ -836,13 +829,42 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
     Ok(())
 }
 
-/// Joins a checked `/` path to a folder. An empty path is the folder.
-fn join(base: &Path, rel: &str) -> PathBuf {
-    let mut p = base.to_path_buf();
-    for c in rel.split('/').filter(|c| !c.is_empty()) {
-        p.push(c);
+/// Joins a checked relative `/` path to `base`, by [`join_parts`]. An
+/// empty path is `base` itself.
+fn join_inside<E>(base: &Path, rel: &str, bad: impl FnOnce() -> E) -> Result<PathBuf, E> {
+    if rel.is_empty() {
+        return join_parts(base, &[], bad);
     }
-    p
+    join_parts(base, &rel.split('/').collect::<Vec<_>>(), bad)
+}
+
+/// Joins names that came from outside to `base`, and proves the result
+/// before anyone uses it: it must start with `base`, component by
+/// component, and hold exactly one more plain component per name. A name
+/// that is empty, absolute, `.`, `..`, or that the system reads as a
+/// prefix, a root or more than one component is refused, whatever an
+/// earlier check let through. On Windows, `C:payload` is such a name: a
+/// push of it would drop `base`. A refusal gives `bad()`, and nothing is
+/// created.
+fn join_parts<E>(base: &Path, names: &[&str], bad: impl FnOnce() -> E) -> Result<PathBuf, E> {
+    let mut p = base.to_path_buf();
+    for name in names {
+        let mut cs = Path::new(name).components();
+        match (cs.next(), cs.next()) {
+            (Some(Component::Normal(c)), None) if c == *name => p.push(name),
+            _ => return Err(bad()),
+        }
+    }
+    let mut got = p.components();
+    let starts = base.components().all(|b| got.next() == Some(b));
+    let added: Vec<_> = got.collect();
+    if !starts
+        || added.len() != names.len()
+        || added.iter().any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(bad());
+    }
+    Ok(p)
 }
 
 /// One entry of a tool archive, whatever its kind.
@@ -905,7 +927,9 @@ fn root_folder(out: &Path, root: &str) -> Result<PathBuf, Error> {
     if !is_root(root) {
         return Err(bad(format!("root {root:?} breaks the path rules")));
     }
-    let named = join(out, root);
+    let named = join_inside(out, root, || {
+        bad(format!("root {root:?} leads outside the extraction folder"))
+    })?;
     if !fs::symlink_metadata(&named).is_ok_and(|m| m.is_dir()) {
         return Err(bad(format!("root {root:?} names no folder of the archive")));
     }
@@ -917,8 +941,9 @@ fn root_folder(out: &Path, root: &str) -> Result<PathBuf, Error> {
 }
 
 /// The path of a tool archive entry under `out`. Refuses an absolute name,
-/// a drive letter and a `..` component. `.` and empty components are
-/// dropped. `None` for the extraction folder itself.
+/// a drive letter, a `..` component and a component that is not a plain
+/// name by [`is_portable`]. `.` and empty components are dropped. `None`
+/// for the extraction folder itself.
 fn tool_path(out: &Path, name: &str) -> Result<Option<PathBuf>, Error> {
     let bad = || {
         Error::ToolArchive(format!(
@@ -929,20 +954,14 @@ fn tool_path(out: &Path, name: &str) -> Result<Option<PathBuf>, Error> {
     if name.starts_with('/') || name.starts_with('\\') || (b.len() >= 2 && b[1] == b':') {
         return Err(bad());
     }
-    let mut p = out.to_path_buf();
-    let mut any = false;
-    for c in name.split(['/', '\\']) {
-        match c {
-            "" | "." => {}
-            ".." => return Err(bad()),
-            c if c.chars().any(|ch| ch < '\u{20}' || ch == '\u{7f}') => return Err(bad()),
-            c => {
-                p.push(c);
-                any = true;
-            }
-        }
+    let p = parts(name);
+    if p.is_empty() {
+        return Ok(None);
     }
-    Ok(any.then_some(p))
+    if !p.iter().all(|c| is_portable(c)) {
+        return Err(bad());
+    }
+    join_parts(out, &p, bad).map(Some)
 }
 
 /// Makes the folders above `path` inside `out`, and refuses a path that
@@ -999,6 +1018,7 @@ fn put(
             || target.starts_with('/')
             || target.starts_with('\\')
             || target.as_bytes().get(1) == Some(&b':')
+            || !parts(target).iter().all(|c| *c == ".." || is_portable(c))
         {
             return Err(Error::ToolArchive(format!(
                 "{name}: the link leads outside the extraction folder"
