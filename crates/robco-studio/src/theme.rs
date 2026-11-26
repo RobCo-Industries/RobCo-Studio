@@ -443,7 +443,7 @@ pub mod size {
     pub const HEADER_COMPACT_H: f32 = 36.0;
     /// The header is tall from this inner window height up, in points.
     pub const HEADER_TALL_FROM: f32 = 720.0;
-    /// The space before the wordmark and after the skyline in the header.
+    /// The space before the atom and after the skyline in the header.
     pub const HEADER_PAD: f32 = 12.0;
     /// The space at each side of the header's divider.
     pub const HEADER_GAP: f32 = 14.0;
