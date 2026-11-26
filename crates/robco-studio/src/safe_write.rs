@@ -11,7 +11,10 @@
 //!   refused, since the rename would replace it in a writable folder.
 //! - A missing destination gets the bits [`New`] asks for.
 //! - A link at the destination is replaced by the new file, never written
-//!   through and never followed. Its target is not touched.
+//!   through and never followed. Its target is not touched. Settings and
+//!   theme files are Studio's own, so a link there is replaced. A document
+//!   resolves its link before it calls [`write`], so a linked source file
+//!   keeps its link: see `document::write_safely`.
 //! - On failure the temporary file is removed and the destination is
 //!   untouched.
 //!

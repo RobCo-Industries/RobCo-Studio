@@ -286,13 +286,29 @@ impl Doc {
 /// Write `bytes` to `path` so that the file is either the old one or the new
 /// one, never cut short. A new document gets the bits a plain create gives,
 /// as other editors do. See [`crate::safe_write`] for the rest.
+///
+/// Unlike Studio's own files, a document follows a link: the file it points
+/// to is replaced and the link stays, so linked source files keep working. A
+/// link loop fails here. A dangling link is not resolved, so the save
+/// replaces the link itself. A link to a folder fails at the rename.
 fn write_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    crate::safe_write::write(path, bytes, crate::safe_write::New::Plain)
+    let target = match std::fs::canonicalize(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => path.to_owned(),
+        Err(e) => return Err(e),
+    };
+    crate::safe_write::write(&target, bytes, crate::safe_write::New::Plain)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The document save path, for the shared write's tests.
+    #[cfg(unix)]
+    pub(crate) fn save_path(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        write_safely(path, bytes)
+    }
     /// Make a named pipe with the `mkfifo` tool. False, with a printed
     /// line, when the tool is absent.
     #[cfg(unix)]
@@ -460,6 +476,32 @@ pub(crate) mod tests {
         assert!(doc.is_dirty());
         assert_eq!(std::fs::read(&f).unwrap(), b"old\n");
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_link_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("link");
+        let real = d.join("real.c");
+        let link = d.join("link.c");
+        std::fs::write(&real, b"old\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut doc = Doc::open(1, &link, "link.c".into()).unwrap();
+        doc.text = "new\n".into();
+        doc.save().unwrap();
+        assert!(!doc.is_dirty());
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&real).unwrap(), b"new\n");
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
         std::fs::remove_dir_all(&d).unwrap();
     }
 

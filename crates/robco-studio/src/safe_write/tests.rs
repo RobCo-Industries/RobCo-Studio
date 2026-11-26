@@ -161,11 +161,12 @@ fn temp_file_is_private_from_the_start() {
     assert_eq!(mode(&f), 0o644);
 }
 
-/// A link at the destination is replaced by a plain file with the bits of a
-/// new one. Its target keeps its content and its bits.
+/// A link at a settings or theme file is replaced by a plain file with the
+/// bits of a new one, and its target is untouched. A document keeps its
+/// link: the target gets the new content and keeps its bits.
 #[cfg(unix)]
 #[test]
-fn a_link_is_replaced_never_written_through() {
+fn a_document_keeps_its_link_and_studio_files_do_not() {
     for kind in KINDS {
         let d = TempDir::new("link");
         let outside = d.0.join("outside.txt");
@@ -173,28 +174,54 @@ fn a_link_is_replaced_never_written_through() {
         set_mode(&outside, 0o640);
         let path = d.0.join(kind.file());
         std::os::unix::fs::symlink(&outside, &path).unwrap();
-        let plain = plain_mode(&d.0);
-        // The document goes through the shared function: `Doc::open` would
-        // follow the link to read it, which is not what this tests.
         let (r, new) = match kind {
-            Kind::Document => (write(&path, b"x\n", New::Plain), b"x\n".to_vec()),
+            Kind::Document => {
+                let mut doc = crate::document::Doc::open(1, &path, "main.c".into()).unwrap();
+                doc.text = "int x;\n".into();
+                (
+                    doc.save().map_err(std::io::Error::other),
+                    b"int x;\n".to_vec(),
+                )
+            }
             _ => kind.write(&d.0),
         };
         r.unwrap();
-        assert_eq!(std::fs::read(&outside).unwrap(), b"keep", "{kind:?}");
-        assert_eq!(mode(&outside), 0o640, "{kind:?}");
-        assert!(
-            std::fs::symlink_metadata(&path).unwrap().is_file(),
-            "{kind:?}"
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), new, "{kind:?}");
-        let want = if matches!(kind, Kind::Document) {
-            plain
+        if matches!(kind, Kind::Document) {
+            assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+            assert_eq!(std::fs::read(&outside).unwrap(), new);
         } else {
-            0o600
-        };
-        assert_eq!(mode(&path), want, "{kind:?}");
+            assert!(
+                std::fs::symlink_metadata(&path).unwrap().is_file(),
+                "{kind:?}"
+            );
+            assert_eq!(std::fs::read(&outside).unwrap(), b"keep", "{kind:?}");
+            assert_eq!(std::fs::read(&path).unwrap(), new, "{kind:?}");
+            assert_eq!(mode(&path), 0o600, "{kind:?}");
+        }
+        assert_eq!(mode(&outside), 0o640, "{kind:?}");
     }
+}
+
+/// A document's link loop fails and a dangling link is replaced.
+#[cfg(unix)]
+#[test]
+fn document_link_guards() {
+    let d = TempDir::new("guards");
+    let a = d.0.join("a.c");
+    let b = d.0.join("b.c");
+    std::os::unix::fs::symlink(&b, &a).unwrap();
+    std::os::unix::fs::symlink(&a, &b).unwrap();
+    assert!(crate::document::tests::save_path(&a, b"x\n").is_err());
+    let dangling = d.0.join("dangling.c");
+    std::os::unix::fs::symlink(d.0.join("none.c"), &dangling).unwrap();
+    crate::document::tests::save_path(&dangling, b"x\n").unwrap();
+    assert!(std::fs::symlink_metadata(&dangling).unwrap().is_file());
+    let folder = d.0.join("dir");
+    std::fs::create_dir(&folder).unwrap();
+    let to_dir = d.0.join("to-dir.c");
+    std::os::unix::fs::symlink(&folder, &to_dir).unwrap();
+    assert!(crate::document::tests::save_path(&to_dir, b"x\n").is_err());
+    assert!(folder.is_dir());
 }
 
 /// A rename that fails leaves the destination as it was and no temporary
