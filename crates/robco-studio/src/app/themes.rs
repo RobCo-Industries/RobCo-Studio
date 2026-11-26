@@ -45,6 +45,9 @@ pub enum ThemeFault {
     Exists(String),
     /// The theme in use ships with Studio, so it has no file to change.
     ShippedTheme,
+    /// The changed theme's own file is gone, so there is nothing to
+    /// rename or delete.
+    FileGone,
     /// Studio has no settings folder in this run.
     NoFolder,
     /// The themes folder holds the most files Studio reads, so a new file
@@ -67,6 +70,9 @@ impl ThemeFault {
             ThemeFault::Exists(n) => format!("A theme named {n} exists. Replace writes over it."),
             ThemeFault::ShippedTheme => {
                 "A theme that ships with Studio cannot be changed. Save as keeps yours.".into()
+            }
+            ThemeFault::FileGone => {
+                "The file of this theme is gone. Save as keeps the change.".into()
             }
             ThemeFault::NoFolder => {
                 "Studio has no settings folder in this run. The theme is not saved.".into()
@@ -125,13 +131,22 @@ impl Studio {
                 }
             }
         }
-        if let Some(u) = unsaved
-            && self.find_key(&u.from).is_some()
-        {
-            self.changed = Some(Spec {
-                name: self.spec().name.clone(),
-                ..u.spec
-            });
+        if let Some(u) = unsaved {
+            if self.find_key(&u.from).is_some() {
+                self.changed = Some(Spec {
+                    name: self.spec().name.clone(),
+                    ..u.spec
+                });
+            } else {
+                // The change stays, adrift, under the name it was kept
+                // with, as after a reload that lost its file.
+                let (name, _) = store::theme_name(u.name.as_deref(), &u.from);
+                self.changed = Some(Spec {
+                    name: Cow::Owned(name),
+                    ..u.spec
+                });
+                self.adrift = Some(u.from);
+            }
         }
         self.refresh_theme();
         self
@@ -265,7 +280,7 @@ impl Studio {
         let Some(dir) = self.themes_folder() else {
             return;
         };
-        let key = self.key(self.current);
+        let key = self.in_use().key;
         let folder = store::read_folder(&dir);
         if let Some(n) = folder.unreadable {
             let more = if self.theme_files.iter().any(Option::is_some) {
@@ -314,10 +329,14 @@ impl Studio {
             self.theme_files.push(Some(f));
         }
         match self.find_key(&key) {
-            Some(i) => self.current = i,
+            Some(i) => {
+                self.current = i;
+                // A change whose file came back sits on its row again.
+                self.adrift = None;
+            }
             None => {
                 self.current = 0;
-                self.adrift = self.changed.is_some();
+                self.adrift = self.changed.as_ref().map(|_| key.clone());
                 self.fell_back(&key);
             }
         }
@@ -327,9 +346,11 @@ impl Studio {
     /// may write it. A failure says why on the status line.
     pub fn save_settings(&mut self) {
         self.settings_due = false;
-        let key = self.key(self.current);
+        let used = self.in_use();
+        let key = used.key;
         let unsaved = self.changed.as_ref().map(|c| Unsaved {
             from: key.clone(),
+            name: Some(used.name.clone()),
             spec: c.clone(),
         });
         let (hl, compact) = (self.theme.high_legibility, self.compact_header);
@@ -389,6 +410,28 @@ impl Studio {
         let taken = (SHIPPED.len()..self.themes.len())
             .find(|i| Some(*i) != except && store::same_name(&self.own_name(*i), &name));
         Ok((name, taken))
+    }
+
+    /// Why the theme in use has no file to rename or delete.
+    pub fn no_file(&self) -> ThemeFault {
+        if self.in_use().adrift() {
+            ThemeFault::FileGone
+        } else {
+            ThemeFault::ShippedTheme
+        }
+    }
+
+    /// The name Save as proposes for the theme in use: a change whose file
+    /// is gone keeps its own name when it is free; else the name with the
+    /// next free number.
+    pub fn save_as_name(&self) -> String {
+        let used = self.in_use();
+        if used.adrift()
+            && let Ok(n) = self.check_name(&used.name, None)
+        {
+            return n;
+        }
+        self.next_name(&used.name)
     }
 
     /// The name `base` with the next free number, "Green 2", for the name
@@ -461,7 +504,7 @@ impl Studio {
         };
         self.current = i;
         self.changed = None;
-        self.adrift = false;
+        self.adrift = None;
         self.chose();
         self.refresh_theme();
         self.save_settings();
@@ -491,13 +534,19 @@ impl Studio {
 
     /// Write the changed theme over its own file. A theme that ships has
     /// none: [`ThemeFault::ShippedTheme`].
+    /// A change whose file is gone has none either: Save saves it as new,
+    /// under the name [`Studio::save_as_name`] gives.
     pub fn save_theme(&mut self) -> Result<String, ThemeFault> {
-        let Some(Some(file)) = self.theme_files.get(self.current).cloned() else {
+        let used = self.in_use();
+        if used.adrift() {
+            return self.save_theme_as(&self.save_as_name(), false);
+        }
+        let Some(file) = used.file else {
             return Err(ThemeFault::ShippedTheme);
         };
         let dir = self.folder_or_fault()?;
         let spec = Spec {
-            name: Cow::Owned(self.own_name(self.current)),
+            name: Cow::Owned(used.name),
             ..self.spec().clone()
         };
         let line = self.keep(&dir, &file, &spec)?;
@@ -509,15 +558,16 @@ impl Studio {
     /// The name inside its file changes, the file keeps its file name, and
     /// a change not saved stays not saved.
     pub fn rename_theme(&mut self, name: &str) -> Result<String, ThemeFault> {
-        let Some(Some(file)) = self.theme_files.get(self.current).cloned() else {
-            return Err(ThemeFault::ShippedTheme);
+        let used = self.in_use();
+        let (Some(file), Some(row)) = (used.file, used.row) else {
+            return Err(self.no_file());
         };
-        let name = self.check_name(name, Some(self.current))?;
+        let name = self.check_name(name, Some(row))?;
         let dir = self.folder_or_fault()?;
         let changed = self.changed.take();
         let spec = Spec {
             name: Cow::Owned(name.clone()),
-            ..self.themes[self.current].clone()
+            ..self.themes[row].clone()
         };
         let kept = self.keep(&dir, &file, &spec);
         self.changed = changed.map(|c| Spec {
@@ -535,11 +585,12 @@ impl Studio {
     /// Delete the file of the theme in use, one of the person's own. The
     /// window goes back to Green.
     pub fn delete_theme(&mut self) -> Result<String, ThemeFault> {
-        let Some(Some(file)) = self.theme_files.get(self.current).cloned() else {
-            return Err(ThemeFault::ShippedTheme);
+        let used = self.in_use();
+        let Some(file) = used.file else {
+            return Err(self.no_file());
         };
         let dir = self.folder_or_fault()?;
-        let name = self.own_name(self.current);
+        let name = used.name;
         let cannot = |why: &str| {
             ThemeFault::Write(format!(
                 "Studio could not delete {}: {why}. The theme is kept.",
@@ -568,7 +619,7 @@ impl Studio {
         })?;
         self.current = 0;
         self.changed = None;
-        self.adrift = false;
+        self.adrift = None;
         self.chose();
         self.reload_themes();
         self.refresh_theme();

@@ -1365,3 +1365,367 @@ fn the_picker_lights_the_row_of_the_theme_in_use() {
         }
     }
 }
+
+/// How a test reaches a changed theme.
+#[derive(Clone, Copy, Debug)]
+enum Way {
+    /// Green, changed.
+    Ships,
+    /// Ember, changed, with its file.
+    Own,
+    /// Ember, changed, then its file went and the folder was read again.
+    GoneAtReload,
+    /// A start whose `[unsaved]` names ember.toml, which is gone.
+    GoneAtStart,
+    /// A start whose `[unsaved]` names ember.toml, of a newer version.
+    NewerAtStart,
+    /// A start whose `[unsaved]` names ember.toml, which cannot be read.
+    #[cfg(unix)]
+    UnreadableAtStart,
+}
+
+/// What every part of the window gives for one changed theme.
+struct Row {
+    way: Way,
+    name: &'static str,
+    lit: Option<&'static str>,
+    save_as: &'static str,
+    /// The file Save writes, or None when Save waits.
+    save: Option<&'static str>,
+    /// Rename and Delete work.
+    file_acts: Option<ThemeFault>,
+    revert: &'static str,
+    /// The name in the leave question and its Name field.
+    leave: (&'static str, &'static str),
+    /// The file Keep writes, and the name inside it.
+    keep: (&'static str, &'static str),
+    /// `theme` and `[unsaved]` `from` in `settings.toml`.
+    stored: &'static str,
+}
+
+/// The settings of a start on Ember, changed and not saved.
+const EMBER_CHANGED: &str = "version = 1\ntheme = \"ember.toml\"\n\n[unsaved]\nfrom = \"ember.toml\"\nname = \"Ember\"\nbase = \"#123456\"\nbloom = 0.25\n";
+
+/// A window on the changed theme `way` gives, with its settings in `d`.
+fn reach(d: &TempDir, way: Way) -> Studio {
+    let start = |d: &TempDir, file: Option<&str>| {
+        if let Some(f) = file {
+            std::fs::write(themes(d).join("ember.toml"), f).unwrap();
+        }
+        std::fs::write(d.0.join(store::SETTINGS), EMBER_CHANGED).unwrap();
+        Studio::new(None).with_settings(d.0.clone())
+    };
+    match way {
+        Way::Ships => {
+            let mut s = window(d);
+            nudge(&mut s);
+            s
+        }
+        Way::Own => {
+            let mut s = on_ember(d);
+            nudge(&mut s);
+            s
+        }
+        Way::GoneAtReload => {
+            let mut s = on_ember(d);
+            nudge(&mut s);
+            std::fs::remove_file(themes(d).join("ember.toml")).unwrap();
+            s.reload_themes();
+            s
+        }
+        Way::GoneAtStart => start(d, None),
+        Way::NewerAtStart => start(d, Some(&EMBER.replace("version = 1", "version = 2"))),
+        #[cfg(unix)]
+        Way::UnreadableAtStart => {
+            use std::os::unix::fs::PermissionsExt;
+            let f = themes(d).join("ember.toml");
+            std::fs::write(&f, EMBER).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let s = start(d, None);
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+            s
+        }
+    }
+}
+
+fn rows() -> Vec<Row> {
+    let gone = |way| Row {
+        way,
+        name: "Ember",
+        lit: None,
+        save_as: "Ember",
+        save: Some("ember-2.toml"),
+        file_acts: Some(ThemeFault::FileGone),
+        revert: "Green",
+        leave: ("Ember", "Ember"),
+        keep: ("ember-2.toml", "Ember"),
+        stored: "ember.toml",
+    };
+    let mut v = vec![
+        Row {
+            way: Way::Ships,
+            name: "Green",
+            lit: Some("Green"),
+            save_as: "Green 2",
+            save: None,
+            file_acts: Some(ThemeFault::ShippedTheme),
+            revert: "Green",
+            leave: ("Green", "Green 2"),
+            keep: ("green-2.toml", "Green 2"),
+            stored: "Green",
+        },
+        Row {
+            way: Way::Own,
+            name: "Ember",
+            lit: Some("Ember"),
+            save_as: "Ember 2",
+            save: Some("ember.toml"),
+            file_acts: None,
+            revert: "Ember",
+            leave: ("Ember", ""),
+            keep: ("ember.toml", "Ember"),
+            stored: "ember.toml",
+        },
+        Row {
+            save: Some("ember.toml"),
+            keep: ("ember.toml", "Ember"),
+            ..gone(Way::GoneAtReload)
+        },
+        Row {
+            save: Some("ember.toml"),
+            keep: ("ember.toml", "Ember"),
+            ..gone(Way::GoneAtStart)
+        },
+        // The file is there but not listed: a new file goes beside it.
+        gone(Way::NewerAtStart),
+    ];
+    #[cfg(unix)]
+    if lock_bites() {
+        v.push(gone(Way::UnreadableAtStart));
+    } else {
+        eprintln!("skipped, the permission does not bite: UnreadableAtStart");
+    }
+    v
+}
+
+/// A file with no permission cannot be opened by this user, as it can by
+/// root.
+#[cfg(unix)]
+fn lock_bites() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let d = TempDir::new("bites");
+    let f = d.0.join("probe");
+    std::fs::write(&f, "").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let bites = std::fs::File::open(&f).is_err();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+    bites
+}
+
+/// The text of the file `file` of the themes folder, or None.
+fn theme_text(d: &TempDir, file: &str) -> Option<String> {
+    std::fs::read_to_string(themes(d).join(file)).ok()
+}
+
+/// Every part of the window that names the theme in use agrees, for a
+/// changed theme that ships, one of the person's own, and one whose own
+/// theme is gone however that came.
+#[test]
+fn every_reader_of_the_theme_in_use_agrees() {
+    let rows = rows();
+    for r in &rows {
+        let way = format!("{:?}", r.way);
+        let changed = format!("{}, changed", r.name);
+        let used = |s: &Studio| s.in_use();
+
+        // Status line, tag, picker label and lit row, menu rows and mark.
+        let d = TempDir::new("reader");
+        let s = reach(&d, r.way);
+        assert_eq!(s.theme_name(), changed, "{way}: status");
+        assert_eq!(s.pane_tag(), TAG_CHANGED, "{way}: tag");
+        let lit = s.theme_row().map(|i| s.themes[i].name.to_string());
+        assert_eq!(lit.as_deref(), r.lit, "{way}: lit row");
+        assert!(s.checked(Command::Theme(ThemeId::Changed)), "{way}: mark");
+        for i in 0..s.themes.len() {
+            assert!(!s.checked(Command::Theme(ThemeId::At(i))), "{way}: row {i}");
+        }
+        assert!(
+            menus::native_items(&s).iter().any(|i| i.title == changed),
+            "{way}: menu"
+        );
+        assert_eq!(used(&s).name, r.name, "{way}: name");
+
+        // Save as.
+        let mut s = s;
+        s.start_naming(false);
+        assert_eq!(
+            s.theme_editor.naming.unwrap().text,
+            r.save_as,
+            "{way}: save as"
+        );
+
+        // Save.
+        let d = TempDir::new("reader");
+        let mut s = reach(&d, r.way);
+        let (why_file, why_save) = s.why_waits();
+        assert_eq!(why_save.is_none(), r.save.is_some(), "{way}: save waits");
+        assert_eq!(
+            why_file,
+            r.file_acts.as_ref().map(ThemeFault::message),
+            "{way}: rename and delete wait"
+        );
+        ask(
+            &mut s,
+            Asked {
+                save: true,
+                ..Asked::default()
+            },
+        );
+        if used(&s).row.is_none() {
+            // No file to write over: Save asks for a name, as Save as.
+            assert_eq!(
+                s.theme_editor.naming.as_ref().map(|n| n.text.as_str()),
+                Some(r.save_as),
+                "{way}: save names"
+            );
+            ask(
+                &mut s,
+                Asked {
+                    named: true,
+                    ..Asked::default()
+                },
+            );
+        }
+        match r.save {
+            Some(f) => {
+                assert!(s.changed.is_none(), "{way}: saved");
+                assert!(s.adrift.is_none(), "{way}: saved");
+                let t = theme_text(&d, f).unwrap();
+                assert!(t.contains(&format!("name = \"{}\"", r.name)), "{way}: {t}");
+                assert_eq!(s.own_file().as_deref(), Some(f), "{way}: save");
+            }
+            None => assert_eq!(s.theme_name(), changed, "{way}: save waits"),
+        }
+
+        // Rename and Delete.
+        let d = TempDir::new("reader");
+        let mut s = reach(&d, r.way);
+        s.start_naming(true);
+        assert_eq!(
+            s.theme_editor.naming.is_some(),
+            r.file_acts.is_none(),
+            "{way}: rename row"
+        );
+        s.theme_editor.naming = None;
+        ask(
+            &mut s,
+            Asked {
+                delete: true,
+                ..Asked::default()
+            },
+        );
+        assert_eq!(
+            s.theme_editor.question.is_some(),
+            r.file_acts.is_none(),
+            "{way}: delete question"
+        );
+        s.theme_editor.question = None;
+        let renamed = s.rename_theme("Night");
+        assert_eq!(renamed.err(), r.file_acts, "{way}: rename");
+        let d = TempDir::new("reader");
+        let mut s = reach(&d, r.way);
+        let deleted = s.delete_theme();
+        assert_eq!(deleted.err(), r.file_acts, "{way}: delete");
+
+        // Revert.
+        let d = TempDir::new("reader");
+        let mut s = reach(&d, r.way);
+        ask(
+            &mut s,
+            Asked {
+                revert: true,
+                ..Asked::default()
+            },
+        );
+        assert_eq!(s.theme_name(), r.revert, "{way}: revert");
+        assert!(s.adrift.is_none(), "{way}: revert");
+        assert!(s.theme_row().is_some(), "{way}: revert");
+
+        // The leave question, then Keep.
+        let d = TempDir::new("reader");
+        let mut s = reach(&d, r.way);
+        s.pick_theme(1);
+        let Some(ThemeQuestion::Leave { name, .. }) = s.theme_editor.question.clone() else {
+            panic!("{way}: no leave question");
+        };
+        assert_eq!(
+            (used(&s).name.as_str(), name.as_str()),
+            r.leave,
+            "{way}: leave"
+        );
+        assert!(s.answer_theme(Answer::Save).unwrap().is_ok(), "{way}: keep");
+        let t = theme_text(&d, r.keep.0).unwrap();
+        assert!(
+            t.contains(&format!("name = \"{}\"", r.keep.1)),
+            "{way}: {t}"
+        );
+        assert_eq!(s.theme_name(), "Amber", "{way}: keep");
+
+        // settings.toml after an edit and after close, and the next start.
+        let d = TempDir::new("reader");
+        let mut s = reach(&d, r.way);
+        nudge(&mut s);
+        for when in ["edit", "close"] {
+            if when == "close" {
+                ask(
+                    &mut s,
+                    Asked {
+                        close: true,
+                        ..Asked::default()
+                    },
+                );
+            }
+            s.save_settings();
+            let text = std::fs::read(d.0.join(store::SETTINGS)).unwrap();
+            let st = store::Settings::parse(&text).unwrap();
+            assert_eq!(st.theme(), Some(r.stored), "{way}: theme after {when}");
+            let u = st.unsaved().unwrap();
+            assert_eq!(u.from, r.stored, "{way}: from after {when}");
+            assert_eq!(u.name.as_deref(), Some(r.name), "{way}: name after {when}");
+        }
+        let back = Studio::new(None).with_settings(d.0.clone());
+        assert_eq!(back.theme_name(), changed, "{way}: next start");
+        // The unreadable file is readable again by now, so the change sits
+        // on its row.
+        #[cfg(unix)]
+        let home = matches!(r.way, Way::UnreadableAtStart);
+        #[cfg(not(unix))]
+        let home = false;
+        let adrift = r.lit.is_none() && !home;
+        assert_eq!(back.in_use().adrift(), adrift, "{way}: next start");
+    }
+    assert!(rows.len() >= 5, "rows: {}", rows.len());
+}
+
+/// A change whose own name is taken proposes that name with a number.
+#[test]
+fn a_change_adrift_proposes_a_free_name() {
+    let d = TempDir::new("adrift");
+    let mut s = reach(&d, Way::GoneAtReload);
+    std::fs::write(themes(&d).join("other.toml"), EMBER).unwrap();
+    s.reload_themes();
+    assert!(s.in_use().adrift());
+    assert_eq!(s.save_as_name(), "Ember 2");
+}
+
+/// A change adrift sits on its row again when its file comes back.
+#[test]
+fn a_change_adrift_comes_home_with_its_file() {
+    let d = TempDir::new("adrift");
+    let mut s = reach(&d, Way::GoneAtReload);
+    std::fs::write(themes(&d).join("ember.toml"), EMBER).unwrap();
+    s.reload_themes();
+    assert!(s.adrift.is_none());
+    assert_eq!(s.own_file().as_deref(), Some("ember.toml"));
+    assert_eq!(s.theme_name(), "Ember, changed");
+}

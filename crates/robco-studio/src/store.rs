@@ -781,7 +781,10 @@ pub struct Unsaved {
     /// The theme it was changed from: a theme that ships, by name, or a
     /// file of the themes folder, as "ember.toml".
     pub from: String,
-    /// Its numbers. The name is not kept: it is the name of `from`.
+    /// The name it was shown with. Studio uses it only when `from` cannot
+    /// be had; otherwise the name is the name of `from`.
+    pub name: Option<String>,
+    /// Its numbers. The name in it is empty.
     pub spec: Spec,
 }
 
@@ -877,8 +880,13 @@ impl Settings {
         };
         let base = colour(base)?;
         let (strengths, moves, rate) = screen_of(Some(t), SETTINGS, &mut Vec::new()).ok()?;
+        let name = match t.get("name") {
+            Some(Value::String(n)) => Some(n.clone()),
+            _ => None,
+        };
         Some(Unsaved {
             from: from.clone(),
+            name,
             spec: Spec {
                 name: Cow::Owned(String::new()),
                 base,
@@ -928,6 +936,9 @@ impl Settings {
             }
             Some(u) => {
                 s.insert("from".into(), Value::String(u.from.clone()));
+                if let Some(n) = &u.name {
+                    s.insert("name".into(), Value::String(n.clone()));
+                }
                 s.insert("base".into(), Value::String(hex(u.spec.base)));
                 for (i, key) in STRENGTH_KEYS.iter().enumerate() {
                     let v = u.spec.strengths.get(i).unwrap_or(0.0);
@@ -944,7 +955,7 @@ impl Settings {
 }
 
 /// The keys of `[unsaved]` besides the ten strengths.
-const UNSAVED_KEYS: [&str; 4] = ["from", "base", "moves", "rate"];
+const UNSAVED_KEYS: [&str; 5] = ["from", "name", "base", "moves", "rate"];
 
 fn no_settings(why: &str) -> Note {
     warn(format!(

@@ -479,8 +479,9 @@ enum Wrote {
 /// One thing that can fail when Studio reads its files.
 struct Case {
     row: &'static str,
-    // A file gone at a reload takes Green, and a change not saved stays
-    // on screen as a change of Green: the person's numbers are not lost.
+    // A file gone at start or at a reload takes Green as a stand-in, and
+    // a change not saved stays on screen under its own name: the person's
+    // numbers are not lost.
     /// Make the folder before Studio starts.
     before: fn(&TempDir),
     /// Make the fault after the start, then read the themes folder again.
@@ -497,7 +498,7 @@ struct Case {
 }
 
 /// The settings every case starts from: Ember, changed and not saved.
-const STORED: &str = "version = 1\ntheme = \"ember.toml\"\nlater = \"kept\"\n\n[unsaved]\nfrom = \"ember.toml\"\nbase = \"#123456\"\nbloom = 0.25\n";
+const STORED: &str = "version = 1\ntheme = \"ember.toml\"\nlater = \"kept\"\n\n[unsaved]\nfrom = \"ember.toml\"\nname = \"Ember\"\nbase = \"#123456\"\nbloom = 0.25\n";
 
 fn stored(d: &TempDir) {
     std::fs::write(themes(d).join("ember.toml"), EMBER).unwrap();
@@ -668,7 +669,7 @@ fn cases() -> Vec<Case> {
                 std::fs::remove_dir_all(themes(d)).unwrap();
             },
             reload: None,
-            shown: "Green",
+            shown: "Ember, changed",
             says: Some("%STUDIO-W-THEMEGONE"),
             close: Wrote::Kept,
             acts_written: true,
@@ -689,7 +690,7 @@ fn cases() -> Vec<Case> {
                 std::fs::remove_file(themes(d).join("ember.toml")).unwrap();
             },
             reload: None,
-            shown: "Green",
+            shown: "Ember, changed",
             says: Some("%STUDIO-W-THEMEGONE"),
             close: Wrote::Kept,
             acts_written: true,
@@ -710,7 +711,7 @@ fn cases() -> Vec<Case> {
                 many(d);
             },
             reload: None,
-            shown: "Green",
+            shown: "Ember, changed",
             says: Some("%STUDIO-W-THEMEGONE"),
             close: Wrote::Kept,
             acts_written: true,
@@ -726,7 +727,7 @@ fn cases() -> Vec<Case> {
         },
     ];
     // Each way the store refuses the selected theme's file, at start and
-    // at a reload. Studio shows Green and keeps the stored choice.
+    // at a reload. Studio keeps the change on screen and the stored choice.
     macro_rules! refused {
         ($what:literal, $code:literal, $bytes:expr) => {
             v.extend([
@@ -737,7 +738,7 @@ fn cases() -> Vec<Case> {
                         std::fs::write(themes(d).join("ember.toml"), $bytes).unwrap();
                     },
                     reload: None,
-                    shown: "Green",
+                    shown: "Ember, changed",
                     says: Some($code),
                     close: Wrote::Kept,
                     acts_written: true,
@@ -790,7 +791,7 @@ fn cases() -> Vec<Case> {
                 as_folder(d);
             },
             reload: None,
-            shown: "Green",
+            shown: "Ember, changed",
             says: Some("%STUDIO-W-THEMEGONE"),
             close: Wrote::Kept,
             acts_written: true,
@@ -884,7 +885,7 @@ fn cases() -> Vec<Case> {
                 lock(themes(d));
             },
             reload: None,
-            shown: "Green",
+            shown: "Ember, changed",
             says: Some("%STUDIO-W-THEMEKEPT"),
             close: Wrote::Kept,
             acts_written: true,
@@ -917,7 +918,7 @@ fn cases() -> Vec<Case> {
                 lock(themes(d).join("ember.toml"));
             },
             reload: None,
-            shown: "Green",
+            shown: "Ember, changed",
             says: Some("%STUDIO-W-THEMEKEPT"),
             close: Wrote::Kept,
             acts_written: true,

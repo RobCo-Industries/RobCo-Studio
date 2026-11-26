@@ -415,6 +415,7 @@ fn settings_round_trip() {
     spec.strengths.bloom = 0.6;
     let u = Unsaved {
         from: "ember.toml".into(),
+        name: Some("Ember".into()),
         spec: Spec {
             name: Cow::Owned(String::new()),
             ..spec

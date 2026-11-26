@@ -149,6 +149,30 @@ impl Default for Layout {
     }
 }
 
+/// The theme in use, changed or not, as [`Studio::in_use`] gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InUse {
+    /// Its name, without the file's name a listed twin carries.
+    pub name: String,
+    /// It ships with Studio.
+    pub ships: bool,
+    /// Its file in the themes folder. None for a theme that ships and for
+    /// a change whose own file is gone.
+    pub file: Option<String>,
+    /// Its row in the theme list. None for a change whose own theme is
+    /// gone.
+    pub row: Option<usize>,
+    /// How `settings.toml` names it.
+    pub key: String,
+}
+
+impl InUse {
+    /// A change whose own theme is gone: no row, no file, not shipped.
+    pub fn adrift(&self) -> bool {
+        self.row.is_none()
+    }
+}
+
 /// The window's state.
 pub struct Studio {
     /// What draws, worked out from the theme each frame. Its high
@@ -160,9 +184,12 @@ pub struct Studio {
     pub current: usize,
     /// The theme in use, changed and not saved, or None.
     pub changed: Option<Spec>,
-    /// The changed theme's own theme went at a reload, so the change sits
-    /// on no row of the list. A pick, a save or a delete ends it.
-    pub adrift: bool,
+    /// The key of the changed theme's own theme, as `settings.toml` names
+    /// it, when that theme cannot be had: its file went at a reload, or was
+    /// gone or unreadable at start. The change then sits on no row and
+    /// `current` points at Green, a stand-in. A pick, a save, a revert or
+    /// the file's return ends it. Read [`Studio::in_use`], not `current`.
+    pub adrift: Option<String>,
     /// For each theme of `themes`, its file in the themes folder, or None
     /// for a theme that ships.
     pub theme_files: Vec<Option<String>>,
@@ -383,7 +410,7 @@ impl Studio {
             themes: crate::theme::SHIPPED.to_vec(),
             current: 0,
             changed: None,
-            adrift: false,
+            adrift: None,
             theme_files: vec![None; crate::theme::SHIPPED.len()],
             refused: Vec::new(),
             store: None,
@@ -573,6 +600,8 @@ impl Studio {
             Command::CompactHeader => self.compact_header,
             Command::HighLegibility => self.theme.high_legibility,
             Command::SimZoom(z) => self.sim_zoom == z,
+            // A row is marked only with no change, so `current` is the
+            // theme in use here.
             Command::Theme(ThemeId::At(i)) => self.changed.is_none() && self.current == i,
             Command::Theme(ThemeId::Changed) => self.changed.is_some(),
             _ => false,
@@ -583,6 +612,7 @@ impl Studio {
     pub fn spec(&self) -> &Spec {
         match &self.changed {
             Some(c) => c,
+            // With no change, `current` is the theme in use.
             None => self
                 .themes
                 .get(self.current)
@@ -594,7 +624,34 @@ impl Studio {
     /// change sits on for a changed theme, and None for a change that sits
     /// on no row.
     pub fn theme_row(&self) -> Option<usize> {
-        (!(self.adrift && self.changed.is_some())).then_some(self.current)
+        self.in_use().row
+    }
+
+    /// The theme in use, as every part of the window names it. Each
+    /// reader asks here, so a change whose own theme is gone answers the
+    /// same everywhere.
+    pub fn in_use(&self) -> InUse {
+        if let (Some(key), Some(c)) = (&self.adrift, &self.changed) {
+            let name = c.name.as_ref();
+            let name = name
+                .strip_suffix(&format!(", {}", crate::store::shown(key)))
+                .unwrap_or(name);
+            return InUse {
+                name: name.to_owned(),
+                ships: false,
+                file: None,
+                row: None,
+                key: key.clone(),
+            };
+        }
+        let file = self.theme_files.get(self.current).cloned().flatten();
+        InUse {
+            name: self.own_name(self.current),
+            ships: file.is_none(),
+            file,
+            row: Some(self.current),
+            key: self.key(self.current),
+        }
     }
 
     /// The name of the theme in use, as the menu and the status line give
@@ -664,7 +721,7 @@ impl Studio {
         }
         self.current = i;
         self.changed = None;
-        self.adrift = false;
+        self.adrift = None;
         self.chose();
         self.refresh_theme();
         self.save_settings();
@@ -711,7 +768,7 @@ impl Studio {
         if let Some(i) = asked.filter(|i| *i < self.themes.len()) {
             self.current = i;
             self.changed = None;
-            self.adrift = false;
+            self.adrift = None;
         }
         self.refresh_theme();
         // A window with no known adapter is a test harness or has no

@@ -378,16 +378,10 @@ impl Studio {
             unnamed: escape && naming,
             ..Asked::default()
         };
-        let own = self.own_file().is_some();
         let folder = self.themes_folder().is_some();
         let no_folder = ThemeFault::NoFolder.message();
-        let why_own = if !folder {
-            Some(no_folder.as_str())
-        } else if !own {
-            Some(SHIPPED_SAVE)
-        } else {
-            None
-        };
+        let (why_own, why_save) = self.why_waits();
+        let (why_own, why_save) = (why_own.as_deref(), why_save.as_deref());
         let why_as = (!folder).then_some(no_folder.as_str());
         let fault = self.name_fault();
         let refused: Vec<(String, String)> = self
@@ -398,17 +392,7 @@ impl Studio {
         let name = self.theme_name();
         let lit_row = self.theme_row();
         let changed = self.changed.is_some();
-        let tag = if changed {
-            TAG_CHANGED
-        } else if self
-            .theme_files
-            .get(self.current)
-            .is_some_and(Option::is_some)
-        {
-            TAG_YOURS
-        } else {
-            TAG_SHIPS
-        };
+        let tag = self.pane_tag();
         let rows: Vec<String> = self.themes.iter().map(|t| t.name.to_string()).collect();
         let spec = self.spec().clone();
         let shown = self.shown();
@@ -576,7 +560,7 @@ impl Studio {
                         asked.delete = button(&mut ui, BUTTONS[0], why_own, false);
                         asked.rename = button(&mut ui, BUTTONS[1], why_own, false);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            asked.save = button(ui, BUTTONS[4], why_own, true);
+                            asked.save = button(ui, BUTTONS[4], why_save, true);
                             asked.save_as = button(ui, BUTTONS[3], why_as, false);
                             asked.revert = button(ui, BUTTONS[2], None, false);
                         });
@@ -812,6 +796,9 @@ impl Studio {
             self.finish_naming();
         } else if a.save_as || a.rename {
             self.start_naming(a.rename);
+        } else if a.save && self.in_use().adrift() {
+            // No file to write over: Save asks for a name, as Save as.
+            self.start_naming(false);
         } else if a.save {
             if let Err(f) = self.save_theme() {
                 self.say(Level::Error, f.message());
@@ -824,6 +811,8 @@ impl Studio {
             self.pick_theme(i);
         } else if a.revert {
             // Revert drops the change: the person asked for exactly that.
+            // `current` is the theme the change came from, or Green when
+            // that one is gone: Revert goes there either way.
             if self.changed.is_some() {
                 self.take_theme(self.current);
             }
@@ -840,9 +829,34 @@ impl Studio {
         }
     }
 
+    /// The tag of the pane's title row.
+    pub fn pane_tag(&self) -> &'static str {
+        if self.changed.is_some() {
+            TAG_CHANGED
+        } else if self.in_use().ships {
+            TAG_SHIPS
+        } else {
+            TAG_YOURS
+        }
+    }
+
+    /// Why Delete and Rename wait, and why Save waits, or None for a
+    /// button that works. Delete and Rename need the file. Save also takes
+    /// a change whose file is gone, and saves it as new.
+    pub fn why_waits(&self) -> (Option<String>, Option<String>) {
+        if self.themes_folder().is_none() {
+            let m = ThemeFault::NoFolder.message();
+            return (Some(m.clone()), Some(m));
+        }
+        let used = self.in_use();
+        let own = used.file.is_none().then(|| self.no_file().message());
+        let save = used.ships.then(|| SHIPPED_SAVE.to_owned());
+        (own, save)
+    }
+
     /// The file of the theme in use, when it is one of the person's own.
     pub fn own_file(&self) -> Option<String> {
-        self.theme_files.get(self.current).cloned().flatten()
+        self.in_use().file
     }
 
     /// The one check before something else takes the place of the theme
@@ -856,7 +870,7 @@ impl Studio {
         let name = if self.own_file().is_some() {
             String::new()
         } else {
-            self.next_name(&self.own_name(self.current))
+            self.save_as_name()
         };
         Gate::Ask(ThemeQuestion::Leave {
             to: to.clone(),
@@ -896,8 +910,11 @@ impl Studio {
         if rename && self.own_file().is_none() {
             return;
         }
-        let own = self.own_name(self.current);
-        let text = if rename { own } else { self.next_name(&own) };
+        let text = if rename {
+            self.in_use().name
+        } else {
+            self.save_as_name()
+        };
         self.theme_editor.naming = Some(Naming {
             rename,
             text,
@@ -909,7 +926,7 @@ impl Studio {
     /// Name field. [`ThemeFault::Exists`] offers Replace on Save as.
     pub fn name_fault(&self) -> Option<ThemeFault> {
         if let Some(n) = &self.theme_editor.naming {
-            let except = n.rename.then_some(self.current);
+            let except = n.rename.then(|| self.in_use().row).flatten();
             return self.check_name(&n.text, except).err();
         }
         match &self.theme_editor.question {
@@ -1008,7 +1025,7 @@ impl Studio {
             return;
         };
         let p = kit.p();
-        let own = self.own_name(self.current);
+        let own = self.in_use().name;
         let (title, text, danger) = match &q {
             ThemeQuestion::Delete => {
                 let file = self.own_file().unwrap_or_default();
