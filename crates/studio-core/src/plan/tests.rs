@@ -597,17 +597,182 @@ fn plan_flags_paths_checked() {
 }
 
 #[test]
-fn plan_flags_paths_in_field_order_after_types() {
-    // A bad path and a later type error: the type error wins.
+fn plan_flags_a_bad_value_wins_over_a_later_type_error() {
+    // Each field is checked whole before the next: the earlier bad path wins.
     let text = String::from_utf8_lossy(FLAGS)
         .replace("\"include\"", "\"../x\"")
         .replace("\"PIPOS_ABI_TARGET\"", "1");
-    assert_eq!(flags_err(&text).detail(), "abi_define: expected a string");
-    // Two bad paths: the first field of the table wins.
-    let text = String::from_utf8_lossy(FLAGS)
-        .replace("\"lib/libpip.a\"", "\"/x\"")
-        .replace("\"include\"", "\"../x\"");
     assert!(flags_err(&text).detail().starts_with("include_dirs:"));
+}
+
+/// One value fault per field of the spec's table, in the table's order.
+fn faults() -> Vec<(&'static str, Value)> {
+    use serde_json::json;
+    vec![
+        ("cflags", json!(["-B"])),
+        ("include_dirs", json!(["../x"])),
+        ("ldflags", json!(["-specs=x"])),
+        ("linker_scripts", json!({"holotape": "/x.ld"})),
+        ("crt0", json!("-x.S")),
+        (
+            "crt0_defines",
+            json!({"holotape-game": ["A=1\n#include \"/etc/x\""]}),
+        ),
+        ("libs", json!(["/x.a"])),
+        ("system_libs", json!(["-specs=/tmp/inject.specs"])),
+        ("abi_define", json!("X=1")),
+    ]
+}
+
+#[test]
+fn plan_flags_two_faults_report_the_first_of_the_table() {
+    let base: Value = match serde_json::from_slice(FLAGS) {
+        Ok(v) => v,
+        Err(e) => panic!("{e}"),
+    };
+    let faults = faults();
+    for (one, _) in &faults {
+        let mut f = base.clone();
+        if let (Value::Object(m), Some((_, v))) = (&mut f, faults.iter().find(|x| x.0 == *one)) {
+            m.insert((*one).into(), v.clone());
+        }
+        assert!(flags_err(&f.to_string()).detail().starts_with(one), "{one}");
+    }
+    for pair in faults.windows(2) {
+        let mut f = base.clone();
+        if let Value::Object(m) = &mut f {
+            for (k, v) in pair {
+                m.insert((*k).into(), v.clone());
+            }
+        }
+        let e = flags_err(&f.to_string());
+        assert_eq!(e.code(), "manifest");
+        assert!(
+            e.detail().starts_with(pair[0].0),
+            "{} then {}: {e}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+}
+
+#[test]
+fn plan_system_libs_take_library_flags_only() {
+    assert_passes(
+        "system_libs",
+        &["-lgcc", "-lc", "-lstdc++", "-lgcc_s", "-lm-2"],
+    );
+    let bad = [
+        "-specs=/tmp/inject.specs",
+        "-l",
+        "-lGCC",
+        "-l../x",
+        "-l/tmp/x",
+        "-lgcc,x",
+        "-L/tmp",
+        "-Wl,--gc-sections",
+        "-O2",
+        "gcc",
+    ];
+    for f in bad {
+        match shape_ok("system_libs", f) {
+            Ok(()) => panic!("{f:?} passed"),
+            Err(e) => assert_eq!(
+                e.detail(),
+                format!("system_libs: {f:?}: not in the allowed flag shapes")
+            ),
+        }
+    }
+    // A library flag is not a cflag or an ldflag.
+    assert!(shape_ok("cflags", "-lgcc").is_err());
+    assert!(shape_ok("ldflags", "-lgcc").is_err());
+    let e = path_err("\"-lgcc\"", "\"-specs=/tmp/inject.specs\"");
+    assert_eq!(e.code(), "manifest");
+    assert_eq!(
+        e.detail(),
+        "system_libs: \"-specs=/tmp/inject.specs\": not in the allowed flag shapes"
+    );
+}
+
+#[test]
+fn plan_package_paths_refuse_options_and_streams() {
+    let fields = [
+        ("\"include\"", "include_dirs"),
+        ("\"lib/holotape.ld\"", "linker_scripts.holotape"),
+        ("\"lib/crt0.S\"", "crt0"),
+        ("\"lib/libpip.a\"", "libs"),
+    ];
+    let bad = [
+        ("-specs=x", "a part starts with -"),
+        ("lib/-x", "a part starts with -"),
+        ("lib/a:b", "holds a : or a control character"),
+        ("lib/a\\nb", "holds a : or a control character"),
+    ];
+    for (from, field) in fields {
+        for (value, reason) in bad {
+            let e = path_err(from, &format!("\"{value}\""));
+            assert_eq!(e.code(), "manifest", "{field} {value}");
+            let shown = serde_json::from_str::<String>(&format!("\"{value}\"")).unwrap_or_default();
+            assert_eq!(e.detail(), format!("{field}: {shown:?}: {reason}"));
+        }
+    }
+}
+
+#[test]
+fn plan_inside_is_by_components() {
+    let u = Host::Unix;
+    assert!(inside(u, "/c/pkg", "/c/pkg/lib/x.a"));
+    assert!(!inside(u, "/c/pkg", "/c/pkg"));
+    assert!(!inside(u, "/c/pkg", "/c/pkg/../x"));
+    assert!(!inside(u, "/c/pkg", "/c/pkg/lib/../../x"));
+    assert!(!inside(u, "/c/pkg", "/c/pkgx/lib"));
+    assert!(!inside(u, "/c/pkg", "/../../c/pkg/x"));
+    let w = Host::Windows;
+    assert!(inside(w, "C:\\c\\pkg", "C:\\c\\pkg\\lib\\x.a"));
+    assert!(!inside(w, "C:\\c\\pkg", "C:\\c\\pkg\\..\\x"));
+    assert!(!inside(w, "C:\\c\\pkg", "C:\\c\\pkg/lib\\..\\..\\x"));
+}
+
+#[test]
+fn plan_defines_and_abi_define_are_names() {
+    for (from, to) in [
+        (
+            "\"PIP_IMG_SUBTYPE=0\"",
+            "\"PIP_IMG_SUBTYPE=0\\n#include \\\"/etc/x\\\"\"",
+        ),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"PIP_IMG_SUBTYPE\""),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"1X=0\""),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"X=/etc/passwd\""),
+        ("\"PIP_IMG_SUBTYPE=0\"", "\"X=\\\"a\\\"b\\\"\""),
+    ] {
+        let e = path_err(from, to);
+        assert_eq!(e.code(), "manifest", "{to}");
+        assert!(
+            e.detail().starts_with("crt0_defines.holotape-game: "),
+            "{e}"
+        );
+    }
+    let e = path_err("\"PIPOS_ABI_TARGET\"", "\"X=1\"");
+    assert_eq!(
+        e.detail(),
+        "abi_define: \"X=1\": not a C name, [A-Za-z_][A-Za-z0-9_]*"
+    );
+    // The values Pip-OS ships pass.
+    assert!(parse_flags(FLAGS).is_ok());
+}
+
+#[test]
+fn plan_source_with_a_leading_dash_is_not_an_option() {
+    let m = manifest(&MANIFEST.replace("[\"src/main.c\", \"src/*.c\"]", "[\"*.c\"]"));
+    let p = match make_with(&m, FLAGS, Host::Unix, &["-specs=x.c", "robco.toml"]) {
+        Ok(p) => p,
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(p.sources, ["-specs=x.c"]);
+    let c = &p.commands[1];
+    assert_eq!(c.step, Step::Compile("-specs=x.c".into()));
+    assert!(c.args.contains(&"./-specs=x.c".to_string()));
+    assert!(!c.args.contains(&"-specs=x.c".to_string()));
 }
 
 fn shape_ok(key: &str, flag: &str) -> Result<(), FlagsError> {

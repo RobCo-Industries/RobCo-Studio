@@ -107,8 +107,36 @@ impl std::error::Error for FlagsError {}
 /// Reads and checks the bytes of a `flags.json`.
 ///
 /// The checks run in the spec's order: UTF-8 JSON with an object at the
-/// top, then `format`, then each required field in the order of the
-/// spec's table. An unknown field is ignored.
+/// top, then `format`, then each field in the order of the spec's table.
+/// Each field is checked whole, its type then its value, before the next
+/// field is read. So the first bad field of the table is the one reported.
+/// A field the spec does not define is ignored, as "Reading flags.json" of
+/// SDK_PACKAGE.md says, so no unknown key reaches a command.
+///
+/// # The boundary
+///
+/// A package comes from an index. Nothing it holds may make a program of
+/// the build read, write or run a file outside the package and the
+/// project. Each text that ends up in an argument of `gcc` or `objcopy`:
+///
+/// | Source | Lands in | Spec allows | Checked | An attacker could put |
+/// |---|---|---|---|---|
+/// | `cflags` | Steps 1, 2, first | Flags, no path | [`FLAG_SHAPES`], scope `Both` | `-fplugin=`, `-B`, `-specs=` |
+/// | `include_dirs` | Steps 1, 2, `-I<PKG/dir>` | Path in the package | [`package_path`], then inside `PKG` | `../..`, `/etc` |
+/// | `ldflags` | Step 3, first | Flags, no path | [`FLAG_SHAPES`], `Both` or `Ldflags` | `-Wl,-T,/x`, `-specs=` |
+/// | `linker_scripts.<kind>` | Step 3, after `-T` | Path in the package | [`package_path`], then inside `PKG` | `/tmp/evil.ld` |
+/// | `crt0` | Step 1, the source | Path in the package | [`package_path`], then inside `PKG` | `-specs=x`, `../x` |
+/// | `crt0_defines.<key>` | Step 1, `-D<string>` | `NAME=VALUE` | C name, `=`, value of [`define_value`] | a newline and `#include "/etc/x"` |
+/// | `libs` | Step 3, `<PKG/lib>` | Path in the package | [`package_path`], then inside `PKG` | `../../x.a` |
+/// | `system_libs` | Step 3, last | Library flags, such as `-lgcc` | [`FLAG_SHAPES`], scope `SystemLibs`: `-l` and `[a-z0-9_+-]` | `-specs=/tmp/x` |
+/// | `abi_define` | Steps 1, 2, `-D<name>=<abi>` | A macro name | A C name | `X=1\n#include ...` |
+/// | Keys of `linker_scripts` and `crt0_defines` | Nowhere: a lookup key | Kind names | Looked up only | Nothing reaches a command |
+/// | Unknown keys of `flags.json` | Nowhere | Ignored | Ignored | Nothing reaches a command |
+/// | `robco.toml` `project.name` | Steps 3, 4, `build/NAME.elf` | Name rules | Manifest name rules: `[A-Z0-9_-]`, after `build/` | Nothing outside `build/` |
+/// | `robco.toml` `build.sources` | Step 2, the source | A manifest path | `manifest: path`, `manifest: sources`; a name with a leading `-` is passed as `./NAME` | `-specs=x.c` as a file name |
+/// | `robco.toml` `target.abi` | Steps 1, 2, `0x` and 8 hex digits | `MAJOR.MINOR` | Parsed to numbers | Nothing: only digits reach the command |
+/// | `sdk.json` `name`, `version`; the tool manifest's name, version, host | The absolute `PKG` and toolchain folders, program paths, path maps | Names and versions | The cache folder name checks of `install` | Nothing: the folder is absolute, under the cache |
+/// | The project root | `cwd`, a path map | The person's own folder | Not checked: not package text | Nothing: the person chose it |
 pub fn parse_flags(bytes: &[u8]) -> Result<Flags, FlagsError> {
     let root: Value = std::str::from_utf8(bytes)
         .ok()
@@ -132,23 +160,93 @@ pub fn parse_flags(bytes: &[u8]) -> Result<Flags, FlagsError> {
             None => return Err(FlagsError::Format("not a positive integer".into())),
         },
     };
+    let cflags = strings(&root, "cflags")?;
+    check_flags("cflags", &cflags)?;
+    let include_dirs = strings(&root, "include_dirs")?;
+    for d in &include_dirs {
+        package_path("include_dirs", d)?;
+    }
+    let ldflags = strings(&root, "ldflags")?;
+    check_flags("ldflags", &ldflags)?;
+    let linker_scripts = object(&root, "linker_scripts", |key, v| {
+        let p = v.as_str().ok_or_else(|| wrong(key, "a string"))?;
+        package_path(key, p)?;
+        Ok(p.to_string())
+    })?;
+    let crt0 = string(&root, "crt0")?;
+    package_path("crt0", &crt0)?;
+    let crt0_defines = object(&root, "crt0_defines", |key, v| {
+        let list = array_of_strings(key, v)?;
+        for d in &list {
+            check_define(key, d)?;
+        }
+        Ok(list)
+    })?;
+    let libs = strings(&root, "libs")?;
+    for l in &libs {
+        package_path("libs", l)?;
+    }
+    let system_libs = strings(&root, "system_libs")?;
+    check_flags("system_libs", &system_libs)?;
+    let abi_define = string(&root, "abi_define")?;
+    if !c_name(&abi_define) {
+        return Err(FlagsError::Manifest(format!(
+            "abi_define: {abi_define:?}: not a C name, [A-Za-z_][A-Za-z0-9_]*"
+        )));
+    }
     Ok(Flags {
         format,
-        cflags: strings(&root, "cflags")?,
-        include_dirs: strings(&root, "include_dirs")?,
-        ldflags: strings(&root, "ldflags")?,
-        linker_scripts: object(&root, "linker_scripts", |key, v| {
-            v.as_str()
-                .map(str::to_string)
-                .ok_or_else(|| wrong(key, "a string"))
-        })?,
-        crt0: string(&root, "crt0")?,
-        crt0_defines: object(&root, "crt0_defines", array_of_strings)?,
-        libs: strings(&root, "libs")?,
-        system_libs: strings(&root, "system_libs")?,
-        abi_define: string(&root, "abi_define")?,
+        cflags,
+        include_dirs,
+        ldflags,
+        linker_scripts,
+        crt0,
+        crt0_defines,
+        libs,
+        system_libs,
+        abi_define,
     })
-    .and_then(check_paths)
+}
+
+/// Checks a path inside the package: the manifest path rules of
+/// [`manifest::check_path`], then no part that starts with `-`, so no
+/// file name reads as an option, and no `:`, a Windows stream or drive.
+/// [`plan`] checks again, by components, that the joined path stays in
+/// the package folder.
+fn package_path(key: &str, path: &str) -> Result<(), FlagsError> {
+    manifest::check_path(key, path, false).map_err(|e| FlagsError::Manifest(e.detail()))?;
+    let fail = |why: &str| Err(FlagsError::Manifest(format!("{key}: {path:?}: {why}")));
+    if path.split('/').any(|p| p.starts_with('-')) {
+        return fail("a part starts with -");
+    }
+    if path.chars().any(|c| c == ':' || c.is_control()) {
+        return fail("holds a : or a control character");
+    }
+    Ok(())
+}
+
+/// A value of a `crt0_defines` string: `[A-Za-z0-9_.+-]*`, or the same
+/// characters and spaces between two `"`.
+fn define_value(v: &str) -> bool {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_.+-".contains(c);
+    match v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        Some(inner) => inner.chars().all(|c| plain(c) || c == ' '),
+        None => v.chars().all(plain),
+    }
+}
+
+/// Checks one `crt0_defines` string: a C name, `=`, then a [`define_value`].
+fn check_define(key: &str, d: &str) -> Result<(), FlagsError> {
+    let ok = d
+        .split_once('=')
+        .is_some_and(|(n, v)| c_name(n) && define_value(v));
+    if ok {
+        Ok(())
+    } else {
+        Err(FlagsError::Manifest(format!(
+            "{key}: {d:?}: not NAME=VALUE with a C name and a plain or quoted value"
+        )))
+    }
 }
 
 /// Tells whether a whole flag has one shape.
@@ -161,6 +259,8 @@ enum Scope {
     Both,
     /// In `ldflags` only.
     Ldflags,
+    /// In `system_libs` only, and nothing else is allowed there.
+    SystemLibs,
 }
 
 /// The shapes a flag of `cflags` or `ldflags` may take, each matched
@@ -182,6 +282,7 @@ const FLAG_SHAPES: &[(&str, Scope, Shape)] = &[
     ("define", Scope::Both, shape_define),
     ("undefine", Scope::Both, shape_undefine),
     ("linker", Scope::Ldflags, shape_linker),
+    ("library", Scope::SystemLibs, shape_library),
 ];
 
 /// Feature names that read or write files, or are path maps, which Studio
@@ -337,14 +438,24 @@ fn shape_linker(f: &str) -> bool {
     })
 }
 
+/// `-l` then a library name, `[a-z0-9][a-z0-9_+-]*`, such as `-lgcc`.
+fn shape_library(f: &str) -> bool {
+    f.strip_prefix("-l")
+        .is_some_and(|s| word(s, lower_digit, |c| lower_digit(c) || "_+-".contains(c)))
+}
+
 /// Refuses a flag that matches no shape of [`FLAG_SHAPES`] allowed in
-/// `key`.
+/// `key`: `cflags`, `ldflags` or `system_libs`.
 fn check_flags(key: &str, list: &[String]) -> Result<(), FlagsError> {
-    let ld = key == "ldflags";
+    let allowed = |scope: Scope| match key {
+        "cflags" => scope == Scope::Both,
+        "ldflags" => matches!(scope, Scope::Both | Scope::Ldflags),
+        _ => scope == Scope::SystemLibs,
+    };
     for f in list {
         let ok = FLAG_SHAPES
             .iter()
-            .any(|(_, scope, m)| (ld || *scope == Scope::Both) && m(f));
+            .any(|(_, scope, m)| allowed(*scope) && m(f));
         if !ok {
             return Err(FlagsError::Manifest(format!(
                 "{key}: {f:?}: not in the allowed flag shapes"
@@ -352,26 +463,6 @@ fn check_flags(key: &str, list: &[String]) -> Result<(), FlagsError> {
         }
     }
     Ok(())
-}
-
-/// Checks each package-relative path, in the order of the spec's table.
-fn check_paths(flags: Flags) -> Result<Flags, FlagsError> {
-    check_flags("cflags", &flags.cflags)?;
-    check_flags("ldflags", &flags.ldflags)?;
-    let one = |key: &str, path: &str| {
-        manifest::check_path(key, path, false).map_err(|e| FlagsError::Manifest(e.detail()))
-    };
-    for d in &flags.include_dirs {
-        one("include_dirs", d)?;
-    }
-    for (k, p) in &flags.linker_scripts {
-        one(&format!("linker_scripts.{k}"), p)?;
-    }
-    one("crt0", &flags.crt0)?;
-    for l in &flags.libs {
-        one("libs", l)?;
-    }
-    Ok(flags)
 }
 
 fn wrong(key: &str, expected: &str) -> FlagsError {
@@ -627,11 +718,32 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
         flags.abi_define,
         m.target.abi.abi_version()
     );
-    let includes: Vec<String> = flags
+    // Every package path, joined, must stay in the package folder.
+    let pkg = |key: &str, rel: &str| -> Result<String, FlagsError> {
+        let joined = host.join(input.package, rel);
+        if inside(host, input.package, &joined) {
+            Ok(joined)
+        } else {
+            Err(FlagsError::Manifest(format!(
+                "{key}: {rel:?}: leads outside the package folder"
+            )))
+        }
+    };
+    let includes = flags
         .include_dirs
         .iter()
-        .map(|d| format!("-I{}", host.join(input.package, d)))
-        .collect();
+        .map(|d| pkg("include_dirs", d).map(|p| format!("-I{p}")))
+        .collect::<Result<Vec<String>, _>>()?;
+    let script_path = pkg(
+        &format!("linker_scripts.{}", script_key(m.project.kind)),
+        script,
+    )?;
+    let crt0_path = pkg("crt0", &flags.crt0)?;
+    let lib_paths = flags
+        .libs
+        .iter()
+        .map(|l| pkg("libs", l))
+        .collect::<Result<Vec<String>, _>>()?;
     let mut maps = Vec::new();
     host.maps(input.project, ".", &mut maps);
     host.maps(input.toolchain, "toolchain", &mut maps);
@@ -657,18 +769,19 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
     let mut commands = vec![compile(
         Step::CompileCrt0,
         &crt0_defines,
-        host.join(input.package, &flags.crt0),
+        crt0_path,
         &crt0_object,
     )];
     let mut objects = Vec::with_capacity(sources.len());
     for source in &sources {
         let object = format!("{OBJECT_DIR}/{source}.o");
-        commands.push(compile(
-            Step::Compile(source.clone()),
-            &[],
-            source.clone(),
-            &object,
-        ));
+        // A file name that starts with `-` would read as an option.
+        let arg = if source.starts_with('-') {
+            format!("./{source}")
+        } else {
+            source.clone()
+        };
+        commands.push(compile(Step::Compile(source.clone()), &[], arg, &object));
         objects.push(object);
     }
 
@@ -676,10 +789,10 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
     let elf = format!("build/{name}.elf");
     let raw = format!("build/{name}.bin");
     let mut args = flags.ldflags.clone();
-    args.extend(["-T".into(), host.join(input.package, script)]);
+    args.extend(["-T".into(), script_path]);
     args.push(crt0_object.clone());
     args.extend(objects.iter().cloned());
-    args.extend(flags.libs.iter().map(|l| host.join(input.package, l)));
+    args.extend(lib_paths);
     args.extend(flags.system_libs.iter().cloned());
     args.extend(["-o".into(), elf.clone()]);
     commands.push(Command {
@@ -714,6 +827,33 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
         raw,
         outputs,
     })
+}
+
+/// True when `joined` lies strictly inside `root`, by components, with
+/// `.` dropped and `..` taking one component off. Both use the host's
+/// separators.
+fn inside(host: Host, root: &str, joined: &str) -> bool {
+    let split = |s: &str| -> Option<Vec<String>> {
+        let mut out: Vec<String> = Vec::new();
+        let seps: &[char] = match host {
+            Host::Unix => &['/'],
+            Host::Windows => &['/', '\\'],
+        };
+        for part in s.split(seps) {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    out.pop()?;
+                }
+                p => out.push(p.to_string()),
+            }
+        }
+        Some(out)
+    };
+    match (split(root), split(joined)) {
+        (Some(r), Some(j)) => j.len() > r.len() && j.starts_with(&r),
+        _ => false,
+    }
 }
 
 /// The folders that hold the given files and all their parents, sorted.
