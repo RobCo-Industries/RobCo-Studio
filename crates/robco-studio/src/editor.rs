@@ -10,10 +10,10 @@ use crate::art::Icon;
 use crate::c_lex::{self, Class};
 use crate::document::{self, Doc};
 use crate::kit::{Button, ButtonKind, Kit};
-use crate::theme::{Type, size, stroke};
+use crate::theme::{Theme, Type, size, stroke};
 use eframe::egui::{
-    self, Color32, CornerRadius, Id, Key, Rect, Sense, StrokeKind, text::CCursor,
-    text::CCursorRange, text::LayoutJob, text::TextFormat,
+    self, CornerRadius, Id, Key, Rect, Sense, StrokeKind, text::CCursor, text::CCursorRange,
+    text::LayoutJob, text::TextFormat,
 };
 use std::path::Path;
 
@@ -81,7 +81,9 @@ pub struct Editor {
     pub find: Find,
     /// A sentence for the status line, taken by the shell.
     pub news: Option<(crate::kit::Level, String)>,
-    cache: Option<(u64, String, egui::FontId, Color32, LayoutJob)>,
+    /// The last code layout, keyed by document, language, text and the
+    /// whole theme: every colour and font of the layout comes from it.
+    cache: Option<(u64, bool, String, Theme, LayoutJob)>,
 }
 
 const TEXT_ID: &str = "editor-text";
@@ -350,33 +352,32 @@ impl Editor {
         n
     }
 
-    fn layout_job(&mut self, kit: &Kit<'_>, doc: u64, c: bool, text: &str) -> LayoutJob {
-        let p = kit.p();
-        let font = kit.theme.font(Type::Code);
-        if let Some((d, t, f, c, job)) = &self.cache
+    fn layout_job(&mut self, theme: &Theme, doc: u64, c: bool, text: &str) -> LayoutJob {
+        let p = theme.palette();
+        if let Some((d, lang, t, th, job)) = &self.cache
             && *d == doc
+            && *lang == c
             && t == text
-            && *f == font
-            && *c == p.text
+            && th == theme
         {
             return job.clone();
         }
         let mut job = LayoutJob::default();
-        let line = kit.theme.code_line();
+        let line = theme.code_line();
         for (r, class) in spans(text, c) {
             let (font, color) = match class {
-                Class::Plain => (kit.theme.font(Type::Code), p.text),
-                Class::Keyword => (kit.theme.font(Type::CodeBold), p.bright),
-                Class::Comment => (kit.theme.font(Type::CodeItalic), p.dim),
-                Class::Str | Class::Number => (kit.theme.font(Type::Code), p.lit),
-                Class::Preproc => (kit.theme.font(Type::CodeBold), p.dim),
+                Class::Plain => (theme.font(Type::Code), p.text),
+                Class::Keyword => (theme.font(Type::CodeBold), p.bright),
+                Class::Comment => (theme.font(Type::CodeItalic), p.dim),
+                Class::Str | Class::Number => (theme.font(Type::Code), p.lit),
+                Class::Preproc => (theme.font(Type::CodeBold), p.dim),
             };
             let mut f = TextFormat::simple(font, color);
             f.line_height = Some(line);
             job.append(&text[r], 0.0, f);
         }
         job.keep_trailing_whitespace = true;
-        self.cache = Some((doc, text.to_owned(), font, p.text, job.clone()));
+        self.cache = Some((doc, c, text.to_owned(), *theme, job.clone()));
         job
     }
 
@@ -505,7 +506,7 @@ impl Editor {
                         ui.allocate_exact_size(egui::vec2(size::GUTTER_W, line_h), Sense::hover());
                     let bg = ui.painter().add(egui::Shape::Noop);
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                        let mut job = self.layout_job(kit, doc_id, is_c, buf.as_str());
+                        let mut job = self.layout_job(kit.theme, doc_id, is_c, buf.as_str());
                         job.wrap.max_width = wrap;
                         ui.fonts_mut(|f| f.layout_job(job))
                     };
@@ -782,5 +783,31 @@ mod replace_tests {
         let c = replace_range(&mut t, 3..6, "x\r\ny");
         assert_eq!(t, "ab x\ny cd");
         assert_eq!(c, 6);
+    }
+
+    /// A scheme change recolours the code even when the text colour and
+    /// the font stay the same, as they do with high legibility on.
+    #[test]
+    fn scheme_change_recolours_cached_code() {
+        use super::{Editor, Theme};
+        let mut e = Editor::default();
+        let mut t = Theme {
+            high_legibility: true,
+            ..Theme::default()
+        };
+        let green = e.layout_job(&t, 1, true, "int x;");
+        t.scheme = crate::theme::Scheme::Amber;
+        assert_eq!(
+            green.sections[0].format.color,
+            Theme {
+                scheme: crate::theme::Scheme::Green,
+                ..t
+            }
+            .palette()
+            .bright
+        );
+        let amber = e.layout_job(&t, 1, true, "int x;");
+        assert_eq!(amber.sections[0].format.color, t.palette().bright);
+        assert_ne!(t.palette().bright, green.sections[0].format.color);
     }
 }
