@@ -64,7 +64,8 @@ fn opts() -> SimpleFileOptions {
 }
 
 /// The `templates.json` of the small package: one template.
-const TEMPLATES_JSON: &[u8] = b"{\"format\": 1, \"templates\": [{\"id\": \"holotape-c\"}]}\n";
+const TEMPLATES_JSON: &[u8] = br#"{"format": 1, "templates": [{"id": "holotape-c", "title": "C", "description": "A tape.", "kind": "holotape", "files": [{"path": "robco.toml", "substitute": true}, {"path": "src/main.c", "substitute": false}]}]}
+"#;
 
 /// The files of a small `templates` package.
 fn files() -> Vec<(&'static str, &'static [u8])> {
@@ -2184,4 +2185,26 @@ fn install_refuses_a_templates_package_over_its_template_limits() {
             }
         }
     }
+}
+
+/// A `templates.json` that declares a template the archive does not hold
+/// is refused, and nothing is recorded: a reinstall can then succeed.
+#[test]
+fn install_refuses_a_template_id_without_a_folder() {
+    let json = String::from_utf8(TEMPLATES_JSON.to_vec()).unwrap().replacen(
+        "[{\"id\"",
+        "[{\"id\": \"holotape-b\", \"title\": \"B\", \"description\": \"B.\", \"kind\": \"holotape\", \"files\": [{\"path\": \"robco.toml\", \"substitute\": true}]}, {\"id\"",
+        1,
+    );
+    let mut put = files();
+    put.retain(|(p, _)| *p != "templates.json");
+    put.push(("templates.json", json.as_bytes()));
+    let d = Dir::new("id-no-folder");
+    let msg = refused(
+        &d,
+        install_zip(&d, &package_zip(&put, &put)),
+        "package: manifest",
+    );
+    assert!(msg.contains("holotape-b/"), "{msg}");
+    assert_eq!(install_zip(&d, &good_zip()), Ok(State::Installed));
 }

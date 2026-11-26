@@ -45,6 +45,7 @@ use crate::resolve::index::{
 };
 use crate::resolve::{self, sdk_json};
 use crate::resolve::{is_host_name, is_package_name, is_tool_version};
+use crate::templates;
 
 /// The file of "What the cache records", right under an installed folder.
 pub const RECORD: &str = ".robco-archive";
@@ -1052,9 +1053,6 @@ fn extract_package(
 
     let listed: BTreeMap<&str, &sdk_json::FileEntry> =
         sdk.files.iter().map(|f| (f.path.as_str(), f)).collect();
-    if entry.name == resolve::TEMPLATES {
-        check_template_sizes(&sdk.files, limits)?;
-    }
     let present: BTreeSet<&str> = files.iter().map(|f| f.name.as_str()).collect();
     // "Layout of pipos" is the narrower rule: a file of the layout that
     // `files` leaves out fails with `package: manifest`, even when the
@@ -1078,9 +1076,10 @@ fn extract_package(
         )));
     }
     // After the two checks above, so an unlisted entry or a listed one
-    // that is absent keeps its own error.
+    // that is absent keeps its own error. Before anything is extracted,
+    // so before the install is recorded as finished.
     if entry.name == resolve::TEMPLATES {
-        check_templates_layout(&mut zip, &files, &dirs, limits)?;
+        check_templates(&mut zip, &sdk, &files, &dirs, bytes.len() as u64, limits)?;
     }
 
     let outside = |n: &str| {
@@ -1128,52 +1127,6 @@ fn extract_package(
     Ok(())
 }
 
-/// The bounds a `templates` package must keep, read from the sizes its
-/// `sdk.json` lists, which the hash of each file then holds to: the same
-/// bounds `robco new` applies when it reads the package from the cache.
-fn check_template_sizes(files: &[sdk_json::FileEntry], limits: Limits) -> Result<(), Error> {
-    let over = |d: String| Error::Manifest(resolve::Error::PackageManifest(d));
-    // Per template id: the count of files and their bytes.
-    let mut per: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
-    for f in files {
-        let (first, rest) = f.path.split_once('/').unwrap_or((f.path.as_str(), ""));
-        if f.path == TEMPLATES_LIST {
-            if f.size > limits.templates_list {
-                return Err(over(format!(
-                    "templates.json: {} bytes, over the limit of {} bytes",
-                    f.size, limits.templates_list
-                )));
-            }
-            continue;
-        }
-        if rest.is_empty() || first == "LICENSES" {
-            continue;
-        }
-        if f.size > limits.template_file {
-            return Err(over(format!(
-                "{}: {} bytes, over the limit of {} bytes for a template file",
-                f.path, f.size, limits.template_file
-            )));
-        }
-        let e = per.entry(first).or_default();
-        e.0 += 1;
-        e.1 = e.1.saturating_add(f.size);
-        if e.0 > limits.template_files {
-            return Err(over(format!(
-                "{first}/: more than {} files",
-                limits.template_files
-            )));
-        }
-        if e.1 > limits.template_bytes {
-            return Err(over(format!(
-                "{first}/: more than {} bytes in all",
-                limits.template_bytes
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// The file of a `templates` package that lists its templates.
 pub const TEMPLATES_LIST: &str = "templates.json";
 /// The files at the root of a `templates` package, by "Layout of
@@ -1207,74 +1160,62 @@ pub fn templates_layout_allows(path: &str, folder: bool, ids: &[&str], cached: b
     }
 }
 
-/// The ids that `templates.json` lists, in its order. Only what the layout
-/// check needs is read here: `robco new` checks the rest of the file.
-pub fn template_ids(bytes: &[u8]) -> Result<Vec<String>, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|e| format!("not UTF-8 JSON: {e}"))?;
-    let list = v
-        .get("templates")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("templates is missing or not an array")?;
-    list.iter()
-        .map(|t| {
-            t.get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| "a template has no string id".to_owned())
-        })
-        .collect()
-}
-
-/// "Layout of templates" for an archive: every file and folder must be one
-/// the layout allows, and each licence file must be there. Fails with
-/// `package: manifest` and names the entry.
-fn check_templates_layout(
+/// A `templates` package, by [`templates::validate`], the check `robco
+/// new` makes too. The entries are the archive's, each file with the size
+/// `sdk.json` lists, which the hash of each file then holds to. Fails with
+/// `package: manifest`.
+fn check_templates(
     zip: &mut zip::ZipArchive<File>,
+    sdk: &sdk_json::SdkJson,
     files: &[PackageFile],
     dirs: &[String],
+    manifest_size: u64,
     limits: Limits,
 ) -> Result<(), Error> {
     let bad = |d: String| Error::Manifest(resolve::Error::PackageManifest(d));
-    let Some(list) = files.iter().find(|f| f.name == TEMPLATES_LIST) else {
-        return Err(bad(format!(
-            "{TEMPLATES_LIST}: a templates package must hold it"
-        )));
+    let list = match files.iter().find(|f| f.name == TEMPLATES_LIST) {
+        None => None,
+        Some(list) => {
+            let mut lf = zip.by_index(list.index).map_err(|e| {
+                Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {e}"))
+            })?;
+            let mut bytes = Vec::new();
+            let n = copy_bounded(&mut lf, &mut bytes, limits.templates_list).map_err(|e| {
+                Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {}", e.inner()))
+            })?;
+            if n > limits.templates_list {
+                return Err(bad(format!(
+                    "{TEMPLATES_LIST} holds more than the limit of {} bytes",
+                    limits.templates_list
+                )));
+            }
+            Some(bytes)
+        }
     };
-    let mut lf = zip
-        .by_index(list.index)
-        .map_err(|e| Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {e}")))?;
-    let mut bytes = Vec::new();
-    let n = copy_bounded(&mut lf, &mut bytes, limits.templates_list).map_err(|e| {
-        Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {}", e.inner()))
-    })?;
-    if n > limits.templates_list {
-        return Err(bad(format!(
-            "{TEMPLATES_LIST} holds more than the limit of {} bytes",
-            limits.templates_list
-        )));
-    }
-    drop(lf);
-    let ids = template_ids(&bytes).map_err(|d| bad(format!("{TEMPLATES_LIST}: {d}")))?;
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    let entries = files
+    let size = |name: &str| {
+        if name == MANIFEST {
+            return manifest_size;
+        }
+        sdk.files
+            .iter()
+            .find(|f| f.path == name)
+            .map_or(0, |f| f.size)
+    };
+    let entries: Vec<templates::Entry> = files
         .iter()
-        .map(|f| (f.name.as_str(), false))
-        .chain(dirs.iter().map(|d| (d.as_str(), true)));
-    for (name, folder) in entries {
-        if !templates_layout_allows(name, folder, &ids, false) {
-            return Err(bad(format!(
-                "{name}: the layout of a templates package does not hold it"
-            )));
-        }
-    }
-    for l in TEMPLATES_LICENCES {
-        let p = format!("{TEMPLATES_LICENCES_DIR}/{l}");
-        if !files.iter().any(|f| f.name == p) {
-            return Err(bad(format!("{p}: a templates package must hold it")));
-        }
-    }
-    Ok(())
+        .map(|f| templates::Entry::file(f.name.clone(), size(&f.name)))
+        .chain(dirs.iter().map(|d| templates::Entry::folder(d.clone())))
+        .collect();
+    let tl = templates::Limits {
+        manifest: limits.manifest,
+        list: limits.templates_list,
+        file: limits.template_file,
+        files: limits.template_files,
+        bytes: limits.template_bytes,
+    };
+    templates::validate(sdk, list.as_deref(), &entries, &tl)
+        .map(|_| ())
+        .map_err(|e| bad(e.detail))
 }
 
 /// The files of "Layout of pipos" that a `pipos` package must hold, but
