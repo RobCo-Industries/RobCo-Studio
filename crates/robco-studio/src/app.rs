@@ -921,7 +921,7 @@ impl Studio {
                 Level::Warning,
                 "This folder has no robco.toml, so Studio cannot build it.".to_owned(),
             )),
-            Some(Manifest::Refused(e)) => Some((
+            Some(Manifest::Refused(e) | Manifest::Unreadable(e)) => Some((
                 Level::Error,
                 format!("Studio cannot read this folder's robco.toml: {e}"),
             )),

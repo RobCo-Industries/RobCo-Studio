@@ -20,6 +20,8 @@ pub enum Manifest {
     },
     /// It has one and the core refused it, with the core's reason.
     Refused(String),
+    /// It is there but could not be read, with the system's reason.
+    Unreadable(String),
 }
 
 /// One row of the tree.
@@ -63,7 +65,8 @@ impl Project {
             ));
         }
         let manifest = match std::fs::read(root.join("robco.toml")) {
-            Err(_) => Manifest::Missing,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::Missing,
+            Err(e) => Manifest::Unreadable(e.to_string()),
             Ok(bytes) => match studio_core::manifest::parse(&bytes) {
                 Ok(m) => Manifest::Read {
                     name: m.project.name.clone(),
@@ -136,17 +139,24 @@ impl Project {
                 return;
             }
         };
-        let mut list: Vec<(bool, String, PathBuf)> = entries
-            .filter_map(Result::ok)
-            .map(|e| {
-                let path = e.path();
-                (
-                    !path.is_dir(),
-                    e.file_name().to_string_lossy().into_owned(),
-                    path,
-                )
-            })
-            .collect();
+        let mut list: Vec<(bool, String, PathBuf)> = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(e) => {
+                    let path = e.path();
+                    list.push((
+                        !path.is_dir(),
+                        e.file_name().to_string_lossy().into_owned(),
+                        path,
+                    ));
+                }
+                // An entry that cannot be read is reported, not dropped
+                // as if it were not there.
+                Err(e) => {
+                    self.error = Some(format!("Studio could not read {}: {e}.", self.shown(dir)));
+                }
+            }
+        }
         // Folders first, then by name, ignoring case.
         list.sort_by_key(|a| (a.0, a.1.to_lowercase()));
         for (is_file, name, path) in list {
@@ -185,5 +195,49 @@ mod tests {
         assert_eq!(names, ["src", "main.c", "a.txt"]);
         assert_eq!(p.shown(&d.join("src/main.c")), "src/main.c");
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Removes its folder when dropped, so a failing test cleans up too.
+    struct TempDir(PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    self.0.join("robco.toml"),
+                    std::fs::Permissions::from_mode(0o644),
+                );
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A manifest that is there but cannot be read is not reported as
+    /// missing. Root reads a mode 000 file anyway, so the test checks that
+    /// the file really cannot be read, which detects root without `unsafe`
+    /// or a new crate, and skips if it can.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_manifest_is_not_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir(
+            std::env::temp_dir().join(format!("robco-studio-unreadable-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&d.0);
+        std::fs::create_dir_all(&d.0).unwrap();
+        let m = d.0.join("robco.toml");
+        std::fs::write(&m, "[project]\n").unwrap();
+        std::fs::set_permissions(&m, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&m).is_ok() {
+            eprintln!("skipped: this user can read a mode 000 file, likely root");
+            return;
+        }
+        let p = Project::open(&d.0).unwrap();
+        assert!(
+            matches!(p.manifest, Manifest::Unreadable(_)),
+            "{:?}",
+            p.manifest
+        );
     }
 }
