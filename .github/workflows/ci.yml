@@ -412,7 +412,6 @@ jobs:
       XPACK_SHA256: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6
       RUSTUP_VERSION: 1.28.2
       RUSTUP_SHA256: 20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
-      ABI: "1.4"
     steps:
       - uses: actions/checkout@v4
         with:

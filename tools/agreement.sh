@@ -12,7 +12,12 @@
 # with a Makefile", in their order:
 #
 #   1. The sources of the result line equal the words of SRCS.
-#   2. The abi of the result line equals the Makefile's ABI.
+#   2. The ABI Make really builds with, the abi_version in the header of
+#      the Make tape and the one in the header of the robco build tape are
+#      equal. Make's value comes from the example's Makefile and the SDK's
+#      pipos-app.mk, with nothing on the command line: ABI when the
+#      Makefile states it, else the default of the SDK's pipos/abi.h, which
+#      the script then names in a note. robco.toml gets the same value.
 #   3. Make ran the compiler robco build installed: the SHA-256 of the gcc
 #      program Make ran equals the one in robco build's tool folder, and
 #      the release robco build reports equals the gcc entry of the
@@ -34,7 +39,6 @@
 #   CROSS        optional, only to show that check 3 fails: a compiler prefix
 #                for Make in place of the archive's, such as arm-none-eabi-
 #   AGREE_GCC_RELEASE  optional; when set, it must also equal the release
-#   ABI          the target ABI both builds state, such as 1.4
 #   The script unpacks AGREE_GCC_ARCHIVE into OUT/gcc, as robco build
 #   installs it, and runs Make with its bin/arm-none-eabi-. The release
 #   comes from the package's sdk.json, never from the caller.
@@ -58,9 +62,11 @@
 # pwd to resolve paths, never readlink -f or realpath.
 #
 # `tools/agreement.sh compare-sealed A B` runs only check 5's comparison on
-# two files, and `tools/agreement.sh compare-gcc A B` only check 3's
-# program comparison, with the same exit codes. tools/test_agreement.sh
-# uses both.
+# two files, `tools/agreement.sh compare-gcc A B` only check 3's program
+# comparison, `tools/agreement.sh compare-abi ABI A B` only check 2's
+# comparison of an ABI and two tapes, and `tools/agreement.sh make-abi DIR`
+# prints the ABI Make builds the project in DIR with, with the same exit
+# codes. tools/test_agreement.sh uses them.
 set -euo pipefail
 
 die() { echo "agreement: $*" >&2; exit 1; }
@@ -134,6 +140,81 @@ if [ "${1-}" = compare-gcc ]; then
     exit 0
 fi
 
+# The ABI, MAJOR.MINOR, in the abi_version field at 0x40 of image $1.
+header_abi() {
+    python3 -I -c '
+import sys
+d = open(sys.argv[1], "rb").read(0x44)
+if len(d) < 0x44:
+    sys.exit("too short for a header")
+v = int.from_bytes(d[0x40:0x44], "little")
+print("%d.%d" % (v >> 16, v & 0xFFFF))' "$1"
+}
+
+# Check 2: the ABI Make builds with ($1), the Make tape ($2) and the robco
+# build tape ($3). Every pair must agree.
+compare_abi() {
+    local a b
+    a=$(header_abi "$2") || die "cannot read the header of $2"
+    b=$(header_abi "$3") || die "cannot read the header of $3"
+    [ "$1" = "$a" ] || fail "2. abi: Make builds with ABI $1, the header of the Make tape holds $a"
+    [ "$1" = "$b" ] || fail "2. abi: Make builds with ABI $1, the header of the robco build tape holds $b"
+    [ "$a" = "$b" ] || fail "2. abi: the header of the Make tape holds $a, the one of the robco build tape $b"
+}
+
+# The ABI Make builds the project in $1 with, by its own Makefile and the
+# SDK's pipos-app.mk: ABI is never on the command line. Make prints ABI,
+# the compiler and its flags; the compiler, run in $1 as Make runs it,
+# then expands PIPOS_ABI_TARGET
+# of pipos/abi.h with them, so the value is the one crt0.S writes. The
+# rest of the words are added to the make command line. Sets abi to
+# MAJOR.MINOR and abi_stated to the Makefile's ABI, empty when the SDK's
+# default applies.
+make_abi() {
+    local dir=$1 mk lines=() line cc flags=() f expr
+    shift
+    mk=$(mktemp) || die "cannot make a temporary file"
+    cat > "$mk" <<'EOF'
+agreement-abi:
+	@printf '%s\n' '$(ABI)' '$(PIP_CC)' '$(PIP_CFLAGS)'
+EOF
+    while IFS= read -r line; do lines+=("$line"); done < <(make -s -C "$dir" -f Makefile -f "$mk" "$@" agreement-abi)
+    rm -f "$mk"
+    [ "${#lines[@]}" -eq 3 ] || die "make printed ${#lines[@]} lines for the ABI, not 3"
+    abi_stated=$(echo "${lines[0]}" | tr -d '[:space:]')
+    cc=${lines[1]}
+    # Every flag but the dependency files, which -E with no output name
+    # would write next to the project.
+    for f in ${lines[2]}; do
+        case $f in -M*) ;; *) flags+=("$f") ;; esac
+    done
+    expr=$(printf '#include <pipos/abi.h>\nagreement_abi = PIPOS_ABI_TARGET\n' |
+        (CDPATH='' cd -- "$dir" && $cc "${flags[@]}" -E -P -x c -) | sed -n 's/^agreement_abi = //p') ||
+        die "$cc cannot expand PIPOS_ABI_TARGET"
+    abi=$(python3 -I -c '
+import re, sys
+e = sys.argv[1]
+if not e or not re.fullmatch(r"[0-9a-fA-FxXuUlL()|<+ ]+", e):
+    sys.exit("PIPOS_ABI_TARGET expands to %r" % e)
+v = eval(re.sub(r"(?<=[0-9a-fA-F])[uUlL]+", "", e), {"__builtins__": {}})
+print("%d.%d" % (v >> 16, v & 0xFFFF))' "$expr") || die "cannot read PIPOS_ABI_TARGET: $expr"
+}
+
+if [ "${1-}" = compare-abi ]; then
+    [ "$#" -eq 4 ] || die "usage: $0 compare-abi ABI A B"
+    [ -f "$3" ] && [ -f "$4" ] || die "compare-abi takes an ABI and two files"
+    compare_abi "$2" "$3" "$4"
+    echo "agreement: the ABIs are equal"
+    exit 0
+fi
+
+if [ "${1-}" = make-abi ]; then
+    [ "$#" -eq 2 ] && [ -d "$2" ] || die "usage: $0 make-abi DIR"
+    make_abi "$2"
+    echo "$abi ${abi_stated:-default}"
+    exit 0
+fi
+
 if [ "${1-}" = compare-sealed ]; then
     [ "$#" -eq 3 ] || die "usage: $0 compare-sealed A B"
     [ -f "$2" ] && [ -f "$3" ] || die "compare-sealed takes two files"
@@ -159,7 +240,10 @@ abs_path() {
     printf '%s/%s\n' "${d%/}" "${p##*/}"
 }
 
-for v in PIPOS_DIR PIPOS_ZIP AGREE_GCC_ARCHIVE ABI OUT; do
+# Make reads ABI from the environment when the Makefile does not set it,
+# so a caller's ABI would hide what the example states.
+[ -z "${ABI+set}" ] || die "ABI is set; the script takes the ABI from the example's Makefile, unset it"
+for v in PIPOS_DIR PIPOS_ZIP AGREE_GCC_ARCHIVE OUT; do
     [ -n "${!v:-}" ] || die "$v is not set"
 done
 AGREE_GCC_ROOT=${AGREE_GCC_ROOT-}
@@ -236,7 +320,7 @@ agreement-print:
 	@printf '%s\n' '$(NAME)' '$(TITLE)' '$(VERSION)' '$(ICON)' '$(KIND)' '$(SUBTYPE)' '$(SRCS)' '$(IMAGE)'
 EOF
 # shellcheck disable=SC2086 # MAKE_EXTRA is a list of words.
-make_args=(-C "$PROJ" -f Makefile -f "$OUT/print.mk" BUILD="$OUT/make" ABI="$ABI"
+make_args=(-C "$PROJ" -f Makefile -f "$OUT/print.mk" BUILD="$OUT/make"
     CROSS="$CROSS" PYTHON=python3 $MAKE_EXTRA)
 vars=()
 while IFS= read -r line; do vars+=("$line"); done < <(make -s "${make_args[@]}" agreement-print)
@@ -253,7 +337,16 @@ case "$name$title$version$icon$srcs" in
     *'"'* | *\\*) die "a Makefile value holds a quote or a back slash" ;;
 esac
 
-echo "agreement: Make build of sdk/examples/tape"
+# shellcheck disable=SC2086 # MAKE_EXTRA is a list of words.
+make_abi "$PROJ" CROSS="$CROSS" PYTHON=python3 $MAKE_EXTRA
+if [ -z "$abi_stated" ]; then
+    echo "agreement: note: the example's Makefile states no ABI, so the SDK's default $abi applies." \
+        "STUDIO_PROJECT.md asks a project with a Makefile and a manifest to state it in both."
+else
+    echo "agreement: the example's Makefile states ABI $abi_stated"
+fi
+
+echo "agreement: Make build of sdk/examples/tape, ABI $abi"
 make "${make_args[@]}" all >"$OUT/make.log" 2>&1 || { cat "$OUT/make.log" >&2; die "make failed"; }
 make_tape="$OUT/make/$image"
 [ -f "$make_tape" ] || die "make wrote no $image"
@@ -271,7 +364,7 @@ done
     printf 'name = "%s"\ntitle = "%s"\nversion = "%s"\n' "$name" "$title" "$version"
     printf 'kind = "holotape"\nsubtype = "%s"\n' "$subtype"
     [ -z "$icon" ] || printf 'icon = "%s"\n' "$icon"
-    printf '\n[target]\nplatform = "pipos"\nabi = "%s"\n' "$ABI"
+    printf '\n[target]\nplatform = "pipos"\nabi = "%s"\n' "$abi"
     printf '\n[build]\nsources = [%s]\n' "$src_list"
 } > "$OUT/project/robco.toml"
 
@@ -316,7 +409,7 @@ want_srcs=$(python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1].split()
 got_srcs=$(field sources)
 [ "$got_srcs" = "$want_srcs" ] ||
     fail "1. sources: robco build has $got_srcs, SRCS has $want_srcs"
-[ "$(field abi)" = "\"$ABI\"" ] || fail "2. abi: robco build has $(field abi), the Makefile has $ABI"
+compare_abi "$abi" "$make_tape" "$studio_tape"
 [ "$(field gcc)" = "\"$release\"" ] ||
     fail "3. gcc: robco build used $(field gcc), the package's sdk.json names $release"
 case ${AGREE_GCC_ARCHIVE##*/} in

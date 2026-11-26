@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Shows that checks 3 and 5 of tools/agreement.sh can fail. Check 5: two
+# Shows that checks 2, 3 and 5 of tools/agreement.sh can fail. Check 5: two
 # files that differ in one byte must give exit 2 and name the byte and its
 # header field, and two equal files must pass. Check 3: two gcc programs
 # that print the same version but differ in one byte must give exit 2, and
@@ -74,4 +74,42 @@ case $msg in
     "agreement: FAILED: 3. gcc: the gcc program Make ran has SHA-256 "*) ;;
     *) echo "test_agreement: gcc: got: $msg" >&2; exit 1 ;;
 esac
+# Check 2: the ABI comes from the Makefile, never from the caller. A stand-in
+# project: a pipos/abi.h with the SDK's default 1.4 and a pipos-app.mk
+# that passes ABI as -DPIPOS_ABI_TARGET, as the SDK's does.
+cc=$(command -v cc || command -v gcc || command -v arm-none-eabi-gcc) ||
+    { echo "test_agreement: no C compiler" >&2; exit 1; }
+# make splits paths at white space, so this one holds none.
+proj="$tmp/project"
+mkdir -p "$proj/include/pipos"
+printf '#ifndef PIPOS_ABI_TARGET\n#define PIPOS_ABI_TARGET 0x00010004\n#endif\n' > "$proj/include/pipos/abi.h"
+cat > "$proj/app.mk" <<EOF
+PIP_CC := $cc
+PIP_CFLAGS := -O2 -MMD -I\$(CURDIR)/include \$(if \$(ABI),-DPIPOS_ABI_TARGET=0x0001000\$(word 2,\$(subst ., ,\$(ABI))))
+EOF
+printf 'ABI := 1.2\ninclude app.mk\n' > "$proj/Makefile"
+# A caller's ABI in the environment must not hide the Makefile's.
+got=$(ABI=1.3 bash "$here/agreement.sh" make-abi "$proj")
+[ "$got" = "1.2 1.2" ] || { echo "test_agreement: make-abi with ABI := 1.2 gave $got" >&2; exit 1; }
+printf 'include app.mk\n' > "$proj/Makefile"
+got=$(bash "$here/agreement.sh" make-abi "$proj")
+[ "$got" = "1.4 default" ] || { echo "test_agreement: make-abi with no ABI gave $got" >&2; exit 1; }
+# Three ABIs: each pair that differs fails and is named.
+python3 -I -c '
+import sys
+for path, v in zip(sys.argv[1:], (0x00010004, 0x00010002)):
+    d = bytearray(0x120); d[0x40:0x44] = v.to_bytes(4, "little"); open(path, "wb").write(d)' "$a" "$b"
+bash "$here/agreement.sh" compare-abi 1.4 "$a" "$a" >/dev/null ||
+    { echo "test_agreement: three equal ABIs did not pass" >&2; exit 1; }
+expect_abi() {
+    set +e
+    msg=$(bash "$here/agreement.sh" compare-abi "$1" "$2" "$3" 2>&1)
+    code=$?
+    set -e
+    [ "$code" -eq 2 ] && [ "$msg" = "agreement: FAILED: 2. abi: $4" ] ||
+        { echo "test_agreement: abi: exit $code: $msg" >&2; exit 1; }
+}
+expect_abi 1.2 "$a" "$a" "Make builds with ABI 1.2, the header of the Make tape holds 1.4"
+expect_abi 1.4 "$a" "$b" "Make builds with ABI 1.4, the header of the robco build tape holds 1.2"
+expect_abi 1.4 "$b" "$a" "Make builds with ABI 1.4, the header of the Make tape holds 1.2"
 echo "test_agreement: ok"
