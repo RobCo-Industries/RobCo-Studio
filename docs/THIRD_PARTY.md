@@ -130,6 +130,19 @@ No licence read here requires Studio to show anything before the user downloads 
 
 For Studio's own QEMU archive, the `NOTICE` and `licenses/` folder go with the copy, which is what GPL version 2 and the LGPL ask. The same short line, with a link to the release and its sources, is enough to show.
 
+## The window's toolkit and fonts
+
+`robco-studio` links `eframe` and `egui` 0.37.0, MIT OR Apache-2.0, `resvg` 0.45, Apache-2.0 OR MIT, and on macOS `muda` 0.17, Apache-2.0 OR MIT. Every crate they bring is under a licence in `deny.toml`, except two that build on Windows only: `clipboard-win` and `error-code`, both BSL-1.0, which the clipboard feature needs. BSL-1.0 is not on the allow list. **Owner decision**: allow BSL-1.0, or build the window without the system clipboard on Windows.
+
+The window bundles two fonts. Each comes from its official release, checked against the SHA-256 GitHub publishes for the release file.
+
+| Font | Release | Licence | Files in the repository |
+|---|---|---|---|
+| Spleen 8x16 | [2.3.0](https://github.com/fcambus/spleen/releases/tag/2.3.0), `spleen-2.3.0.tar.gz` | BSD-2-Clause | `spleen-8x16.bdf`, `LICENSE-spleen.txt` |
+| IBM Plex Mono, Regular, Bold and Italic | [plex-mono 2.5.0](https://github.com/IBM/plex/releases/tag/%40ibm%2Fplex-mono%402.5.0), `ibm-plex-mono.zip` | SIL Open Font License 1.1 | `IBMPlexMono-Regular.ttf`, `IBMPlexMono-Bold.ttf`, `IBMPlexMono-Italic.ttf`, `LICENSE-plex-mono.txt` |
+
+They live in `crates/robco-studio/assets/fonts/`. `REUSE.toml` names their licences. The OFL lets a font ship inside a program as long as the font is not sold alone and its licence goes with it. "Plex" is a Reserved Font Name: the files are not changed, so the name stays.
+
 ## Open points
 
 - **Needs legal review**: that downloading xPack's archive for the user is not distribution by Studio.

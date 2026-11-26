@@ -140,4 +140,28 @@ flowchart LR
 
 ### robco-studio
 
-The window. It will draw views and editors through a thin layer of our own over the toolkit, and hold no logic a test cannot reach through the core. Today it prints its version and opens no window. `unsafe` is forbidden.
+The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and nothing depends on it. `unsafe` is forbidden. It opens no network connection, starts no process and writes no file except one a person saves in the editor.
+
+| Module | Holds |
+|---|---|
+| `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, effects Off and Soft. The only module that may hold a colour or a size literal. |
+| `kit` | The thin layer: pane, buttons, tabs, tree row, text field, dropdown, menu row, banner, empty state, divider, status segment. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
+| `art` | The wordmark and the icons, rasterised from their SVG files at start with `resvg`, and the Spleen 8x16 label atlas built from its BDF file. |
+| `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. |
+| `native_menu` | macOS only: the system menu bar, through `muda`. |
+| `project` | The open folder, its `robco.toml` read by `studio-core`, and the rows of the Files tree. |
+| `document` | One open file: bytes to text and back, LF in the editor, CRLF kept on save. |
+| `editor` | Tabs, the text widget per document, the gutter, colours for C, find and replace, and the one question about unsaved edits. |
+| `c_lex` | A token pass over C for its colours. |
+| `app` | The window: regions, pages, the panes of the Project page, focus with F6, the dialog. |
+
+Rules, each with a test:
+
+- No colour, float size or font outside `theme`. `tests/tokens.rs` searches the source.
+- Text is never dropped without asking. Closing a tab or quitting with edits opens one question, which names its document.
+- A control that cannot act is marked disabled in the accessibility tree and says why.
+- F6 moves through toolbar, rail, the page's panes left to right and top to bottom, then the status bar.
+
+`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI.
+
+A settings file does not exist yet. It would hold the scheme, high legibility, the effects level, the pane sizes and which panes are shown, the text size, and the recent projects.
