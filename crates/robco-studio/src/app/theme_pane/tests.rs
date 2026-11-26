@@ -8,6 +8,7 @@ use crate::app::{ASKING, Command, Front, Verdict, verdict};
 use crate::chooser::{Ask, Choice, FolderChooser};
 use crate::menus::{self, ThemeId};
 use crate::store::{self, tests::TempDir};
+use egui_kittest::kittest::Queryable;
 use std::path::{Path, PathBuf};
 
 const EMBER: &str = "version = 1\nname = \"Ember\"\nbase = \"#ff7a1a\"\n";
@@ -769,4 +770,235 @@ fn adding_a_file_over_a_change_asks_like_a_pick() {
         let text = std::fs::read_to_string(d.0.join(store::SETTINGS)).unwrap();
         assert_eq!(text.contains("[unsaved]"), a == Answer::Cancel, "{text}");
     }
+}
+
+/// A field's text, typed and not yet committed when an action comes in
+/// the same frame.
+#[derive(Debug, Clone, Copy)]
+enum Pending {
+    /// The base colour field, with three digits.
+    Hex3,
+    /// The base colour field, with six digits.
+    Hex6,
+    /// The base colour field, with text that is not a colour.
+    HexBad,
+    /// The number box of the Noise slider.
+    Number,
+}
+
+impl Pending {
+    /// What the pane reports for the field as it loses focus: a colour of
+    /// 3 or 6 digits, or the slider's typed number.
+    fn asked(self) -> Asked {
+        let hex = |t: &str| palette::parse_hex(t).map(|(c, _)| c);
+        match self {
+            Pending::Hex3 => Asked {
+                base: hex("f80"),
+                ..Asked::default()
+            },
+            Pending::Hex6 => Asked {
+                base: hex("#FF8800"),
+                ..Asked::default()
+            },
+            Pending::HexBad => Asked {
+                base: hex("f8"),
+                ..Asked::default()
+            },
+            Pending::Number => {
+                let mut s = crate::theme::SHIPPED[0].strengths;
+                s.noise = 0.3;
+                Asked {
+                    strengths: Some(s),
+                    ..Asked::default()
+                }
+            }
+        }
+    }
+
+    /// The line of a theme file that holds the value.
+    fn line(self) -> &'static str {
+        match self {
+            Pending::Number => "noise = 0.30",
+            _ => "#ff8800",
+        }
+    }
+
+    fn valid(self) -> bool {
+        !matches!(self, Pending::HexBad)
+    }
+}
+
+/// Each field with pending text against each action of the same frame.
+/// The edits apply first: a valid value is in what the action saves or
+/// keeps, an invalid one is not and the action still happens. Revert
+/// drops both.
+#[test]
+fn a_pending_field_applies_before_the_action_of_its_frame() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Do {
+        Save,
+        SaveAs,
+        Replace,
+        Rename,
+        Delete,
+        Revert,
+        Pick,
+        Close,
+        Tab,
+    }
+    let acts = [
+        Do::Save,
+        Do::SaveAs,
+        Do::Replace,
+        Do::Rename,
+        Do::Delete,
+        Do::Revert,
+        Do::Pick,
+        Do::Close,
+        Do::Tab,
+    ];
+    let mut rows = 0;
+    for field in [
+        Pending::Hex3,
+        Pending::Hex6,
+        Pending::HexBad,
+        Pending::Number,
+    ] {
+        for act in acts {
+            let row = format!("{field:?} {act:?}");
+            let d = TempDir::new(&format!("order-{rows}"));
+            rows += 1;
+            std::fs::write(themes(&d).join("dusk.toml"), DUSK).unwrap();
+            let mut s = on_ember(&d);
+            let saved = s.spec().clone();
+            let mut a = field.asked();
+            match act {
+                Do::Save => a.save = true,
+                Do::SaveAs => {
+                    s.start_naming(false);
+                    a.named = true;
+                }
+                Do::Replace => {
+                    s.start_naming(false);
+                    s.theme_editor.naming.as_mut().unwrap().text = "Dusk".into();
+                    a.named = true;
+                }
+                Do::Rename => {
+                    s.start_naming(true);
+                    s.theme_editor.naming.as_mut().unwrap().text = "Coal".into();
+                    a.named = true;
+                }
+                Do::Delete => a.delete = true,
+                Do::Revert => a.revert = true,
+                Do::Pick => a.pick = Some(1),
+                Do::Close => a.close = true,
+                Do::Tab => a.tab = Some(ThemeTab::Screen),
+            }
+            ask(&mut s, a);
+            let file = |f: &str| std::fs::read_to_string(themes(&d).join(f)).unwrap_or_default();
+            let has = |t: &str| t.contains(field.line());
+            let spec_has = |s: &Studio| match field {
+                Pending::Number => (s.spec().strengths.noise - 0.3).abs() < 1e-4,
+                _ => s.spec().base == palette::parse_hex("ff8800").unwrap().0,
+            };
+            match act {
+                Do::Save => assert_eq!(has(&file("ember.toml")), field.valid(), "{row}"),
+                Do::SaveAs => {
+                    assert_eq!(s.theme_name(), "Ember 2", "{row}");
+                    assert_eq!(has(&file("ember-2.toml")), field.valid(), "{row}");
+                }
+                Do::Replace => {
+                    assert_eq!(s.own_file().as_deref(), Some("dusk.toml"), "{row}");
+                    assert_eq!(has(&file("dusk.toml")), field.valid(), "{row}");
+                }
+                Do::Rename => {
+                    assert_eq!(s.own_name(s.current), "Coal", "{row}");
+                    assert_eq!(spec_has(&s), field.valid(), "{row}");
+                    assert_eq!(s.changed.is_some(), field.valid(), "{row}");
+                }
+                Do::Delete => {
+                    assert_eq!(
+                        s.theme_editor.question,
+                        Some(ThemeQuestion::Delete),
+                        "{row}"
+                    );
+                    s.answer_theme(Answer::Save);
+                    assert!(file("ember.toml").is_empty(), "{row}");
+                    assert_eq!(s.theme_name(), "Green", "{row}");
+                }
+                Do::Revert => {
+                    assert!(s.changed.is_none(), "{row}");
+                    assert_eq!(*s.spec(), saved, "{row}");
+                }
+                Do::Pick => {
+                    if field.valid() {
+                        assert!(s.theme_editor.question.is_some(), "{row}");
+                        s.answer_theme(Answer::Save);
+                        assert!(has(&file("ember.toml")), "{row}");
+                    }
+                    assert_eq!(s.theme_name(), "Amber", "{row}");
+                }
+                Do::Close => {
+                    assert!(!s.theme_editor.open, "{row}");
+                    assert_eq!(spec_has(&s), field.valid(), "{row}");
+                }
+                Do::Tab => {
+                    assert_eq!(s.theme_editor.tab, ThemeTab::Screen, "{row}");
+                    assert_eq!(spec_has(&s), field.valid(), "{row}");
+                }
+            }
+        }
+    }
+    assert_eq!(rows, 36);
+}
+
+/// The name row's text is the name its action uses, and Cancel or close
+/// in the same frame drops it with nothing written.
+#[test]
+fn the_name_row_text_goes_with_its_action() {
+    for (k, named) in [true, false].into_iter().enumerate() {
+        let d = TempDir::new(&format!("name-row-{k}"));
+        let mut s = on_ember(&d);
+        nudge(&mut s);
+        s.start_naming(false);
+        s.theme_editor.naming.as_mut().unwrap().text = "Coal".into();
+        ask(
+            &mut s,
+            Asked {
+                named,
+                close: !named,
+                ..Asked::default()
+            },
+        );
+        assert!(s.theme_editor.naming.is_none());
+        assert_eq!(themes(&d).join("coal.toml").exists(), named);
+    }
+}
+
+/// The finding itself, in the window: three digits typed, then a click on
+/// Save without Enter. The field commits as it loses focus in the frame
+/// of the click, and Save writes the typed colour.
+#[test]
+fn three_digits_then_save_writes_the_typed_colour() {
+    let d = TempDir::new("hex-save");
+    let s = on_ember(&d);
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.state_mut().theme_editor.open = true;
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, BASE).focus();
+    h.run_steps(2);
+    h.state_mut().theme_editor.hex = "f80".into();
+    h.run_steps(1);
+    h.get_by_role_and_label(Role::Button, BUTTONS[4]).click();
+    h.run_steps(3);
+    let file = std::fs::read_to_string(themes(&d).join("ember.toml")).unwrap();
+    assert!(file.contains("#ff8800"), "{file}");
+    assert!(h.state().changed.is_none());
+    assert_eq!(
+        h.state().theme_editor.hex(),
+        "f80",
+        "the field keeps what was typed"
+    );
 }
