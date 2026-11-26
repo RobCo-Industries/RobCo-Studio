@@ -977,14 +977,17 @@ fn extract_package(
 
     let listed: BTreeMap<&str, &sdk_json::FileEntry> =
         sdk.files.iter().map(|f| (f.path.as_str(), f)).collect();
+    let present: BTreeSet<&str> = files.iter().map(|f| f.name.as_str()).collect();
+    // "Layout of pipos" is the narrower rule: a file of the layout that
+    // `files` leaves out fails with `package: manifest`, even when the
+    // archive holds it, before "The archive" refuses an unlisted entry.
+    if entry.name == resolve::PIPOS {
+        check_pipos_layout(&present, &listed)?;
+    }
     for f in &files {
         if f.name != MANIFEST && !listed.contains_key(f.name.as_str()) {
             return Err(bad(format!("{}: not listed in {MANIFEST} files", f.name)));
         }
-    }
-    let present: BTreeSet<&str> = files.iter().map(|f| f.name.as_str()).collect();
-    if entry.name == resolve::PIPOS {
-        check_pipos_layout(&present, &listed)?;
     }
     if let Some(f) = sdk
         .files
@@ -1078,9 +1081,8 @@ fn check_pipos_layout(
     present: &BTreeSet<&str>,
     listed: &BTreeMap<&str, &sdk_json::FileEntry>,
 ) -> Result<(), Error> {
-    // An entry of the archive that `files` does not list already failed
-    // with `package: archive`, by "The archive". So a file of the layout
-    // that passes `present` and fails `listed` cannot reach this point.
+    // This runs before the check of unlisted entries, so a file of the
+    // layout that the archive holds and `files` leaves out fails here.
     match PIPOS_FILES
         .iter()
         .find(|p| !present.contains(*p) || !listed.contains_key(*p))

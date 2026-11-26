@@ -2029,3 +2029,46 @@ fn install_checks_the_pipos_layout_before_the_listed_files() {
     let err = install_pipos(&d, &bytes, &e).unwrap_err();
     assert_eq!(err.error_code(), "package: manifest", "{err}");
 }
+
+#[test]
+fn install_puts_the_pipos_layout_before_unlisted_entries() {
+    let all = pipos_files();
+    let without = |p: &str| -> Vec<(&'static str, &'static [u8])> {
+        all.iter().copied().filter(|(q, _)| *q != p).collect()
+    };
+    let extra = [all.clone(), vec![("notes.txt", &b"x\n"[..])]].concat();
+    // (sdk.json files, archive entries, code, path named)
+    let cases = [
+        // In the archive, left out of `files`.
+        (
+            without("flags.json"),
+            all.clone(),
+            "package: manifest",
+            "flags.json",
+        ),
+        // In `files`, absent from the archive.
+        (
+            all.clone(),
+            without("flags.json"),
+            "package: manifest",
+            "flags.json",
+        ),
+        // In neither.
+        (
+            without("flags.json"),
+            without("flags.json"),
+            "package: manifest",
+            "flags.json",
+        ),
+        // An unlisted entry that is no file of the layout.
+        (all.clone(), extra, "package: archive", "notes.txt"),
+    ];
+    for (listed, put, code, path) in cases {
+        let d = Dir::new("pipos-order");
+        let (bytes, e) = pipos_zip(&listed, &put);
+        let err = install_pipos(&d, &bytes, &e).unwrap_err();
+        assert_eq!(err.error_code(), code, "{err}");
+        assert!(err.to_string().contains(path), "{err}");
+        assert!(d.temp_is_empty());
+    }
+}
