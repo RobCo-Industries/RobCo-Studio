@@ -6,7 +6,7 @@ RobCo Studio is the development tool for the RobCo Industries operating systems.
 
 Nothing is usable yet. What exists:
 
-- A Cargo workspace with six crates. `robco sdk list` and `robco sdk install` list and install SDK packages and tools from a local or an `https://` index, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). No other command exists yet. There is no default index: `--index` is required. `robco --version`, `robco version` and `robco-studio --version` print the version. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- A Cargo workspace with six crates. `robco sdk list` and `robco sdk install` list and install SDK packages and tools from a local or an `https://` index, and `robco build` builds a holotape project into `build/NAME.HTP`, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). No other command exists yet. There is no default index: `--index` is required. `robco --version`, `robco version` and `robco-studio --version` print the version. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `robco-studio` opens the first window. See [The window](#the-window).
 - CI on Ubuntu, macOS and Windows: format, lints, tests, a licence check, a release build of `robco` and a link check of the Markdown files.
 - Seven spikes, throwaway code that answers one question each, with their results. No RobCo-Core C is linked into the crates yet. See [docs/SPIKES.md](docs/SPIKES.md).

@@ -23,6 +23,8 @@
 //! [`ManifestError::code`] gives the code as the spec spells it.
 
 use std::fmt;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
@@ -669,8 +671,9 @@ fn component_matches(pattern: &str, name: &str) -> bool {
     rest.len() >= last.len() && rest.ends_with(last)
 }
 
-/// True when a project path matches a source pattern.
-fn pattern_matches(pattern: &str, path: &str) -> bool {
+/// True when a project path, relative to the root with `/`, matches a
+/// source pattern. The one matcher of the source rules.
+pub fn pattern_matches(pattern: &str, path: &str) -> bool {
     let (pdir, pname) = pattern.rsplit_once('/').unwrap_or(("", pattern));
     let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
     pdir == dir && component_matches(pname, name)
@@ -724,6 +727,88 @@ pub fn expand_sources(patterns: &[String], files: &[&str]) -> Result<Vec<String>
         groups.push(group);
     }
     Ok(order_sources(groups))
+}
+
+/// Applies the last path rule of the spec to one manifest path on disk:
+/// "It names a file inside the project root. A symbolic link that leads
+/// outside the root is refused."
+///
+/// `rel` is a manifest path, already checked by [`parse`], or a source
+/// after [`expand_sources`], or a folder a source pattern names. The path
+/// is resolved through every link, a link to a link included, and its
+/// canonical form must lie under the canonical root, compared by
+/// component. A root reached through a link is fine, since both sides are
+/// canonical. A link whose target stays inside the root is allowed.
+///
+/// A link loop never names a file, so it is refused like a link out of
+/// the root, with `path` and `key`. Any other failure to resolve, such as
+/// a folder without search permission, is the host's refusal to read and
+/// comes back as [`OnDisk::Unreadable`], so the caller reports `io: read`.
+pub fn inside_root(root: &Path, key: &str, rel: &str) -> Result<OnDisk, ManifestError> {
+    let refused = |reason: String| ManifestError::Path {
+        key: key.to_owned(),
+        reason,
+    };
+    let real_root = match std::fs::canonicalize(root) {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(OnDisk::Unreadable {
+                path: root.to_path_buf(),
+                kind: e.kind(),
+            });
+        }
+    };
+    let path = root.join(rel);
+    match std::fs::canonicalize(&path) {
+        Ok(real) if real.starts_with(&real_root) => Ok(OnDisk::Inside(path)),
+        Ok(_) => Err(refused(format!(
+            "{rel}: a symbolic link leads outside the project root"
+        ))),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            Ok(OnDisk::Missing)
+        }
+        Err(e) if is_loop(&e) => Err(refused(format!("{rel}: a symbolic link loop"))),
+        Err(e) => Ok(OnDisk::Unreadable {
+            path,
+            kind: e.kind(),
+        }),
+    }
+}
+
+/// What [`inside_root`] found at a manifest path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnDisk {
+    /// The path under the root to read; it resolves inside the root.
+    Inside(PathBuf),
+    /// Nothing is there, a dangling link included: the caller gives the
+    /// error of a missing file.
+    Missing,
+    /// The host refused to resolve the path: `io: read`, with the path.
+    Unreadable {
+        /// The path the host refused.
+        path: PathBuf,
+        /// Why, as the host said.
+        kind: ErrorKind,
+    },
+}
+
+/// True for the error of a symbolic link loop.
+///
+/// On Unix it is `ELOOP`. On Windows it is `ERROR_CANT_RESOLVE_FILENAME`,
+/// 1921 (0x781), "The name of the file cannot be resolved by the system",
+/// from Microsoft's "System Error Codes (1700-3999)":
+/// <https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1700-3999->.
+/// `ErrorKind::FilesystemLoop` would say the same, but it is unstable on
+/// the pinned toolchain, 1.100.0, so the raw codes are used. The Windows
+/// code is not proven on a Windows machine.
+pub(crate) fn is_loop(e: &std::io::Error) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const LOOP: i32 = 40;
+    #[cfg(windows)]
+    const LOOP: i32 = 1921;
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+    const LOOP: i32 = 62;
+    e.raw_os_error() == Some(LOOP)
 }
 
 /// Checks the icon file and returns its 128 META bytes.

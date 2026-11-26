@@ -562,3 +562,156 @@ fn error_codes_are_spelled_as_the_table() {
     assert_eq!(e.error_code(), "manifest: format");
     assert_eq!(e.exit_code(), 3);
 }
+
+/// A folder of the test's own under the system's temp folder, removed on
+/// drop. On macOS the temp folder is reached through a link, so every test
+/// here also checks a root reached through a link.
+#[cfg(unix)]
+struct LinkDir(std::path::PathBuf);
+
+#[cfg(unix)]
+impl LinkDir {
+    fn new(name: &str) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "studio-manifest-{}-{}-{name}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("root/src")).unwrap();
+        std::fs::write(dir.join("root/src/real.c"), "int x;").unwrap();
+        std::fs::write(dir.join("away.c"), "int y;").unwrap();
+        Self(dir)
+    }
+    fn root(&self) -> std::path::PathBuf {
+        self.0.join("root")
+    }
+    fn link(&self, target: &str, at: &str) {
+        std::os::unix::fs::symlink(target, self.root().join(at)).unwrap();
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LinkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+fn path_reason(r: Result<OnDisk, ManifestError>) -> String {
+    match r {
+        Err(e @ ManifestError::Path { .. }) => e.detail(),
+        other => panic!("not a path error: {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_keeps_a_link_inside_the_root() {
+    let d = LinkDir::new("inside");
+    d.link("real.c", "src/main.c");
+    d.link("main.c", "src/twice.c");
+    d.link("src", "lib");
+    let root = d.root();
+    for rel in [
+        "src/real.c",
+        "src/main.c",
+        "src/twice.c",
+        "lib",
+        "lib/real.c",
+    ] {
+        let got = inside_root(&root, "build.sources", rel).unwrap();
+        assert_eq!(got, OnDisk::Inside(root.join(rel)), "{rel}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_refuses_a_link_out_of_the_root() {
+    let d = LinkDir::new("outside");
+    d.link("../../away.c", "src/main.c");
+    d.link("main.c", "src/twice.c");
+    d.link("..", "up");
+    let root = d.root();
+    for rel in ["src/main.c", "src/twice.c", "up", "up/away.c"] {
+        let why = path_reason(inside_root(&root, "project.icon", rel));
+        assert!(why.starts_with("project.icon: "), "{why}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_gives_none_for_a_dangling_link() {
+    let d = LinkDir::new("dangling");
+    d.link("gone.c", "src/main.c");
+    d.link("../../gone.c", "src/far.c");
+    let root = d.root();
+    for rel in ["src/main.c", "src/far.c", "src/missing.c", "src/real.c/x"] {
+        assert_eq!(
+            inside_root(&root, "k", rel).unwrap(),
+            OnDisk::Missing,
+            "{rel}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_accepts_a_root_reached_through_a_link() {
+    let d = LinkDir::new("rootlink");
+    std::os::unix::fs::symlink("root", d.0.join("alias")).unwrap();
+    let alias = d.0.join("alias");
+    assert_eq!(
+        inside_root(&alias, "k", "src/real.c").unwrap(),
+        OnDisk::Inside(alias.join("src/real.c"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_refuses_a_link_loop_as_path() {
+    let d = LinkDir::new("loop");
+    d.link("b.c", "src/a.c");
+    d.link("a.c", "src/b.c");
+    let why = path_reason(inside_root(&d.root(), "build.sources", "src/a.c"));
+    assert_eq!(why, "build.sources: src/a.c: a symbolic link loop");
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_gives_unreadable_for_a_folder_without_search() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = LinkDir::new("nosearch");
+    let root = d.root();
+    let src = root.join("src");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let readable = std::fs::metadata(src.join("real.c")).is_ok();
+    let got = inside_root(&root, "build.sources", "src/real.c");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        println!("skipped: this process can search a folder without search permission");
+        return;
+    }
+    assert_eq!(
+        got.unwrap(),
+        OnDisk::Unreadable {
+            path: root.join("src/real.c"),
+            kind: std::io::ErrorKind::PermissionDenied,
+        }
+    );
+}
+
+#[test]
+fn a_link_loop_error_is_known_on_each_system() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let code = 40;
+    #[cfg(windows)]
+    let code = 1921;
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+    let code = 62;
+    assert!(is_loop(&std::io::Error::from_raw_os_error(code)));
+    assert!(!is_loop(&std::io::Error::from_raw_os_error(2)));
+}

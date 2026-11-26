@@ -116,7 +116,7 @@ The `test-trust` feature adds a constructor that trusts one certificate, and a T
 
 ### robco
 
-The command. `main.rs` calls the library's `run`, which the program's tests also call with a transport that trusts a test certificate. It reads the command line, writes the two output streams and leaves all work to the core. It answers `robco --version`, `robco version`, `robco sdk list` and `robco sdk install`, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). `unsafe` is forbidden.
+The command. `main.rs` calls the library's `run`, which the program's tests also call with a transport that trusts a test certificate. It reads the command line, writes the two output streams and leaves all work to the core. It answers `robco --version`, `robco version`, `robco build`, `robco sdk list` and `robco sdk install`, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). `unsafe` is forbidden.
 
 Each part is a module of its own:
 
@@ -124,8 +124,10 @@ Each part is a module of its own:
 - `cache` finds the cache folder, with `ROBCO_CACHE` first.
 - `index` sorts a `--index` location and reads the index, from a local file or from an `https://` URL through `studio-net`. A download that fails, or an index longer than 8 MiB, gives `index: read`.
 - `net` starts TLS on the first download only, and sends each archive `url` to `studio-net` or, for a relative path in a local index, to the index folder.
-- `list` and `install` are the two commands.
+- `list`, `install` and `build` are the three commands.
 - `lines` writes JSON lines with `--json`, and text and the one error line without it.
+
+`robco build` takes steps 1 to 11 of "The steps of update, build, run and test" in order. It deletes an older tape right after the manifest, so a later failure leaves none. With a lock and a full cache it reads no index. It writes the lock only after a resolution and once every install passed. It runs each compiler command with no shell and turns each line the program prints into a `diagnostic` line. It seals and validates with `studio-sys`, then checks that the startup code wrote the `abi_version` and `subtype` that `robco.toml` asks for.
 
 `robco sdk install` passes a `Progress` that writes one `step` line per transition, so each line is written when its step begins or ends. A failure leaves its step open, and the error line follows. An item the cache already holds is never fetched and writes one `install` line with `skip`.
 

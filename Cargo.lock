@@ -2870,6 +2870,7 @@ dependencies = [
  "serde_json",
  "studio-core",
  "studio-net",
+ "studio-sys",
  "zip",
 ]
 
