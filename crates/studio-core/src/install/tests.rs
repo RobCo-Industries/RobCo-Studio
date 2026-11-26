@@ -1451,11 +1451,17 @@ fn install_reports_a_failed_flush_as_a_write_error() {
         sha256: &sha,
     };
     let part = Path::new("archive.part");
-    let r = fetch_checked(part, &item, &Flushes(bytes.clone()), FailsOnFlush);
+    let r = fetch_checked(
+        part,
+        &item,
+        &Flushes(bytes.clone()),
+        FailsOnFlush,
+        &mut Quiet,
+    );
     let e = r.err().unwrap();
     assert_eq!(e.error_code(), "io: write", "{e}");
     // The same transport with a file that flushes is a match.
-    assert!(fetch_checked(part, &item, &Flushes(bytes), Vec::new()).is_ok());
+    assert!(fetch_checked(part, &item, &Flushes(bytes), Vec::new(), &mut Quiet).is_ok());
 }
 
 // Bounds on what an archive makes the installer read and write.
@@ -1530,7 +1536,7 @@ fn install_refuses_a_package_file_one_byte_over_or_under_its_size() {
 fn install_zip_with(d: &Dir, bytes: &[u8], limits: Limits) -> Result<State, Error> {
     d.put("templates-0.1.0.zip", bytes);
     let e = entry_for("templates-0.1.0.zip", bytes);
-    package_with(&d.cache(), &e, &d.local(), Pin::Index, limits)
+    package_with(&d.cache(), &e, &d.local(), Pin::Index, limits, &mut Quiet)
 }
 
 #[test]
@@ -1585,6 +1591,7 @@ fn install_tool_with(d: &Dir, bytes: &[u8], limits: Limits) -> Result<State, Err
         &d.local(),
         Pin::Index,
         limits,
+        &mut Quiet,
     )
 }
 
@@ -1742,4 +1749,283 @@ fn install_refuses_tar_records_over_their_limit() {
             assert!(msg.contains(&format!("more than {limit} bytes")), "{msg}");
         }
     }
+}
+
+// Progress.
+
+/// Writes each transition as a word, in order.
+#[derive(Default)]
+struct Recorder(Vec<String>);
+
+impl Progress for Recorder {
+    fn start(&mut self, phase: Phase) {
+        self.0.push(format!("start {phase:?}"));
+    }
+    fn done(&mut self, phase: Phase) {
+        self.0.push(format!("done {phase:?}"));
+    }
+    fn skip(&mut self) {
+        self.0.push("skip".to_owned());
+    }
+}
+
+const ALL: &[&str] = &[
+    "start Download",
+    "done Download",
+    "start Verify",
+    "done Verify",
+    "start Install",
+    "done Install",
+];
+/// A failure in the download: its step stays open.
+const IN_DOWNLOAD: &[&str] = &["start Download"];
+/// A failure in the hash check of the archive.
+const IN_VERIFY: &[&str] = &["start Download", "done Download", "start Verify"];
+/// A failure after the archive passed its hash.
+const IN_INSTALL: &[&str] = &[
+    "start Download",
+    "done Download",
+    "start Verify",
+    "done Verify",
+    "start Install",
+];
+
+/// Installs `entry` from `transport` and returns the code and the steps.
+fn watch_package(
+    d: &Dir,
+    e: &IndexPackage,
+    transport: &dyn Transport,
+) -> (Result<State, String>, Vec<String>) {
+    let mut r = Recorder::default();
+    let s = package_watched(&d.cache(), e, transport, Pin::Index, &mut r);
+    (s.map_err(|e| e.error_code().to_owned()), r.0)
+}
+
+fn watch_zip(d: &Dir, bytes: &[u8]) -> (Result<State, String>, Vec<String>) {
+    d.put("p.zip", bytes);
+    watch_package(d, &entry_for("p.zip", bytes), &d.local())
+}
+
+#[test]
+fn progress_of_a_good_package_and_of_one_in_the_cache() {
+    let d = Dir::new("progress-good");
+    let bytes = good_zip();
+    assert_eq!(watch_zip(&d, &bytes), (Ok(State::Installed), strings(ALL)));
+    assert_eq!(
+        watch_zip(&d, &bytes),
+        (Ok(State::Present), strings(&["skip"]))
+    );
+    // Another archive in the cache: no transition at all.
+    let other = package_zip(&files(), &files()[..2]);
+    assert_eq!(
+        watch_zip(&d, &other),
+        (Err("package: hash".to_owned()), vec![])
+    );
+}
+
+fn strings(s: &[&str]) -> Vec<String> {
+    s.iter().map(|s| (*s).to_owned()).collect()
+}
+
+#[test]
+fn progress_of_a_good_tool_and_of_a_bad_one() {
+    let watch = |d: &Dir, bytes: &[u8], root: &str| {
+        d.put("gcc.archive", bytes);
+        let a = archive_of("gcc.archive", bytes, root);
+        let mut r = Recorder::default();
+        let s = tool_watched(
+            &d.cache(),
+            ["gcc", "15.2.1-1.1", "linux-x64"],
+            &a,
+            &d.local(),
+            Pin::Index,
+            &mut r,
+        );
+        (s.map_err(|e| e.error_code().to_owned()), r.0)
+    };
+    let d = Dir::new("progress-tool");
+    let bytes = tool_zip(&[("bin/", b""), ("bin/gcc", b"x")]);
+    assert_eq!(watch(&d, &bytes, ""), (Ok(State::Installed), strings(ALL)));
+    assert_eq!(
+        watch(&d, &bytes, ""),
+        (Ok(State::Present), strings(&["skip"]))
+    );
+    let d = Dir::new("progress-tool-root");
+    assert_eq!(
+        watch(&d, &bytes, "nothing"),
+        (Err("tool: archive".to_owned()), strings(IN_INSTALL))
+    );
+}
+
+#[test]
+fn progress_puts_each_failure_in_its_step() {
+    let bytes = good_zip();
+    // A transport that fails, and one that gives too much.
+    let d = Dir::new("progress-drops");
+    assert_eq!(
+        watch_package(&d, &entry_for("p.zip", &bytes), &Drops(bytes.clone())),
+        (Err("package: hash".to_owned()), strings(IN_DOWNLOAD))
+    );
+    let d = Dir::new("progress-long");
+    let mut longer = bytes.clone();
+    longer.extend_from_slice(b"more");
+    d.put("p.zip", &longer);
+    assert_eq!(
+        watch_package(&d, &entry_for("p.zip", &bytes), &d.local()),
+        (Err("package: hash".to_owned()), strings(IN_DOWNLOAD))
+    );
+    // A short download, and a wrong hash.
+    let d = Dir::new("progress-short");
+    d.put("p.zip", &bytes[..bytes.len() - 10]);
+    assert_eq!(
+        watch_package(&d, &entry_for("p.zip", &bytes), &d.local()),
+        (Err("package: hash".to_owned()), strings(IN_VERIFY))
+    );
+    let d = Dir::new("progress-hash");
+    d.put("p.zip", &bytes);
+    let e = entry_with("p.zip", bytes.len() as u64, &"0".repeat(64));
+    assert_eq!(
+        watch_package(&d, &e, &d.local()),
+        (Err("package: hash".to_owned()), strings(IN_VERIFY))
+    );
+    // A bad archive, and a file whose hash differs after extraction.
+    let d = Dir::new("progress-archive");
+    let bad = package_zip(&files(), &[files(), vec![(RECORD, b"x")]].concat());
+    assert_eq!(
+        watch_zip(&d, &bad),
+        (Err("package: archive".to_owned()), strings(IN_INSTALL))
+    );
+    let d = Dir::new("progress-file-hash");
+    let mut put = files();
+    put[0].1 = b"changed";
+    let bad = package_zip(&files(), &put);
+    assert_eq!(
+        watch_zip(&d, &bad),
+        (Err("package: hash".to_owned()), strings(IN_INSTALL))
+    );
+}
+
+/// A rename into a folder the install may not write fails in `install`.
+#[cfg(unix)]
+#[test]
+fn progress_puts_a_failed_rename_in_install() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = Dir::new("progress-rename");
+    let parent = d.cache().join("packages/templates");
+    fs::create_dir_all(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+    let r = watch_zip(&d, &good_zip());
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(r, (Err("io: write".to_owned()), strings(IN_INSTALL)));
+}
+
+// The layout of pipos.
+
+/// The files of a whole `pipos` package, `sdk.json` aside.
+fn pipos_files() -> Vec<(&'static str, &'static [u8])> {
+    PIPOS_FILES.iter().map(|p| (*p, &b"x\n"[..])).collect()
+}
+
+/// A `pipos` zip whose `sdk.json` lists `listed` and that holds `put`, and
+/// its index entry.
+fn pipos_zip(listed: &[(&str, &[u8])], put: &[(&str, &[u8])]) -> (Vec<u8>, IndexPackage) {
+    let mut listed = listed.to_vec();
+    listed.sort_by(|a, b| a.0.cmp(b.0));
+    let files: Vec<String> = listed
+        .iter()
+        .map(|(p, b)| {
+            format!(
+                r#"{{"path": "{p}", "size": {}, "sha256": "{}"}}"#,
+                b.len(),
+                sha256_hex(b)
+            )
+        })
+        .collect();
+    let sdk = format!(
+        r#"{{"format": 1, "name": "pipos", "version": "1.4.0", "abi": "1.4",
+  "built_from": [{{"repo": "Pip-OS", "commit": "1111111111111111111111111111111111111111"}},
+    {{"repo": "RobCo-Core", "commit": "2222222222222222222222222222222222222222"}}],
+  "formats": {{"rimg": 1, "flags": 1, "boot": 1, "runner": 1}},
+  "requires": [],
+  "tools": [{{"name": "gcc", "version": "15.2.1-1.1"}}, {{"name": "qemu", "version": "10.1.2"}}],
+  "firmware": {{"repo": "raspberrypi/firmware", "tag": "1.20260915",
+    "commit": "6f0881cba8bea8ec24956a5718714730e9936ec5",
+    "base_url": "https://raw.githubusercontent.com/raspberrypi/firmware/6f0881cba8bea8ec24956a5718714730e9936ec5/boot",
+    "files": [
+      {{"name": "bootcode.bin", "sha256": "4245ec23b58158dc3e55f3e065eb4ecc0c0705d76c8db506e9f824941feee32e"}},
+      {{"name": "start.elf", "sha256": "32f990801e7765bae6fe5cb940ba5eeff02dd0dac8dc5474db5b3fd345281790"}},
+      {{"name": "fixup.dat", "sha256": "7853f2b51e4489f8b3ce6f9c52fd0afdda38c7383961524e0883d34afcb4827b"}}]}},
+  "licences": [{{"paths": [""], "spdx": "MIT"}}],
+  "files": [{}]}}"#,
+        files.join(", ")
+    );
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    z.start_file("sdk.json", opts()).unwrap();
+    z.write_all(sdk.as_bytes()).unwrap();
+    for (name, bytes) in put {
+        z.start_file(*name, opts()).unwrap();
+        z.write_all(bytes).unwrap();
+    }
+    let bytes = z.finish().unwrap().into_inner();
+    let text = format!(
+        r#"{{"format": 1, "tools": [], "packages": [{{
+  "name": "pipos", "version": "1.4.0", "abi": "1.4", "requires": [],
+  "tools": [{{"name": "gcc", "version": "15.2.1-1.1"}}, {{"name": "qemu", "version": "10.1.2"}}],
+  "formats": {{"rimg": 1, "flags": 1, "boot": 1, "runner": 1}},
+  "url": "pipos.zip", "size": {}, "sha256": "{}"}}]}}"#,
+        bytes.len(),
+        sha256_hex(&bytes)
+    );
+    let mut idx = index::parse(text.as_bytes(), IndexSource::Local).unwrap();
+    (bytes, idx.packages.remove(0))
+}
+
+fn install_pipos(d: &Dir, bytes: &[u8], e: &IndexPackage) -> Result<State, Error> {
+    d.put("pipos.zip", bytes);
+    package(&d.cache(), e, &d.local(), Pin::Index)
+}
+
+#[test]
+fn install_a_whole_pipos_package_with_an_added_header() {
+    let d = Dir::new("pipos-good");
+    let mut all = pipos_files();
+    all.push(("include/pipos/later.h", b"x\n"));
+    let (bytes, e) = pipos_zip(&all, &all);
+    assert_eq!(install_pipos(&d, &bytes, &e), Ok(State::Installed));
+}
+
+#[test]
+fn install_refuses_a_pipos_package_without_a_file_of_its_layout() {
+    for missing in ["flags.json", "boot.json", "include/pipos/syscall.h"] {
+        let d = Dir::new("pipos-missing");
+        let some: Vec<_> = pipos_files()
+            .into_iter()
+            .filter(|(p, _)| *p != missing)
+            .collect();
+        let (bytes, e) = pipos_zip(&some, &some);
+        let pkg = package_dir(&d.cache(), "pipos", "1.4.0").unwrap();
+        let err = install_pipos(&d, &bytes, &e).unwrap_err();
+        assert_eq!(err.error_code(), "package: manifest", "{err}");
+        assert!(err.to_string().contains(missing), "{err}");
+        assert!(!pkg.exists() && d.temp_is_empty());
+    }
+    // A `templates` package needs none of them.
+    let d = Dir::new("templates-layout");
+    assert_eq!(install_zip(&d, &good_zip()), Ok(State::Installed));
+}
+
+#[test]
+fn install_checks_the_pipos_layout_before_the_listed_files() {
+    // `flags.json` listed and absent: the layout speaks first, before the
+    // hash check of a listed file that is absent.
+    let d = Dir::new("pipos-listed");
+    let all = pipos_files();
+    let some: Vec<_> = all
+        .iter()
+        .copied()
+        .filter(|(p, _)| *p != "flags.json")
+        .collect();
+    let (bytes, e) = pipos_zip(&all, &some);
+    let err = install_pipos(&d, &bytes, &e).unwrap_err();
+    assert_eq!(err.error_code(), "package: manifest", "{err}");
 }

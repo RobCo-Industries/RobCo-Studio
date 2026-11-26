@@ -146,6 +146,46 @@ pub enum State {
     Present,
 }
 
+/// One step of an install, by "step" of RobCo-Core
+/// `docs/spec/STUDIO_CLI.md`. They come in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Fetching the archive. A transport that fails, or that gives more
+    /// bytes than the index says, fails here.
+    Download,
+    /// The size and SHA-256 of the whole archive, against the index. A
+    /// download that ended short fails here.
+    Verify,
+    /// Everything after: the archive rules, `sdk.json`, the extraction and
+    /// the hash of each extracted file, the record and the move into the
+    /// cache.
+    Install,
+}
+
+/// What an install tells its caller as it works: one call per transition.
+///
+/// A step that fails gets a `start` and no `done`, as "step" allows: the
+/// error the call returns belongs to the step that is still open. An item
+/// that the cache holds with the expected record gets one `skip` and no
+/// other call. A record that differs gets no call at all.
+pub trait Progress {
+    /// A step begins.
+    fn start(&mut self, phase: Phase);
+    /// The step that began last ended well.
+    fn done(&mut self, phase: Phase);
+    /// The cache already held the item: nothing was needed.
+    fn skip(&mut self);
+}
+
+/// A [`Progress`] that ignores every transition.
+pub struct Quiet;
+
+impl Progress for Quiet {
+    fn start(&mut self, _phase: Phase) {}
+    fn done(&mut self, _phase: Phase) {}
+    fn skip(&mut self) {}
+}
+
 /// Why an install failed. Each variant is one code of the spec's table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -344,7 +384,18 @@ pub fn package(
     transport: &dyn Transport,
     pin: Pin,
 ) -> Result<State, Error> {
-    package_with(cache, entry, transport, pin, LIMITS)
+    package_with(cache, entry, transport, pin, LIMITS, &mut Quiet)
+}
+
+/// [`package`] that tells `progress` each step as it begins and ends.
+pub fn package_watched(
+    cache: &Path,
+    entry: &IndexPackage,
+    transport: &dyn Transport,
+    pin: Pin,
+    progress: &mut dyn Progress,
+) -> Result<State, Error> {
+    package_with(cache, entry, transport, pin, LIMITS, progress)
 }
 
 /// [`package`] with the bounds it is given.
@@ -354,6 +405,7 @@ fn package_with(
     transport: &dyn Transport,
     pin: Pin,
     limits: Limits,
+    progress: &mut dyn Progress,
 ) -> Result<State, Error> {
     let version = entry.version.to_string();
     // The cache folder names come from the entry: each must be one plain
@@ -377,7 +429,7 @@ fn package_with(
         size: entry.size,
         sha256: &entry.sha256,
     };
-    install(cache, &item, transport, pin, &|archive, out| {
+    install(cache, &item, transport, pin, progress, &|archive, out| {
         extract_package(archive, out, entry, limits)?;
         Ok(out.to_path_buf())
     })
@@ -405,7 +457,21 @@ pub fn tool(
         transport,
         pin,
         LIMITS,
+        &mut Quiet,
     )
+}
+
+/// [`tool`] that tells `progress` each step as it begins and ends. `id` is
+/// the name, the version and the host.
+pub fn tool_watched(
+    cache: &Path,
+    id: [&str; 3],
+    archive: &Archive,
+    transport: &dyn Transport,
+    pin: Pin,
+    progress: &mut dyn Progress,
+) -> Result<State, Error> {
+    tool_with(cache, id, archive, transport, pin, LIMITS, progress)
 }
 
 /// [`tool`] with the bounds it is given. `id` is the name, the version and
@@ -417,6 +483,7 @@ fn tool_with(
     transport: &dyn Transport,
     pin: Pin,
     limits: Limits,
+    progress: &mut dyn Progress,
 ) -> Result<State, Error> {
     let [name, version, host] = id;
     // A tool version may hold `/`, and `.` or `..` is a version too: each
@@ -443,7 +510,7 @@ fn tool_with(
         size: archive.size,
         sha256: &archive.sha256,
     };
-    install(cache, &item, transport, pin, &|file, out| {
+    install(cache, &item, transport, pin, progress, &|file, out| {
         extract_tool(file, out, &archive.root, limits)
     })
 }
@@ -503,21 +570,42 @@ fn install(
     item: &Item<'_>,
     transport: &dyn Transport,
     pin: Pin,
+    progress: &mut dyn Progress,
     extract: &dyn Fn(&Path, &Path) -> Result<PathBuf, Error>,
 ) -> Result<State, Error> {
+    let held = |h: &str, progress: &mut dyn Progress| {
+        let state = compare(item, h, pin)?;
+        progress.skip();
+        Ok(state)
+    };
     let unfinished = match cached(&item.dir)? {
-        Cached::Holds(h) => return compare(item, &h, pin),
+        Cached::Holds(h) => return held(&h, progress),
         Cached::Missing => false,
         Cached::Unfinished => true,
     };
     let temp = TempDir::new(cache)?;
     if unfinished && let Some(h) = clear_unfinished(&temp.0, &item.dir)? {
-        return compare(item, &h, pin);
+        return held(&h, progress);
     }
-    let archive = download(&temp.0, item, transport)?;
-    let out = temp.0.join("x");
+    let archive = download(&temp.0, item, transport, progress)?;
+    progress.start(Phase::Install);
+    let state = finish(item, pin, &temp.0, &archive, extract)?;
+    progress.done(Phase::Install);
+    Ok(state)
+}
+
+/// The `install` step: extracts the checked archive, writes the record and
+/// moves the folder into the cache.
+fn finish(
+    item: &Item<'_>,
+    pin: Pin,
+    temp: &Path,
+    archive: &Path,
+    extract: &dyn Fn(&Path, &Path) -> Result<PathBuf, Error>,
+) -> Result<State, Error> {
+    let out = temp.join("x");
     fs::create_dir(&out).map_err(|e| write_err(&out, &e))?;
-    let folder = extract(&archive, &out)?;
+    let folder = extract(archive, &out)?;
 
     let record = folder.join(RECORD);
     let mut file = OpenOptions::new()
@@ -685,20 +773,29 @@ impl<W: Write> Write for Hashing<W> {
 
 /// Streams the archive into `<temp>/archive.part`, hashing it on the way,
 /// and renames it to `<temp>/archive` only on a match of size and hash.
-fn download(temp: &Path, item: &Item<'_>, transport: &dyn Transport) -> Result<PathBuf, Error> {
+/// It opens the `download` step, and the `verify` step once the fetch
+/// ended, and closes `verify` once the archive is kept.
+fn download(
+    temp: &Path,
+    item: &Item<'_>,
+    transport: &dyn Transport,
+    progress: &mut dyn Progress,
+) -> Result<PathBuf, Error> {
+    progress.start(Phase::Download);
     let part = temp.join("archive.part");
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&part)
         .map_err(|e| write_err(&part, &e))?;
-    let file = fetch_checked(&part, item, transport, file)?;
+    let file = fetch_checked(&part, item, transport, file, progress)?;
     // The sync is the last write that can fail: a close error after it
     // loses nothing that the sync did not already report.
     file.sync_all().map_err(|e| write_err(&part, &e))?;
     drop(file);
     let archive = temp.join("archive");
     fs::rename(&part, &archive).map_err(|e| write_err(&archive, &e))?;
+    progress.done(Phase::Verify);
     Ok(archive)
 }
 
@@ -709,6 +806,7 @@ fn fetch_checked<W: Write>(
     item: &Item<'_>,
     transport: &dyn Transport,
     file: W,
+    progress: &mut dyn Progress,
 ) -> Result<W, Error> {
     let mut w = Hashing {
         file,
@@ -735,6 +833,10 @@ fn fetch_checked<W: Write>(
             w.count
         )));
     }
+    // The fetch ended. What follows is the hash check of "Hashes": a
+    // download that ended short fails it.
+    progress.done(Phase::Download);
+    progress.start(Phase::Verify);
     if w.count != item.size {
         return Err(mismatch(format!(
             "has {} bytes and the index says {}",
@@ -881,6 +983,9 @@ fn extract_package(
         }
     }
     let present: BTreeSet<&str> = files.iter().map(|f| f.name.as_str()).collect();
+    if entry.name == resolve::PIPOS {
+        check_pipos_layout(&present, &listed)?;
+    }
     if let Some(f) = sdk
         .files
         .iter()
@@ -935,6 +1040,56 @@ fn extract_package(
         }
     }
     Ok(())
+}
+
+/// The files of "Layout of pipos" that a `pipos` package must hold, but
+/// `sdk.json`, which "The archive" already requires.
+const PIPOS_FILES: &[&str] = &[
+    "LICENSES/MIT.txt",
+    "boot.json",
+    "boot/PIPOS.CFG",
+    "boot/PIPOS.IMG",
+    "boot/RUNNER.ROM",
+    "boot/config.txt",
+    "boot/fwstub.bin",
+    "boot/pipos.elf",
+    "docs/API.md",
+    "flags.json",
+    "include/pipos/pip.h",
+    "include/pipos/abi.h",
+    "include/pipos/crc32.h",
+    "include/pipos/crt0.h",
+    "include/pipos/heap.h",
+    "include/pipos/ini.h",
+    "include/pipos/printf.h",
+    "include/pipos/selftest.h",
+    "include/pipos/string.h",
+    "include/pipos/syscall.h",
+    "lib/crt0.S",
+    "lib/holotape.ld",
+    "lib/libpip.a",
+    "lib/rom.ld",
+];
+
+/// "Layout of pipos": a file of the layout that the archive lacks, or that
+/// `files` does not list, fails with `package: manifest` and names the
+/// path. A file the layout does not name is not refused here.
+fn check_pipos_layout(
+    present: &BTreeSet<&str>,
+    listed: &BTreeMap<&str, &sdk_json::FileEntry>,
+) -> Result<(), Error> {
+    // An entry of the archive that `files` does not list already failed
+    // with `package: archive`, by "The archive". So a file of the layout
+    // that passes `present` and fails `listed` cannot reach this point.
+    match PIPOS_FILES
+        .iter()
+        .find(|p| !present.contains(*p) || !listed.contains_key(*p))
+    {
+        Some(p) => Err(Error::Manifest(resolve::Error::PackageManifest(format!(
+            "{p}: a pipos package must hold it, listed in sdk.json files"
+        )))),
+        None => Ok(()),
+    }
 }
 
 /// Why a bounded copy stopped.
