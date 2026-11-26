@@ -79,7 +79,10 @@ fn a_change_to_a_theme_that_ships_cannot_be_saved() {
     );
     assert_eq!(s.status.1, SHIPPED_SAVE);
     assert!(s.changed.is_some());
-    assert!(store::toml_files(&themes(&d)).is_empty(), "nothing written");
+    assert!(
+        store::toml_files(&themes(&d)).files().is_empty(),
+        "nothing written"
+    );
 }
 
 #[test]
@@ -171,7 +174,7 @@ fn a_name_that_ships_is_refused() {
     assert_eq!(f.message(), "Green ships with Studio. Choose another name.");
     s.finish_naming();
     assert!(s.theme_editor.naming.is_some(), "the row stays");
-    assert!(store::toml_files(&themes(&d)).is_empty());
+    assert!(store::toml_files(&themes(&d)).files().is_empty());
     s.theme_editor.naming.as_mut().unwrap().text = "a/b".into();
     assert_eq!(s.name_fault(), Some(ThemeFault::BadName));
 }
@@ -345,7 +348,7 @@ fn leaving_a_changed_theme_asks() {
         leave(&mut s);
         s.answer_theme(Answer::DoNotSave);
         assert_eq!(s.theme_name(), "Amber");
-        assert!(store::toml_files(&themes(&d)).is_empty());
+        assert!(store::toml_files(&themes(&d)).files().is_empty());
         // Save as: kept as Green 2, then Amber.
         s.pick_theme(0);
         nudge(&mut s);
@@ -353,7 +356,7 @@ fn leaving_a_changed_theme_asks() {
         s.answer_theme(Answer::Save);
         assert!(s.theme_editor.question.is_none());
         assert_eq!(s.theme_name(), "Amber");
-        assert_eq!(store::toml_files(&themes(&d)), ["green-2.toml"]);
+        assert_eq!(store::toml_files(&themes(&d)).files(), ["green-2.toml"]);
     }
 }
 
@@ -709,10 +712,10 @@ fn every_way_to_leave_a_theme_passes_one_check() {
             }
             if got == Then::Ask {
                 // Cancel keeps the change on screen and adds nothing.
-                let files = store::toml_files(&themes(&d));
+                let files = store::toml_files(&themes(&d)).files().to_vec();
                 assert_eq!(s.answer_theme(Answer::Cancel), None, "{row}");
                 assert_eq!(s.theme_name(), "Ember, changed", "{row}");
-                assert_eq!(store::toml_files(&themes(&d)), files, "{row}");
+                assert_eq!(store::toml_files(&themes(&d)).files(), files, "{row}");
             }
         }
     }

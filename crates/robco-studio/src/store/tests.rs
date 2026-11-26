@@ -384,7 +384,7 @@ fn a_refused_file_is_kept_with_its_reason() {
     let f = read_folder(&d.0);
     assert!(f.themes.is_empty());
     assert_eq!(f.refused[0].0, "bad.toml");
-    assert!(f.refused[0].1.text.contains("no base colour"));
+    assert!(f.refused[0].1.note().text.contains("no base colour"));
 }
 
 #[cfg(unix)]

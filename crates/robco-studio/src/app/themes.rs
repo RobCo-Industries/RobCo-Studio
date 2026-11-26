@@ -18,6 +18,14 @@ pub(super) struct Store {
     /// False when `settings.toml` could not be read, or a theme was asked
     /// for on the command line: Studio then writes no settings in the run.
     write: bool,
+    /// The theme `settings.toml` names, or the theme its changed theme
+    /// came from, is in a file Studio could not read. Studio shows Green
+    /// and writes the stored choice back as it was, until the person picks,
+    /// changes, saves or deletes a theme.
+    keep_choice: bool,
+    /// The files of the last read of the themes folder that Studio could
+    /// not read, or None when it could not read the folder itself.
+    unread: Option<Vec<String>>,
 }
 
 /// Why a theme was not saved, renamed, deleted or added.
@@ -71,6 +79,14 @@ impl ThemeFault {
     }
 }
 
+/// The fault for a write into a themes folder Studio could not read.
+fn unlisted(file: &str, why: &str) -> ThemeFault {
+    ThemeFault::Write(format!(
+        "%STUDIO-E-THEMEWRITE, could not write {}: could not read the themes folder: {why}. The theme is not saved.",
+        store::shown(file)
+    ))
+}
+
 impl Studio {
     /// The same window with its settings folder `dir`: it reads
     /// `settings.toml` and the themes folder now, takes the last theme
@@ -88,6 +104,8 @@ impl Studio {
             dir,
             settings: settings.clone(),
             write,
+            keep_choice: false,
+            unread: Some(Vec::new()),
         });
         self.reload_themes();
         self.theme.high_legibility = settings.high_legibility();
@@ -101,7 +119,22 @@ impl Studio {
             match self.find_key(key) {
                 Some(i) => self.current = i,
                 None => {
-                    if key.ends_with(".toml") {
+                    if key.ends_with(".toml") && self.unread(key) {
+                        // Studio knows nothing of the file: it shows Green
+                        // and keeps the choice as it was stored.
+                        if let Some(st) = &mut self.store {
+                            st.keep_choice = true;
+                        }
+                        self.note(Note {
+                            level: Level::Warning,
+                            text: format!(
+                                "%STUDIO-W-THEMEKEPT, could not read the theme file {}. Theme: Green. settings.toml keeps {} until you pick a theme.",
+                                store::shown(key),
+                                store::shown(key)
+                            ),
+                        });
+                    } else if key.ends_with(".toml") && !self.refused.iter().any(|(f, _)| f == key)
+                    {
                         self.note(Note {
                             level: Level::Warning,
                             text: format!(
@@ -124,6 +157,23 @@ impl Studio {
         }
         self.refresh_theme();
         self
+    }
+
+    /// The file `file` of the themes folder could not be read at the last
+    /// read, or the folder itself could not.
+    fn unread(&self, file: &str) -> bool {
+        self.store.as_ref().is_some_and(|st| match &st.unread {
+            None => true,
+            Some(u) => u.iter().any(|f| f == file),
+        })
+    }
+
+    /// The person chose a theme on purpose: from now on the settings
+    /// keep what the window shows.
+    pub(super) fn chose(&mut self) {
+        if let Some(st) = &mut self.store {
+            st.keep_choice = false;
+        }
     }
 
     /// Write no settings for the rest of the run, as with a theme asked
@@ -199,27 +249,59 @@ impl Studio {
     }
 
     /// Read the themes folder again. The theme in use stays when its file
-    /// is still there; otherwise Green is.
+    /// is still there; otherwise Green is. A folder Studio could not read
+    /// leaves the list as it was, and so does the file of the theme in use
+    /// when Studio could not read it: a failed read is not news about a
+    /// file.
     pub fn reload_themes(&mut self) {
+        let Some(dir) = self.themes_folder() else {
+            return;
+        };
         let key = self.key(self.current);
-        let folder = self
-            .themes_folder()
-            .map(|d| store::read_folder(&d))
-            .unwrap_or_default();
+        let folder = store::read_folder(&dir);
+        if let Some(n) = folder.unreadable {
+            let more = if self.theme_files.iter().any(Option::is_some) {
+                "The list stays as it was."
+            } else {
+                "Your own themes are not listed."
+            };
+            self.note(Note {
+                level: n.level,
+                text: format!("{} {more}", n.text),
+            });
+            if let Some(st) = &mut self.store {
+                st.unread = None;
+            }
+            return;
+        }
         for n in folder.notes {
             self.note(n);
         }
-        self.refused = folder
-            .refused
-            .iter()
-            .map(|(f, n)| (f.clone(), n.text.clone()))
-            .collect();
-        for (_, n) in folder.refused {
-            self.note(n);
+        let mut listed = folder.themes;
+        let mut unread = Vec::new();
+        self.refused.clear();
+        for (f, r) in folder.refused {
+            if let store::Refusal::Unreadable(_) = r {
+                unread.push(f.clone());
+                // The theme in use keeps what Studio read of it before.
+                if f == key
+                    && let Some(old) = self.theme_files.iter().position(|t| t.as_ref() == Some(&f))
+                {
+                    listed.push((f.clone(), self.themes[old].clone()));
+                    self.note(r.note().clone());
+                    continue;
+                }
+            }
+            self.refused.push((f, r.note().text.clone()));
+            self.note(r.note().clone());
+        }
+        listed.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(st) = &mut self.store {
+            st.unread = Some(unread);
         }
         self.themes = SHIPPED.to_vec();
         self.theme_files = vec![None; SHIPPED.len()];
-        for (f, t) in folder.themes {
+        for (f, t) in listed {
             self.themes.push(t);
             self.theme_files.push(Some(f));
         }
@@ -242,7 +324,11 @@ impl Studio {
         if !st.write {
             return;
         }
-        st.settings.set(&key, hl, compact, unsaved.as_ref());
+        if st.keep_choice {
+            st.settings.set_switches(hl, compact);
+        } else {
+            st.settings.set(&key, hl, compact, unsaved.as_ref());
+        }
         if let Err(e) = st.settings.write(&st.dir) {
             self.note(Note {
                 level: Level::Warning,
@@ -306,18 +392,24 @@ impl Studio {
         self.themes_folder().ok_or(ThemeFault::NoFolder)
     }
 
-    /// A new file name in `dir` for the name `name`.
-    fn new_file(dir: &Path, name: &str) -> String {
+    /// A new file name in `dir` for the name `name`. A folder Studio
+    /// cannot read may hold any name, so it gives none.
+    fn new_file(dir: &Path, name: &str) -> Result<String, ThemeFault> {
         // File names, not theme names: in lower case, so a new file never
         // lands on an old one where the system ignores case.
-        let have: Vec<String> = std::fs::read_dir(dir)
-            .map(|r| {
-                r.flatten()
-                    .map(|e| e.file_name().to_string_lossy().to_lowercase())
-                    .collect()
-            })
-            .unwrap_or_default();
-        store::file_name(name, |f| have.iter().any(|h| *h == f))
+        let have: Vec<String> = match std::fs::read_dir(dir) {
+            Ok(r) => {
+                let mut have = Vec::new();
+                for e in r {
+                    let e = e.map_err(|e| unlisted(name, &e.to_string()))?;
+                    have.push(e.file_name().to_string_lossy().to_lowercase());
+                }
+                have
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(unlisted(name, &e.to_string())),
+        };
+        Ok(store::file_name(name, |f| have.iter().any(|h| *h == f)))
     }
 
     /// Write `spec` as `file`, read the folder again and take that theme.
@@ -327,7 +419,10 @@ impl Studio {
     /// already, since Studio would not list it. Success means the theme is
     /// listed and in use. On failure the changed theme stays changed.
     fn keep(&mut self, dir: &Path, file: &str, spec: &Spec) -> Result<String, ThemeFault> {
-        let files = store::toml_files(dir);
+        let files = match store::toml_files(dir) {
+            store::Listing::Unreadable(why) => return Err(unlisted(file, &why)),
+            l => l.files().to_vec(),
+        };
         let new = !files.iter().any(|f| f == file);
         if new && files.len() >= store::MAX_FILES {
             return Err(ThemeFault::Full);
@@ -346,6 +441,7 @@ impl Studio {
         };
         self.current = i;
         self.changed = None;
+        self.chose();
         self.refresh_theme();
         self.save_settings();
         Ok(store::saved_news(&spec.name, file))
@@ -361,7 +457,7 @@ impl Studio {
         let file = match taken {
             Some(k) if replace => self.key(k),
             Some(k) => return Err(ThemeFault::Exists(self.own_name(k))),
-            None => Self::new_file(&dir, &name),
+            None => Self::new_file(&dir, &name)?,
         };
         let spec = Spec {
             name: Cow::Owned(name),
@@ -451,6 +547,7 @@ impl Studio {
         })?;
         self.current = 0;
         self.changed = None;
+        self.chose();
         self.reload_themes();
         self.refresh_theme();
         self.save_settings();
@@ -503,7 +600,7 @@ impl Studio {
     pub(super) fn take_file(&mut self, path: &Path) -> Result<String, ThemeFault> {
         let dir = self.folder_or_fault()?;
         let spec = self.read_theme_file(path)?;
-        let file = Self::new_file(&dir, &spec.name);
+        let file = Self::new_file(&dir, &spec.name)?;
         let line = self.keep(&dir, &file, &spec)?;
         self.say(Level::Success, line.clone());
         Ok(line)

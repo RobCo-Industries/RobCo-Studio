@@ -285,7 +285,7 @@ fn every_write_lists_the_theme_or_keeps_the_change() {
             s.pick_theme(i);
         }
         s.edit_theme(|t| t.strengths.noise = 0.2);
-        let files = store::toml_files(&t);
+        let files = store::toml_files(&t).files().to_vec();
         let name = new_name(*before);
         let src = d.0.join("from.toml");
         let got = match act {
@@ -321,7 +321,7 @@ fn every_write_lists_the_theme_or_keeps_the_change() {
             Refused(fault) => {
                 assert_eq!(got.as_ref().err(), Some(fault), "{row}");
                 assert!(!fault.message().is_empty(), "{row}");
-                assert_eq!(store::toml_files(&t), files, "{row}");
+                assert_eq!(store::toml_files(&t).files().to_vec(), files, "{row}");
                 assert!(s.changed.is_some(), "{row}");
                 assert_eq!(s.spec().strengths.noise, 0.2, "{row}");
             }
@@ -463,4 +463,461 @@ fn unknown_settings_keys_survive_a_pick_an_edit_and_a_close() {
             "{text}"
         );
     }
+}
+
+/// What `settings.toml` holds after a run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Wrote {
+    /// The file is byte for byte as it was.
+    Nothing,
+    /// The stored theme and the stored changed theme are as they were.
+    Kept,
+    /// The theme this key names, written over the stored one.
+    Theme(&'static str),
+}
+
+/// One thing that can fail when Studio reads its files.
+struct Case {
+    row: &'static str,
+    // A file gone at a reload takes Green, and a change not saved stays
+    // on screen as a change of Green: the person's numbers are not lost.
+    /// Make the folder before Studio starts.
+    before: fn(&TempDir),
+    /// Make the fault after the start, then read the themes folder again.
+    /// None: the fault is there at start.
+    reload: Option<fn(&TempDir)>,
+    /// The theme the window shows.
+    shown: &'static str,
+    /// A code the status line says once, or none.
+    says: Option<&'static str>,
+    /// What closing with no act writes.
+    close: Wrote,
+    /// Whether a pick and an edit are written.
+    acts_written: bool,
+}
+
+/// The settings every case starts from: Ember, changed and not saved.
+const STORED: &str = "version = 1\ntheme = \"ember.toml\"\nlater = \"kept\"\n\n[unsaved]\nfrom = \"ember.toml\"\nbase = \"#123456\"\nbloom = 0.25\n";
+
+fn stored(d: &TempDir) {
+    std::fs::write(themes(d).join("ember.toml"), EMBER).unwrap();
+    std::fs::write(themes(d).join("dusk.toml"), EMBER.replace("Ember", "Dusk")).unwrap();
+    std::fs::write(d.0.join(store::SETTINGS), STORED).unwrap();
+}
+
+/// A path whose permission is taken away, and given back when dropped, so
+/// the temporary folder can go.
+#[cfg(unix)]
+struct Locked(PathBuf, u32);
+
+#[cfg(unix)]
+impl Locked {
+    /// Take every permission from `p`. None when the permission does not
+    /// bite for this user, as for root: the row is skipped.
+    fn new(p: PathBuf) -> Option<Locked> {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let l = Locked(p, mode);
+        let bites = if l.0.is_dir() {
+            std::fs::read_dir(&l.0).is_err()
+        } else {
+            std::fs::File::open(&l.0).is_err()
+        };
+        bites.then_some(l)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+    }
+}
+
+#[cfg(unix)]
+thread_local! {
+    static LOCKS: std::cell::RefCell<Vec<Locked>> = const { std::cell::RefCell::new(Vec::new()) };
+    static SKIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Lock `p` for the rest of the case, or mark the case to be skipped.
+#[cfg(unix)]
+fn lock(p: PathBuf) {
+    match Locked::new(p) {
+        Some(l) => LOCKS.with(|v| v.borrow_mut().push(l)),
+        None => SKIP.with(|s| s.set(true)),
+    }
+}
+
+#[cfg(unix)]
+fn unlock() {
+    LOCKS.with(|v| v.borrow_mut().clear());
+}
+
+fn cases() -> Vec<Case> {
+    let mut v = vec![
+        Case {
+            row: "the settings folder missing",
+            before: |d| std::fs::remove_dir_all(&d.0).unwrap(),
+            reload: None,
+            shown: "Green",
+            says: None,
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+        Case {
+            row: "settings.toml missing",
+            before: |d| {
+                stored(d);
+                std::fs::remove_file(d.0.join(store::SETTINGS)).unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: None,
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+        Case {
+            row: "settings.toml too large",
+            before: |d| {
+                stored(d);
+                let mut t = STORED.to_owned();
+                t.push_str(&format!("# {}\n", "x".repeat(1 << 20)));
+                std::fs::write(d.0.join(store::SETTINGS), t).unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-NOSETTINGS"),
+            close: Wrote::Nothing,
+            acts_written: false,
+        },
+        Case {
+            row: "settings.toml not UTF-8",
+            before: |d| {
+                stored(d);
+                std::fs::write(
+                    d.0.join(store::SETTINGS),
+                    b"version = 1\ntheme = \"\xff\"\n",
+                )
+                .unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-NOSETTINGS"),
+            close: Wrote::Nothing,
+            acts_written: false,
+        },
+        Case {
+            row: "settings.toml not TOML",
+            before: |d| {
+                stored(d);
+                std::fs::write(d.0.join(store::SETTINGS), "version = 1\ntheme = \n").unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-NOSETTINGS"),
+            close: Wrote::Nothing,
+            acts_written: false,
+        },
+        Case {
+            row: "settings.toml of a newer version",
+            before: |d| {
+                stored(d);
+                std::fs::write(
+                    d.0.join(store::SETTINGS),
+                    STORED.replace("version = 1", "version = 2"),
+                )
+                .unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-NOSETTINGS"),
+            close: Wrote::Nothing,
+            acts_written: false,
+        },
+        Case {
+            row: "the themes folder missing",
+            before: |d| {
+                stored(d);
+                std::fs::remove_dir_all(themes(d)).unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+        Case {
+            row: "the themes folder missing at a reload",
+            before: stored,
+            reload: Some(|d| std::fs::remove_dir_all(themes(d)).unwrap()),
+            shown: "Ember, changed",
+            says: None,
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme's file gone",
+            before: |d| {
+                stored(d);
+                std::fs::remove_file(themes(d).join("ember.toml")).unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme's file gone at a reload",
+            before: stored,
+            reload: Some(|d| std::fs::remove_file(themes(d).join("ember.toml")).unwrap()),
+            shown: "Ember, changed",
+            says: None,
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme's file no longer a theme",
+            before: |d| {
+                stored(d);
+                std::fs::write(themes(d).join("ember.toml"), "version = 1\n").unwrap();
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-E-NOTTHEME"),
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme's file no longer a theme at a reload",
+            before: stored,
+            reload: Some(|d| {
+                std::fs::write(themes(d).join("ember.toml"), "version = 1\n").unwrap()
+            }),
+            shown: "Ember, changed",
+            says: Some("%STUDIO-E-NOTTHEME"),
+            close: Wrote::Theme("Green"),
+            acts_written: true,
+        },
+    ];
+    #[cfg(unix)]
+    v.extend([
+        Case {
+            row: "the settings folder unreadable",
+            before: |d| {
+                stored(d);
+                lock(d.0.clone());
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-NOSETTINGS"),
+            close: Wrote::Nothing,
+            acts_written: false,
+        },
+        Case {
+            row: "settings.toml unreadable",
+            before: |d| {
+                stored(d);
+                lock(d.0.join(store::SETTINGS));
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-NOSETTINGS"),
+            close: Wrote::Nothing,
+            acts_written: false,
+        },
+        Case {
+            row: "the themes folder unreadable",
+            before: |d| {
+                stored(d);
+                lock(themes(d));
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-THEMEKEPT"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "the themes folder unreadable at a reload",
+            before: stored,
+            reload: Some(|d| lock(themes(d))),
+            shown: "Ember, changed",
+            says: Some("%STUDIO-W-THEMESREAD"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "another file of the themes folder unreadable",
+            before: |d| {
+                stored(d);
+                lock(themes(d).join("dusk.toml"));
+            },
+            reload: None,
+            shown: "Ember, changed",
+            says: Some("%STUDIO-W-THEMEREAD"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme's file unreadable",
+            before: |d| {
+                stored(d);
+                lock(themes(d).join("ember.toml"));
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-THEMEKEPT"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme's file unreadable at a reload",
+            before: stored,
+            reload: Some(|d| lock(themes(d).join("ember.toml"))),
+            shown: "Ember, changed",
+            says: Some("%STUDIO-W-THEMEREAD"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+    ]);
+    v
+}
+
+/// What `settings.toml` holds now, read with every lock given back for
+/// the read.
+fn settings_now(d: &TempDir) -> Option<Vec<u8>> {
+    #[cfg(unix)]
+    let paths: Vec<PathBuf> =
+        LOCKS.with(|v| v.borrow_mut().drain(..).map(|l| l.0.clone()).collect());
+    let bytes = std::fs::read(d.0.join(store::SETTINGS)).ok();
+    #[cfg(unix)]
+    for p in paths {
+        lock(p);
+    }
+    bytes
+}
+
+/// What the settings folder holds now, with every lock given back.
+fn settings_after(d: &TempDir) -> Option<Vec<u8>> {
+    #[cfg(unix)]
+    unlock();
+    std::fs::read(d.0.join(store::SETTINGS)).ok()
+}
+
+/// Start, make the fault, then close, pick or edit, as `act` does.
+/// None when the row's permission does not bite.
+/// The window after a run, and `settings.toml` before and after it.
+type Ran = (Studio, Option<Vec<u8>>, Option<Vec<u8>>);
+
+fn run(c: &Case, act: fn(&mut Studio)) -> Option<Ran> {
+    #[cfg(unix)]
+    SKIP.with(|s| s.set(false));
+    let d = TempDir::new("fault");
+    (c.before)(&d);
+    #[cfg(unix)]
+    if SKIP.with(std::cell::Cell::get) {
+        unlock();
+        return None;
+    }
+    let before = settings_now(&d);
+    let mut s = Studio::new(None).with_settings(d.0.clone());
+    if let Some(r) = c.reload {
+        r(&d);
+        s.reload_themes();
+    }
+    #[cfg(unix)]
+    if SKIP.with(std::cell::Cell::get) {
+        unlock();
+        return None;
+    }
+    act(&mut s);
+    s.save_settings();
+    let after = settings_after(&d);
+    Some((s, before, after))
+}
+
+fn parsed(bytes: &Option<Vec<u8>>) -> store::Settings {
+    store::Settings::parse(bytes.as_deref().unwrap()).unwrap()
+}
+
+/// A read that fails never costs the person a stored choice: one row for
+/// each thing that can fail at start and at a reload.
+#[test]
+fn a_failed_read_keeps_the_stored_choice() {
+    let mut ran = 0;
+    for c in cases() {
+        let row = c.row;
+        // Close with no act.
+        let Some((s, before, after)) = run(&c, |_| {}) else {
+            eprintln!("skipped, the permission does not bite: {row}");
+            continue;
+        };
+        ran += 1;
+        assert_eq!(s.theme_name(), c.shown, "{row}");
+        let said: Vec<&String> = s.said.iter().collect();
+        match c.says {
+            Some(code) => assert_eq!(
+                said.iter().filter(|l| l.starts_with(code)).count(),
+                1,
+                "{row}: {said:?}"
+            ),
+            None => assert!(
+                !said.iter().any(|l| l.starts_with("%STUDIO-W-THEMEKEPT")),
+                "{row}: {said:?}"
+            ),
+        }
+        match c.close {
+            Wrote::Nothing => assert_eq!(after, before, "{row}"),
+            Wrote::Kept => {
+                let a = parsed(&after);
+                assert_eq!(a.theme(), Some("ember.toml"), "{row}");
+                let u = a.unsaved().unwrap();
+                assert_eq!(u.from, "ember.toml", "{row}");
+                assert_eq!(store::hex(u.spec.base), "#123456", "{row}");
+                assert!(a.text().contains("later = \"kept\""), "{row}");
+            }
+            Wrote::Theme(t) => assert_eq!(parsed(&after).theme(), Some(t), "{row}"),
+        }
+        // A pick on purpose, past the question a change not saved asks.
+        let (_, before, after) = run(&c, |s| s.take_theme(1)).unwrap();
+        if c.acts_written {
+            assert_eq!(parsed(&after).theme(), Some("Amber"), "{row}: pick");
+        } else {
+            assert_eq!(after, before, "{row}: pick");
+        }
+        // An edit on purpose.
+        let (_, before, after) = run(&c, |s| s.edit_theme(|t| t.strengths.bloom = 0.9)).unwrap();
+        if c.acts_written {
+            let u = parsed(&after).unsaved().unwrap();
+            assert_eq!(u.spec.strengths.bloom, 0.9, "{row}: edit");
+        } else {
+            assert_eq!(after, before, "{row}: edit");
+        }
+    }
+    assert!(ran >= 12, "rows run: {ran}");
+}
+
+/// A save into a themes folder Studio cannot read writes nothing: it
+/// cannot know which file names are free.
+#[cfg(unix)]
+#[test]
+fn a_save_into_an_unreadable_folder_writes_nothing() {
+    let d = TempDir::new("unlisted");
+    stored(&d);
+    let mut s = Studio::new(None).with_settings(d.0.clone());
+    let Some(l) = Locked::new(themes(&d)) else {
+        eprintln!("skipped, the permission does not bite");
+        return;
+    };
+    let e = s.save_theme_as("Night", false).unwrap_err();
+    drop(l);
+    assert!(
+        e.message().contains("could not read the themes folder"),
+        "{e:?}"
+    );
+    assert!(!themes(&d).join("night.toml").exists());
 }

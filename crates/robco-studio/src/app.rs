@@ -628,6 +628,7 @@ impl Studio {
             self.say(Level::Info, crate::theme::changed_news(&spec.name));
         }
         self.changed = Some(spec);
+        self.chose();
         self.settings_due = true;
         self.refresh_theme();
     }
@@ -652,6 +653,7 @@ impl Studio {
         }
         self.current = i;
         self.changed = None;
+        self.chose();
         self.refresh_theme();
         self.save_settings();
         let name = self.spec().name.to_string();

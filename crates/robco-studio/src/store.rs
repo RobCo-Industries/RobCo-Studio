@@ -458,39 +458,121 @@ pub fn read_plain(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// How Studio read a folder. A folder that is missing is a fact Studio
+/// may act on. A folder it could not read tells nothing about what it
+/// holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Listing {
+    /// The folder is not there.
+    Missing,
+    /// The folder is there and Studio could not read it: the system's
+    /// reason.
+    Unreadable(String),
+    /// The plain `.toml` files of the folder, in file name order.
+    Files(Vec<String>),
+}
+
+impl Listing {
+    /// The files, none when the folder is missing or could not be read.
+    pub fn files(&self) -> &[String] {
+        match self {
+            Listing::Files(f) => f,
+            _ => &[],
+        }
+    }
+}
+
+/// Why a file of the themes folder is not listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// Studio read it and it is not a theme.
+    NotTheme(Note),
+    /// Studio could not read it, so it knows nothing about it.
+    Unreadable(Note),
+}
+
+impl Refusal {
+    /// The line for the status line.
+    pub fn note(&self) -> &Note {
+        match self {
+            Refusal::NotTheme(n) | Refusal::Unreadable(n) => n,
+        }
+    }
+}
+
 /// The themes folder as Studio read it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Folder {
+    /// The folder could not be read: the line that says why. The other
+    /// fields are empty then.
+    pub unreadable: Option<Note>,
     /// Each theme with its file's name, in file name order.
     pub themes: Vec<(String, Spec)>,
-    /// Each file that is not a theme, with its file's name and the reason.
-    pub refused: Vec<(String, Note)>,
+    /// Each file that is not listed, with its file's name and the reason.
+    pub refused: Vec<(String, Refusal)>,
     /// The warnings of the folder and of its themes.
     pub notes: Vec<Note>,
 }
 
-/// The plain `.toml` files of `dir`, in file name order. A missing folder
-/// has none.
-pub fn toml_files(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+/// The plain `.toml` files of `dir`, in file name order, or why there are
+/// none.
+pub fn toml_files(dir: &Path) -> Listing {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Listing::Missing,
+        Err(e) => return Listing::Unreadable(e.to_string()),
     };
-    let mut files: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".toml") && !n.starts_with('.'))
-        .collect();
+    let mut files = Vec::new();
+    for e in entries {
+        // A folder that fails while it is listed is a folder Studio could
+        // not read, not a shorter list.
+        let e = match e {
+            Ok(e) => e,
+            Err(e) => return Listing::Unreadable(e.to_string()),
+        };
+        if !e.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        if let Ok(n) = e.file_name().into_string()
+            && n.ends_with(".toml")
+            && !n.starts_with('.')
+        {
+            files.push(n);
+        }
+    }
     files.sort();
-    files
+    Listing::Files(files)
+}
+
+/// The line for a themes folder Studio could not read.
+pub fn folder_unreadable(why: &str) -> Note {
+    warn(format!(
+        "%STUDIO-W-THEMESREAD, could not read the themes folder: {why}. Your own themes are not listed and settings.toml keeps your choice."
+    ))
+}
+
+/// The line for a theme file Studio could not read.
+pub fn file_unreadable(file: &str, why: &str) -> Note {
+    warn(format!(
+        "%STUDIO-W-THEMEREAD, could not read {}: {why}. The file is not listed and is untouched.",
+        shown(file)
+    ))
 }
 
 /// Read the themes folder: plain `.toml` files, in file name order, at
 /// most [`MAX_FILES`]. Two files with one name, in any case, are both
-/// listed, each with its file's name after its name.
+/// listed, each with its file's name after its name. A file that goes
+/// between the listing and its read is gone and not listed.
 pub fn read_folder(dir: &Path) -> Folder {
     let mut out = Folder::default();
-    let files = toml_files(dir);
+    let files = match toml_files(dir) {
+        Listing::Missing => return out,
+        Listing::Unreadable(why) => {
+            out.unreadable = Some(folder_unreadable(&why));
+            return out;
+        }
+        Listing::Files(f) => f,
+    };
     if files.len() > MAX_FILES {
         out.notes.push(warn(format!(
             "%STUDIO-W-THEMEMANY, the themes folder holds {} files, Studio reads the first {MAX_FILES}",
@@ -498,15 +580,27 @@ pub fn read_folder(dir: &Path) -> Folder {
         )));
     }
     for file in files.into_iter().take(MAX_FILES) {
-        let read = read_plain(&dir.join(&file), MAX_BYTES)
-            .map_err(|e| not_theme(&file, &e.to_string()))
-            .and_then(|b| read_theme(&file, &b));
-        match read {
+        let bytes = match read_plain(&dir.join(&file), MAX_BYTES) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Other => {
+                // A link, a folder or a device: Studio read what it is.
+                let n = not_theme(&file, &e.to_string());
+                out.refused.push((file, Refusal::NotTheme(n)));
+                continue;
+            }
+            Err(e) => {
+                let n = file_unreadable(&file, &e.to_string());
+                out.refused.push((file, Refusal::Unreadable(n)));
+                continue;
+            }
+        };
+        match read_theme(&file, &bytes) {
             Ok(l) => {
                 out.notes.extend(l.notes);
                 out.themes.push((file, l.spec));
             }
-            Err(n) => out.refused.push((file, n)),
+            Err(n) => out.refused.push((file, Refusal::NotTheme(n))),
         }
     }
     let names: Vec<String> = out.themes.iter().map(|(_, t)| fold(&t.name)).collect();
@@ -726,6 +820,15 @@ impl Settings {
                 rate,
             },
         })
+    }
+
+    /// Set the two switches alone. The theme in use and the changed theme
+    /// stay as they were read.
+    pub fn set_switches(&mut self, high_legibility: bool, compact_header: bool) {
+        let t = &mut self.table;
+        t.insert("version".into(), Value::Integer(FORMAT));
+        t.insert("high_legibility".into(), Value::Boolean(high_legibility));
+        t.insert("compact_header".into(), Value::Boolean(compact_header));
     }
 
     /// Set the theme in use, the switches and the changed theme.
