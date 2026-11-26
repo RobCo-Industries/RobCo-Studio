@@ -577,10 +577,6 @@ fn build(
         PlanError::Manifest(e) => manifest_failure(&e),
     })?;
 
-    // A source the host does not let the tool read is `io: read`, not a
-    // compile error. Headers are the compiler's business.
-    open_sources(root, &bp.sources)?;
-
     // 2. The two programs.
     for c in &bp.commands {
         if !Path::new(&c.program).is_file() {
@@ -621,6 +617,12 @@ fn build(
             Step::Objcopy => ("objcopy", String::new(), "build: objcopy", "objcopy"),
         };
         out.step(step, &item, "start");
+        // A source the host does not let the tool read is `io: read`, not a
+        // compile error, checked at its own compile step as the spec's
+        // order has it. Headers are the compiler's business.
+        if let Step::Compile(src) = &c.step {
+            open_source(root, src)?;
+        }
         let output = Command::new(&c.program)
             .args(&c.args)
             .current_dir(&c.cwd)
@@ -672,13 +674,11 @@ fn build(
     Ok(sealed)
 }
 
-/// Opens each source of the list for reading, and gives `io: read` with
-/// its path for the first the host refuses.
-fn open_sources(root: &Path, sources: &[String]) -> Result<(), Failure> {
-    for src in sources {
-        let path = root.join(src);
-        fs::File::open(&path).map_err(|e| read_failure(&path, &e))?;
-    }
+/// Opens a source for reading, and gives `io: read` with its path when
+/// the host refuses.
+fn open_source(root: &Path, src: &str) -> Result<(), Failure> {
+    let path = root.join(src);
+    fs::File::open(&path).map_err(|e| read_failure(&path, &e))?;
     Ok(())
 }
 
@@ -950,7 +950,7 @@ mod tests {
         fs::set_permissions(&main, fs::Permissions::from_mode(0o000)).unwrap();
         // Root reads any file: the test then has nothing to check.
         let readable = fs::File::open(&main).is_ok();
-        let got = open_sources(&d.0, &["src/main.c".to_owned()]);
+        let got = open_source(&d.0, "src/main.c");
         fs::set_permissions(&main, fs::Permissions::from_mode(0o644)).unwrap();
         if readable {
             return;
@@ -958,7 +958,7 @@ mod tests {
         let e = got.err().unwrap();
         assert_eq!(e.code, "io: read");
         assert!(e.detail.contains("src/main.c"), "{}", e.detail);
-        assert!(open_sources(&d.0, &["src/main.c".to_owned()]).is_ok());
+        assert!(open_source(&d.0, "src/main.c").is_ok());
     }
 
     #[cfg(unix)]

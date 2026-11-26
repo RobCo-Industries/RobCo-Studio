@@ -829,6 +829,46 @@ fn a_failed_objcopy_leaves_no_tape_and_keeps_lock_and_cache() {
     assert_eq!(fs::read(&sdk).unwrap(), before);
 }
 
+/// Adds `src/zz.c` after `src/main.c` and makes it unreadable.
+#[cfg(unix)]
+fn unreadable_second_source(f: &Fixture) {
+    use std::os::unix::fs::PermissionsExt;
+    f.put("proj/src/zz.c", b"int zz;\n");
+    let p = f.proj().join("src/zz.c");
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o000)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_compiler_comes_before_an_unreadable_source() {
+    let f = Fixture::new("order-tool-read");
+    warm_cache(&f, "");
+    unreadable_second_source(&f);
+    fs::remove_file(f.dir.join(format!(
+        "cache/tools/gcc/15.2.1-1.1/{}/bin/arm-none-eabi-gcc",
+        host()
+    )))
+    .unwrap();
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("tool: program".to_owned(), 4));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_compile_comes_before_a_later_unreadable_source() {
+    let f = Fixture::new("order-compile-read");
+    warm_cache(&f, "");
+    unreadable_second_source(&f);
+    gcc_stand_in(
+        &f,
+        "for a; do [ \"$a\" = src/main.c ] && exit 1; done\n\
+         prev=\nfor a; do [ \"$prev\" = -o ] && : > \"$a\"; prev=$a; done",
+    );
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("build: compile".to_owned(), 5));
+    assert!(steps(&o).iter().any(|s| s.contains("src/main.c")));
+}
+
 /// Replaces the `gcc` stand-in of a warm cache with this shell body.
 #[cfg(unix)]
 fn gcc_stand_in(f: &Fixture, body: &str) {
