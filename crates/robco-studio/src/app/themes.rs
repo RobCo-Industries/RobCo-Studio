@@ -18,10 +18,11 @@ pub(super) struct Store {
     /// False when `settings.toml` could not be read, or a theme was asked
     /// for on the command line: Studio then writes no settings in the run.
     write: bool,
-    /// The theme `settings.toml` names, or the theme its changed theme
-    /// came from, is in a file Studio could not read. Studio shows Green
-    /// and writes the stored choice back as it was, until the person picks,
-    /// changes, saves or deletes a theme.
+    /// Studio fell back to Green by itself, at start or at a reload: the
+    /// stored theme or the theme its changed theme came from could not be
+    /// had, for any reason. Studio then writes the stored choice and the
+    /// stored changed theme back as they were, until the person picks,
+    /// changes, saves, renames or deletes a theme.
     keep_choice: bool,
     /// The files of the last read of the themes folder that Studio could
     /// not read, or None when it could not read the folder itself.
@@ -119,30 +120,7 @@ impl Studio {
             match self.find_key(key) {
                 Some(i) => self.current = i,
                 None => {
-                    if key.ends_with(".toml") && self.unread(key) {
-                        // Studio knows nothing of the file: it shows Green
-                        // and keeps the choice as it was stored.
-                        if let Some(st) = &mut self.store {
-                            st.keep_choice = true;
-                        }
-                        self.note(Note {
-                            level: Level::Warning,
-                            text: format!(
-                                "%STUDIO-W-THEMEKEPT, could not read the theme file {}. Theme: Green. settings.toml keeps {} until you pick a theme.",
-                                store::shown(key),
-                                store::shown(key)
-                            ),
-                        });
-                    } else if key.ends_with(".toml") && !self.refused.iter().any(|(f, _)| f == key)
-                    {
-                        self.note(Note {
-                            level: Level::Warning,
-                            text: format!(
-                                "%STUDIO-W-THEMEGONE, the theme file {} is gone. Theme: Green.",
-                                store::shown(key)
-                            ),
-                        });
-                    }
+                    self.fell_back(key);
                     self.current = 0;
                 }
             }
@@ -166,6 +144,36 @@ impl Studio {
             None => true,
             Some(u) => u.iter().any(|f| f == file),
         })
+    }
+
+    /// Studio could not have the theme `key` names and shows Green. It
+    /// keeps the stored choice and says why once: a refused file said so
+    /// when the folder was read.
+    fn fell_back(&mut self, key: &str) {
+        if let Some(st) = &mut self.store {
+            st.keep_choice = true;
+        }
+        if !key.ends_with(".toml") {
+            return;
+        }
+        let text = if self.unread(key) {
+            format!(
+                "%STUDIO-W-THEMEKEPT, could not read the theme file {}. Theme: Green. settings.toml keeps {} until you pick a theme.",
+                store::shown(key),
+                store::shown(key)
+            )
+        } else if self.refused.iter().any(|(f, _)| f == key) {
+            return;
+        } else {
+            format!(
+                "%STUDIO-W-THEMEGONE, the theme file {} is gone. Theme: Green.",
+                store::shown(key)
+            )
+        };
+        self.note(Note {
+            level: Level::Warning,
+            text,
+        });
     }
 
     /// The person chose a theme on purpose: from now on the settings
@@ -249,7 +257,7 @@ impl Studio {
     }
 
     /// Read the themes folder again. The theme in use stays when its file
-    /// is still there; otherwise Green is. A folder Studio could not read
+    /// is still there; otherwise Green is, and the stored choice stays. A folder Studio could not read
     /// leaves the list as it was, and so does the file of the theme in use
     /// when Studio could not read it: a failed read is not news about a
     /// file.
@@ -305,7 +313,13 @@ impl Studio {
             self.themes.push(t);
             self.theme_files.push(Some(f));
         }
-        self.current = self.find_key(&key).unwrap_or(0);
+        match self.find_key(&key) {
+            Some(i) => self.current = i,
+            None => {
+                self.current = 0;
+                self.fell_back(&key);
+            }
+        }
     }
 
     /// Write `settings.toml` now, when Studio has a settings folder and

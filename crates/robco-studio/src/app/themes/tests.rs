@@ -556,6 +556,30 @@ fn unlock() {
     LOCKS.with(|v| v.borrow_mut().clear());
 }
 
+/// Fill the themes folder with files that come before `ember.toml`, so
+/// Studio reads only those.
+fn many(d: &TempDir) {
+    for n in 0..store::MAX_FILES {
+        std::fs::write(themes(d).join(format!("a{n:02}.toml")), EMBER).unwrap();
+    }
+}
+
+/// Put a folder in the place of `ember.toml`.
+fn as_folder(d: &TempDir) {
+    let f = themes(d).join("ember.toml");
+    std::fs::remove_file(&f).unwrap();
+    std::fs::create_dir(f).unwrap();
+}
+
+/// Give the theme in `ember.toml` the name `name`.
+fn rename_inside(d: &TempDir, name: &str) {
+    std::fs::write(
+        themes(d).join("ember.toml"),
+        EMBER.replace("\"Ember\"", &format!("\"{name}\"")),
+    )
+    .unwrap();
+}
+
 fn cases() -> Vec<Case> {
     let mut v = vec![
         Case {
@@ -646,7 +670,7 @@ fn cases() -> Vec<Case> {
             reload: None,
             shown: "Green",
             says: Some("%STUDIO-W-THEMEGONE"),
-            close: Wrote::Theme("Green"),
+            close: Wrote::Kept,
             acts_written: true,
         },
         Case {
@@ -654,8 +678,8 @@ fn cases() -> Vec<Case> {
             before: stored,
             reload: Some(|d| std::fs::remove_dir_all(themes(d)).unwrap()),
             shown: "Ember, changed",
-            says: None,
-            close: Wrote::Theme("Green"),
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Kept,
             acts_written: true,
         },
         Case {
@@ -667,7 +691,7 @@ fn cases() -> Vec<Case> {
             reload: None,
             shown: "Green",
             says: Some("%STUDIO-W-THEMEGONE"),
-            close: Wrote::Theme("Green"),
+            close: Wrote::Kept,
             acts_written: true,
         },
         Case {
@@ -675,34 +699,158 @@ fn cases() -> Vec<Case> {
             before: stored,
             reload: Some(|d| std::fs::remove_file(themes(d).join("ember.toml")).unwrap()),
             shown: "Ember, changed",
-            says: None,
-            close: Wrote::Theme("Green"),
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Kept,
             acts_written: true,
         },
         Case {
-            row: "the selected theme's file no longer a theme",
+            row: "the selected theme's file past the files Studio reads",
             before: |d| {
                 stored(d);
-                std::fs::write(themes(d).join("ember.toml"), "version = 1\n").unwrap();
+                many(d);
             },
             reload: None,
             shown: "Green",
-            says: Some("%STUDIO-E-NOTTHEME"),
-            close: Wrote::Theme("Green"),
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Kept,
             acts_written: true,
         },
         Case {
-            row: "the selected theme's file no longer a theme at a reload",
+            row: "the selected theme's file past the files Studio reads at a reload",
             before: stored,
-            reload: Some(|d| {
-                std::fs::write(themes(d).join("ember.toml"), "version = 1\n").unwrap()
-            }),
+            reload: Some(many),
             shown: "Ember, changed",
-            says: Some("%STUDIO-E-NOTTHEME"),
-            close: Wrote::Theme("Green"),
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Kept,
             acts_written: true,
         },
     ];
+    // Each way the store refuses the selected theme's file, at start and
+    // at a reload. Studio shows Green and keeps the stored choice.
+    macro_rules! refused {
+        ($what:literal, $code:literal, $bytes:expr) => {
+            v.extend([
+                Case {
+                    row: concat!("the selected theme's file ", $what),
+                    before: |d| {
+                        stored(d);
+                        std::fs::write(themes(d).join("ember.toml"), $bytes).unwrap();
+                    },
+                    reload: None,
+                    shown: "Green",
+                    says: Some($code),
+                    close: Wrote::Kept,
+                    acts_written: true,
+                },
+                Case {
+                    row: concat!("the selected theme's file ", $what, " at a reload"),
+                    before: stored,
+                    reload: Some(|d| std::fs::write(themes(d).join("ember.toml"), $bytes).unwrap()),
+                    shown: "Ember, changed",
+                    says: Some($code),
+                    close: Wrote::Kept,
+                    acts_written: true,
+                },
+            ])
+        };
+    }
+    refused!("no longer a theme", "%STUDIO-E-NOTTHEME", "version = 1\n");
+    refused!(
+        "of a newer version",
+        "%STUDIO-E-THEMENEW",
+        EMBER.replace("version = 1", "version = 2")
+    );
+    refused!(
+        "of a bad version",
+        "%STUDIO-E-NOTTHEME",
+        EMBER.replace("version = 1", "version = 0")
+    );
+    refused!(
+        "with no version",
+        "%STUDIO-E-NOTTHEME",
+        EMBER.replace("version = 1\n", "")
+    );
+    refused!("not TOML", "%STUDIO-E-NOTTHEME", "version = \n");
+    refused!(
+        "not UTF-8",
+        "%STUDIO-E-NOTTHEME",
+        b"version = 1\nname = \"\xff\"\n"
+    );
+    refused!(
+        "too large",
+        "%STUDIO-E-NOTTHEME",
+        format!("{EMBER}# {}\n", "x".repeat(1 << 15))
+    );
+    // A folder in the file's place: Studio lists plain files only.
+    v.extend([
+        Case {
+            row: "the selected theme's file a folder",
+            before: |d| {
+                stored(d);
+                as_folder(d);
+            },
+            reload: None,
+            shown: "Green",
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme's file a folder at a reload",
+            before: stored,
+            reload: Some(as_folder),
+            shown: "Ember, changed",
+            says: Some("%STUDIO-W-THEMEGONE"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+    ]);
+    // A file still listed under another name: the choice is the file, so
+    // it stays.
+    v.extend([
+        Case {
+            row: "the selected theme renamed inside",
+            before: |d| {
+                stored(d);
+                rename_inside(d, "Night");
+            },
+            reload: None,
+            shown: "Night, changed",
+            says: None,
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme renamed inside at a reload",
+            before: stored,
+            reload: Some(|d| rename_inside(d, "Night")),
+            shown: "Ember, changed",
+            says: None,
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme a twin",
+            before: |d| {
+                stored(d);
+                rename_inside(d, "Dusk");
+            },
+            reload: None,
+            shown: "Dusk, ember.toml, changed",
+            says: Some("%STUDIO-W-THEMETWICE"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+        Case {
+            row: "the selected theme a twin at a reload",
+            before: stored,
+            reload: Some(|d| rename_inside(d, "Dusk")),
+            shown: "Ember, changed",
+            says: Some("%STUDIO-W-THEMETWICE"),
+            close: Wrote::Kept,
+            acts_written: true,
+        },
+    ]);
     #[cfg(unix)]
     v.extend([
         Case {
@@ -898,7 +1046,7 @@ fn a_failed_read_keeps_the_stored_choice() {
             assert_eq!(after, before, "{row}: edit");
         }
     }
-    assert!(ran >= 12, "rows run: {ran}");
+    assert!(ran >= 32, "rows run: {ran}");
 }
 
 /// A save into a themes folder Studio cannot read writes nothing: it
