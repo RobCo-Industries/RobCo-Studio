@@ -2246,3 +2246,79 @@ fn the_chooser_closes_an_open_menu() {
     assert!(h.state().choosing());
     assert!(menu_item(&h, "Screen").is_none(), "the menu stayed open");
 }
+
+/// A window started on `folder` with the screen chosen for `adapter` and
+/// Reduce Motion `reduce`, as `main` starts it, after its first frames.
+fn started(
+    folder: &Path,
+    adapter: robco_studio::screen::Adapter,
+    reduce: bool,
+) -> Harness<'static, Studio> {
+    let mut s = Studio::new(Some(folder));
+    s.choose_screen(adapter, Some(reduce), None);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.run_steps(2);
+    h
+}
+
+/// The held note shows as the tooltip of the status line's level icon.
+fn held_tooltip(h: &mut Harness<'static, Studio>, error: &str, note: &str) {
+    let line = h.get_by_label(error).rect();
+    h.hover_at(egui::pos2(line.left() - 12.0, line.center().y));
+    h.run_steps(90);
+    h.get_by_label(note);
+}
+
+#[test]
+fn a_start_error_keeps_the_line_over_the_screen_note() {
+    use robco_studio::kit::Level;
+    use robco_studio::screen::Adapter;
+    let gone = std::env::temp_dir().join(format!("robco-studio-test-gone-{}", std::process::id()));
+    let error = Studio::new(Some(&gone)).status;
+    assert_eq!(error.0, Level::Error);
+    for (adapter, reduce, word) in [
+        (Adapter::Software, false, "Screen: Soft."),
+        (Adapter::Hardware, true, "Screen: Still."),
+    ] {
+        let mut h = started(&gone, adapter, reduce);
+        assert_eq!(h.state().status, error);
+        let note = h.state().held().expect("the screen note is held").clone();
+        assert_eq!(note.0, Level::Info);
+        assert!(note.1.ends_with(word), "{}", note.1);
+        held_tooltip(&mut h, &error.1, &note.1);
+    }
+}
+
+#[test]
+fn a_good_start_shows_the_screen_note() {
+    let a = pipes("start-soft").unwrap();
+    let h = started(&a, robco_studio::screen::Adapter::Software, false);
+    assert!(
+        h.state().status.1.ends_with("Screen: Soft."),
+        "{:?}",
+        h.state().status
+    );
+    assert!(h.state().held().is_none());
+}
+
+#[test]
+fn a_plain_message_replaces_an_error_once_it_was_read() {
+    use robco_studio::kit::Level;
+    let gone = std::env::temp_dir().join(format!("robco-studio-test-gone2-{}", std::process::id()));
+    let mut h = harness(Some(&gone));
+    h.run_steps(2);
+    let error = h.state().status.clone();
+    h.state_mut().say(Level::Info, "Plain.".to_owned());
+    assert_eq!(h.state().status, error);
+    // A higher or equal level always takes the line.
+    h.state_mut().say(Level::Error, "Worse.".to_owned());
+    assert_eq!(h.state().status.1, "Worse.");
+    h.run_steps(1);
+    h.key_press(Key::Escape);
+    h.run_steps(1);
+    h.state_mut().say(Level::Info, "Plain.".to_owned());
+    assert_eq!(h.state().status, (Level::Info, "Plain.".to_owned()));
+    assert!(h.state().held().is_none());
+}

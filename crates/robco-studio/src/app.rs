@@ -158,8 +158,16 @@ pub struct Studio {
     pub bottom_tab: BottomTab,
     /// The log's filters.
     pub log: LogView,
-    /// The last message, for the footer.
+    /// The last message, for the footer. Set it through [`Studio::say`].
     pub status: (Level, String),
+    /// The person has had a chance to read the message: an input came in
+    /// a frame after the footer showed it.
+    status_read: bool,
+    /// The footer has drawn the message at least once.
+    status_shown: bool,
+    /// The last lesser message that [`Studio::say`] kept off the line,
+    /// shown as the tooltip of the line's level icon.
+    held: Option<(Level, String)>,
     /// Draw the menu row in the window. False where the system shows the menus.
     pub menu_row: bool,
     /// The header is compact at any window size, by the View menu.
@@ -340,6 +348,9 @@ impl Studio {
             bottom_tab: BottomTab::Build,
             log: LogView::default(),
             status: (Level::Info, READY.to_owned()),
+            status_read: true,
+            status_shown: false,
+            held: None,
             menu_row: true,
             compact_header: false,
             sim_zoom: 1,
@@ -365,7 +376,7 @@ impl Studio {
         if let Some(f) = folder {
             match Project::open(f) {
                 Ok(p) => s.use_project(p),
-                Err(e) => s.status = (Level::Error, e),
+                Err(e) => s.say(Level::Error, e),
             }
         }
         s
@@ -377,14 +388,38 @@ impl Studio {
         self
     }
 
+    /// Put a message on the status line. The only way to set it.
+    ///
+    /// A message replaces the one shown when its level is the same or
+    /// higher, or when the person has had a chance to read the one shown:
+    /// an input came in a frame after the footer drew it. Otherwise the
+    /// new message is held, and the line's level icon shows it as a
+    /// tooltip until the next message takes the line. So at start, or
+    /// within one command, an error is never covered by a lesser note.
+    pub fn say(&mut self, level: Level, text: String) {
+        if rank(level) >= rank(self.status.0) || self.status_read {
+            self.status = (level, text);
+            self.status_read = false;
+            self.status_shown = false;
+            self.held = None;
+        } else {
+            self.held = Some((level, text));
+        }
+    }
+
+    /// The lesser message held off the status line, if any.
+    pub fn held(&self) -> Option<&(Level, String)> {
+        self.held.as_ref()
+    }
+
     /// Make `p` the project, with a fresh editor.
     fn use_project(&mut self, p: Project) {
         // A folder that is there but cannot be listed is told the way the
         // tree tells it, not reported as opened.
-        self.status = match &p.error {
-            Some(e) => (Level::Error, e.clone()),
-            None => (Level::Info, format!("Opened {}.", p.root.display())),
-        };
+        match &p.error {
+            Some(e) => self.say(Level::Error, e.clone()),
+            None => self.say(Level::Info, format!("Opened {}.", p.root.display())),
+        }
         self.project = Some(p);
         self.editor = Editor::default();
     }
@@ -408,9 +443,9 @@ impl Studio {
         self.choosing = Choosing::Idle;
         match answer {
             Choice::Cancelled => {}
-            Choice::Failed(e) => self.status = (Level::Error, e),
+            Choice::Failed(e) => self.say(Level::Error, e),
             Choice::Chosen(f) => match Project::open(&f) {
-                Err(e) => self.status = (Level::Error, e),
+                Err(e) => self.say(Level::Error, e),
                 Ok(p) => {
                     self.editor.switch_allowed = false;
                     self.next_project = Some(p);
@@ -491,7 +526,7 @@ impl Studio {
         let (level, why) = screen::start(adapter, reduce_motion, asked);
         self.set_screen(level);
         if let Some(why) = why {
-            self.status = (Level::Info, why);
+            self.say(Level::Info, why);
         }
     }
 
@@ -582,6 +617,11 @@ impl Studio {
             return;
         }
         ctx.request_repaint();
+        // The editor keeps one sentence: pass on the last command's before
+        // this one can overwrite it, so the line's rule weighs both.
+        if let Some((level, text)) = self.editor.news.take() {
+            self.say(level, text);
+        }
         match c {
             Command::OpenFolder => {
                 // A question on the screen comes first; a switch then asks
@@ -620,7 +660,7 @@ impl Studio {
             Command::ResetLayout => self.layout = Layout::default(),
             Command::CompactHeader => self.compact_header = !self.compact_header,
             Command::SimZoom(z) => match zoom_unavailable(z, self.sim_room) {
-                Some(why) => self.status = (Level::Info, why),
+                Some(why) => self.say(Level::Info, why),
                 None => self.sim_zoom = z.clamp(1, 3),
             },
             Command::NextPane => self.move_focus(ctx, true),
@@ -628,10 +668,10 @@ impl Studio {
             Command::Phosphor(s) => self.theme.scheme = s,
             Command::Screen(l) => {
                 match screen::unavailable(l, self.screen.adapter, self.theme.high_legibility) {
-                    Some(why) => self.status = (Level::Info, why.to_owned()),
+                    Some(why) => self.say(Level::Info, why.to_owned()),
                     None => {
                         self.set_screen(l);
-                        self.status = (Level::Info, screen::news(l, false));
+                        self.say(Level::Info, screen::news(l, false));
                     }
                 }
             }
@@ -639,13 +679,13 @@ impl Studio {
                 if self.theme.screen().pass() {
                     self.screen.adjusting = true;
                 } else {
-                    self.status = (Level::Info, ADJUST_NOT.to_owned());
+                    self.say(Level::Info, ADJUST_NOT.to_owned());
                 }
             }
             Command::HighLegibility => self.theme.high_legibility = !self.theme.high_legibility,
             c => {
                 if let Some(name) = menus::not_yet(c) {
-                    self.status = (Level::Info, menus::not_yet_news(name));
+                    self.say(Level::Info, menus::not_yet_news(name));
                 }
             }
         }
@@ -746,6 +786,20 @@ impl Studio {
     /// Draw one frame of the window into `ui`.
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        // A message the footer has shown counts as read once the person
+        // acts: a key, a click or text.
+        if self.status_shown && !self.status_read {
+            self.status_read = ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key { pressed: true, .. }
+                            | egui::Event::PointerButton { pressed: true, .. }
+                            | egui::Event::Text(_)
+                    )
+                })
+            });
+        }
         self.choose_folder(&ctx);
         self.prepare(&ctx);
         // While the folder chooser is open the window stays: the chooser
@@ -808,7 +862,7 @@ impl Studio {
             );
         }
         if let Some((level, text)) = self.editor.news.take() {
-            self.status = (level, text);
+            self.say(level, text);
             // The footer is drawn already: a command from the native
             // menu brings no input, so ask for the frame that shows it.
             ctx.request_repaint();
@@ -1230,6 +1284,13 @@ impl Studio {
                 );
             },
         );
+        if !self.choosing() {
+            self.status_shown = true;
+            if let Some((_, held)) = &self.held {
+                s.interact(icon, Id::unique("status-held"), Sense::hover())
+                    .on_hover_text(held);
+            }
+        }
     }
 
     fn project_page(&mut self, kit: &Kit<'_>, ui: &mut Ui, page: Rect) {
@@ -1322,7 +1383,7 @@ impl Studio {
         if self.sim_zoom > self.sim_room {
             let was = self.sim_zoom;
             self.sim_zoom = self.sim_room;
-            self.status = (
+            self.say(
                 Level::Info,
                 format!(
                     "{was}x no longer fits. The simulator is at {}x.",
@@ -1668,6 +1729,7 @@ impl Studio {
                 m.move_focus(egui::FocusDirection::None);
             });
         }
+        let mut error = None;
         if let Some(pr) = self.project.as_mut() {
             if let Some((path, to)) = toggle {
                 match to {
@@ -1675,13 +1737,14 @@ impl Studio {
                     None => pr.toggle(&path),
                 }
                 pr.selected = Some(path);
-                if let Some(e) = pr.error.clone() {
-                    self.status = (Level::Error, e);
-                }
+                error = pr.error.clone();
             }
             if let Some(path) = &open_file {
                 pr.selected = Some(path.clone());
             }
+        }
+        if let Some(e) = error {
+            self.say(Level::Error, e);
         }
         if let Some(path) = open_file {
             self.open_file(&path);
@@ -2044,7 +2107,7 @@ impl Studio {
             ctx.request_repaint();
         }
         if self.screen_custom() != custom_before {
-            self.status = (Level::Info, screen::news(level, self.screen_custom()));
+            self.say(Level::Info, screen::news(level, self.screen_custom()));
         }
         if close {
             self.screen.adjusting = false;
@@ -2081,6 +2144,16 @@ pub const ADJUST_NOT: &str = "Adjust works at Still, Live and Arcade.";
 pub const CUSTOM: &str = "Custom";
 /// The note of a row that opens a submenu.
 const SUBMENU: &str = ">";
+
+/// The weight of a level on the status line: plain news, a warning, an
+/// error.
+fn rank(l: Level) -> u8 {
+    match l {
+        Level::Success | Level::Info => 0,
+        Level::Warning => 1,
+        Level::Error => 2,
+    }
+}
 
 /// The status line while the folder chooser is open.
 pub const CHOOSING: &str = "A folder dialog is open.";
