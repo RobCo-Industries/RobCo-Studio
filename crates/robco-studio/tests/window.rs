@@ -2195,6 +2195,42 @@ fn a_key_held_over_the_chooser_does_not_repeat() {
     assert!(bloom_now(&h) < pressed, "a new press acts");
 }
 
+/// A key held when the chooser opens whose release goes to the chooser
+/// and never reaches the window: after the chooser closes its repeats do
+/// nothing, and one new press acts once.
+#[test]
+fn a_key_released_in_the_chooser_acts_on_its_next_press() {
+    let a = pipes("chooser-key-lost").unwrap();
+    let (mut h, fake, _) = adjust_with_fake(&a);
+    bloom(&h).unwrap().focus();
+    h.run_steps(2);
+    let key = |h: &mut Harness<'static, Studio>, pressed, repeat| {
+        h.event(Event::Key {
+            key: Key::ArrowLeft,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: Modifiers::NONE,
+        });
+        h.run_steps(2);
+    };
+    let bloom_now = |h: &Harness<'static, Studio>| h.state().screen.strengths.bloom;
+    key(&mut h, true, false);
+    let held = bloom_now(&h);
+    press_open(&mut h);
+    assert!(h.state().choosing());
+    close_chooser(&mut h, &fake);
+    bloom(&h).unwrap().focus();
+    h.run_steps(2);
+    key(&mut h, true, true);
+    assert_eq!(bloom_now(&h), held, "a repeat of the old press acted");
+    key(&mut h, true, false);
+    let once = bloom_now(&h);
+    assert!(once < held, "the first new press is dropped");
+    h.run_steps(2);
+    assert_eq!(bloom_now(&h), once, "the press acted more than once");
+}
+
 /// A menu open when the chooser opens is closed.
 #[test]
 fn the_chooser_closes_an_open_menu() {

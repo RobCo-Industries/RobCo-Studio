@@ -26,7 +26,7 @@ use eframe::egui::{
     epaint::{ClippedPrimitive, ClippedShape},
 };
 use eframe::egui_wgpu::{self, RenderState, ScreenDescriptor, wgpu};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// The shader, for the tests that validate it with no GPU.
@@ -196,9 +196,13 @@ struct Down {
     buttons: [bool; egui::NUM_POINTER_BUTTONS],
     keys: HashSet<egui::Key>,
     touches: BTreeMap<(egui::TouchDeviceId, egui::TouchId), egui::Pos2>,
-    /// Keys released while held that may still be down: their presses and
-    /// repeats are dropped until each one's real release.
+    /// Keys released while held that may still be down: their repeats,
+    /// the tail of the old press, are dropped. A new press or the real
+    /// release ends the mark.
     released: HashSet<egui::Key>,
+    /// Touches cancelled while held that may still be on the glass: their
+    /// moves and their end are dropped. A new start ends the mark.
+    cancelled: BTreeSet<(egui::TouchDeviceId, egui::TouchId)>,
     /// The pointer's last place egui was told.
     pos: Option<egui::Pos2>,
     /// The input was held at the last frame.
@@ -246,18 +250,46 @@ impl Down {
         }
     }
 
-    /// Drop the presses and repeats of a key released while held, until the
-    /// key's real release, which is dropped too: egui has it up already.
-    fn drop_stale_keys(&mut self, events: &mut Vec<egui::Event>) {
-        if self.released.is_empty() {
+    /// Drop the tail of what was ended while held: the repeats of a key
+    /// released, and the moves and end of a touch cancelled. A key press
+    /// with no repeat flag and a touch start are new: they pass and end
+    /// the mark. A key's real release ends it too and is dropped, since
+    /// egui has the key up already. Losing focus ends every mark: the
+    /// system owns the keyboard then, and the release may never come.
+    fn drop_stale(&mut self, events: &mut Vec<egui::Event>) {
+        if self.released.is_empty() && self.cancelled.is_empty() {
             return;
         }
+        let (released, cancelled) = (&mut self.released, &mut self.cancelled);
         events.retain(|e| match e {
-            egui::Event::Key { key, pressed, .. } if self.released.contains(key) => {
-                if !*pressed {
-                    self.released.remove(key);
+            egui::Event::Key {
+                key,
+                pressed,
+                repeat,
+                ..
+            } if released.contains(key) => {
+                if *pressed && *repeat {
+                    return false;
                 }
-                false
+                released.remove(key);
+                *pressed
+            }
+            egui::Event::Touch {
+                device_id,
+                id,
+                phase,
+                ..
+            } if cancelled.contains(&(*device_id, *id)) => {
+                if *phase == egui::TouchPhase::Move {
+                    return false;
+                }
+                cancelled.remove(&(*device_id, *id));
+                *phase == egui::TouchPhase::Start
+            }
+            egui::Event::WindowFocused(false) => {
+                released.clear();
+                cancelled.clear();
+                true
             }
             _ => true,
         });
@@ -272,6 +304,7 @@ impl Down {
     fn release(&mut self, screen: egui::Rect) -> Vec<egui::Event> {
         let mut out = Vec::new();
         for ((device_id, id), pos) in std::mem::take(&mut self.touches) {
+            self.cancelled.insert((device_id, id));
             out.push(egui::Event::Touch {
                 device_id,
                 id,
@@ -344,11 +377,11 @@ impl egui::Plugin for Plugin {
                 self.down.release(rect)
             };
             // A real release while held ends the wait for it.
-            self.down.drop_stale_keys(&mut input.events);
+            self.down.drop_stale(&mut input.events);
             hold(input, release);
             self.down.held = true;
         } else {
-            self.down.drop_stale_keys(&mut input.events);
+            self.down.drop_stale(&mut input.events);
             self.down.track(&input.events);
             self.down.held = false;
         }
@@ -950,6 +983,72 @@ mod tests {
             let f = frame(&ctx, &link, false, vec![key_a(true, false)]);
             assert!(f.a_pressed, "a new press acts");
         }
+    }
+
+    /// A key held over a hold whose real release never comes: its repeats
+    /// after the hold do nothing, and one new press acts once. Losing
+    /// focus ends the wait too.
+    #[test]
+    fn a_new_press_after_a_hold_acts_at_once() {
+        for lose_focus in [false, true] {
+            let ctx = egui::Context::default();
+            let link = Shared::default();
+            plug(&ctx, link.clone(), None);
+            frame(&ctx, &link, false, vec![key_a(true, false)]);
+            frame(&ctx, &link, true, vec![]);
+            frame(&ctx, &link, true, vec![]);
+            if lose_focus {
+                frame(&ctx, &link, false, vec![egui::Event::WindowFocused(false)]);
+                frame(&ctx, &link, false, vec![egui::Event::WindowFocused(true)]);
+            } else {
+                for _ in 0..3 {
+                    let f = frame(&ctx, &link, false, vec![key_a(true, true)]);
+                    assert!(!f.a_pressed && !f.a_down, "a repeat acted");
+                }
+            }
+            let f = frame(&ctx, &link, false, vec![key_a(true, false)]);
+            assert!(
+                f.a_pressed,
+                "focus lost {lose_focus}: the new press is dropped"
+            );
+            let f = frame(&ctx, &link, false, vec![key_a(true, true)]);
+            assert!(f.a_pressed, "the new press's repeat acts");
+            frame(&ctx, &link, false, vec![key_a(false, false)]);
+            let f = frame(&ctx, &link, false, vec![key_a(true, false)]);
+            assert!(f.a_pressed, "the next press acts");
+        }
+    }
+
+    /// A touch cancelled by a hold: its later moves and end are dropped,
+    /// and a new touch with the same id passes.
+    #[test]
+    fn a_touch_cancelled_by_a_hold_drops_its_tail() {
+        let touch = |phase| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(7),
+            phase,
+            pos: egui::pos2(10.0, 10.0),
+            force: None,
+        };
+        let mut d = Down::default();
+        d.track(&[touch(egui::TouchPhase::Start)]);
+        let out = d.release(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(100.0, 100.0),
+        ));
+        assert_eq!(out.len(), 1);
+        let mut tail = vec![touch(egui::TouchPhase::Move), touch(egui::TouchPhase::End)];
+        d.drop_stale(&mut tail);
+        assert!(tail.is_empty(), "{tail:?}");
+        let mut new = vec![
+            touch(egui::TouchPhase::Start),
+            touch(egui::TouchPhase::Move),
+        ];
+        let mut d2 = Down::default();
+        d2.track(&[touch(egui::TouchPhase::Start)]);
+        d2.release(egui::Rect::NOTHING);
+        d2.drop_stale(&mut new);
+        assert_eq!(new.len(), 2, "a new touch is dropped");
     }
 
     /// One frame of a few buttons, with or without the plugin at
