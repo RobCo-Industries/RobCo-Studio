@@ -135,6 +135,17 @@ fn render_the_window() {
     open_main(&mut h2);
     shot(&mut h2, &dir, "window-green-2x.png").unwrap();
     drop(h2);
+    // The longest project name the manifest allows, on the tape's label.
+    let ln = sample("longname").unwrap();
+    std::fs::write(
+        ln.join("robco.toml"),
+        MANIFEST.replace("name = \"PIPES\"", "name = \"LONGNAME\""),
+    )
+    .unwrap();
+    let mut h3 = harness(Some(&ln));
+    open_main(&mut h3);
+    shot(&mut h3, &dir, "window-longname.png").unwrap();
+    drop(h3);
     h.state_mut().page = Page::Card;
     shot(&mut h, &dir, "window-card.png").unwrap();
     h.state_mut().page = Page::Project;

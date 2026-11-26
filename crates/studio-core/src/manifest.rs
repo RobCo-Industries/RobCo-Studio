@@ -34,6 +34,9 @@ pub const FORMAT: i64 = 1;
 /// The most source patterns `build.sources` may hold.
 pub const MAX_SOURCE_PATTERNS: usize = 256;
 
+/// The longest `project.name`, in characters.
+pub const MAX_NAME: usize = 8;
+
 /// The longest `project.title`, in bytes.
 pub const MAX_TITLE: usize = 64;
 
@@ -483,9 +486,9 @@ fn required_str<'a>(t: &'a Table, table: &str, key: &str) -> Result<&'a str, Man
 }
 
 fn check_name(name: &str) -> Result<(), ManifestError> {
-    if name.is_empty() || name.len() > 8 {
+    if name.is_empty() || name.len() > MAX_NAME {
         return Err(ManifestError::Name(format!(
-            "{name:?}: must be 1 to 8 characters long"
+            "{name:?}: must be 1 to {MAX_NAME} characters long"
         )));
     }
     if let Some(c) = name

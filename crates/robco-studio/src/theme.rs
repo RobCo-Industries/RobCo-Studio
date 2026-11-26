@@ -280,6 +280,9 @@ pub mod size {
     pub const TAPE_LABEL: [f32; 2] = [81.0, 18.0];
     /// The top left of the tape's label field, in that box.
     pub const TAPE_LABEL_AT: [f32; 2] = [10.0, 42.0];
+    /// The least room on each side of the longest project name on the
+    /// tape's label field.
+    pub const TAPE_LABEL_MARGIN: f32 = 4.0;
     /// The card drawing's box, without its glow.
     pub const CARD_ART: [f32; 2] = [120.0, 160.0];
     /// One icon.

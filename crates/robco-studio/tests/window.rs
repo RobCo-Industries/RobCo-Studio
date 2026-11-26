@@ -1647,3 +1647,24 @@ fn the_empty_states_open_folder_opens_the_chooser() {
     h.run_steps(3);
     assert!(tree_root(&h, &folder_name(&c)).is_some());
 }
+
+#[test]
+fn an_eight_character_name_stays_inside_the_tape_label() {
+    let d = pipes("longname").unwrap();
+    let manifest = std::fs::read_to_string(d.join("robco.toml")).unwrap();
+    std::fs::write(
+        d.join("robco.toml"),
+        manifest.replace("name = \"PIPES\"", "name = \"LONGNAME\""),
+    )
+    .unwrap();
+    let mut h = harness(Some(&d));
+    h.run_steps(2);
+    let (field, name) = h.state().tape_label().expect("the tape is shown");
+    assert!(name.width() > 0.0);
+    assert!(
+        field.contains_rect(name),
+        "{name:?} is not inside {field:?}"
+    );
+    let label = h.get_by_label("LONGNAME.HTP");
+    assert_eq!(label.accesskit_node().role(), Role::Image);
+}

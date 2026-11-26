@@ -175,6 +175,8 @@ pub struct Studio {
     fonts: bool,
     focus_request: Option<Place>,
     places: Vec<(Place, Rect)>,
+    /// The tape's label field and the name drawn on it, last frame.
+    tape_label: Option<(Rect, Rect)>,
     page_rect: Rect,
     title: String,
     chooser: Box<dyn FolderChooser>,
@@ -343,6 +345,7 @@ impl Studio {
             fonts: false,
             focus_request: None,
             places: Vec::new(),
+            tape_label: None,
             page_rect: Rect::NOTHING,
             title: String::new(),
             chooser: Box::new(SystemChooser::default()),
@@ -430,6 +433,12 @@ impl Studio {
     /// The folder chooser is open or about to open.
     pub fn choosing(&self) -> bool {
         self.choosing != Choosing::Idle
+    }
+
+    /// The Tape pane's label field and the rectangle of the name drawn on
+    /// it, as last drawn. None when no tape is shown.
+    pub fn tape_label(&self) -> Option<(Rect, Rect)> {
+        self.tape_label
     }
 
     /// Where `place` was drawn in the last frame, if it was.
@@ -1296,6 +1305,8 @@ impl Studio {
             _ => None,
         });
         let pending = &mut self.pending;
+        let tape_label = &mut self.tape_label;
+        *tape_label = None;
         kit.pane(ui, rect, Place::Tape.name(), true, focus, |ui, r| {
             let mut t = ui.new_child(
                 UiBuilder::new()
@@ -1342,15 +1353,22 @@ impl Studio {
                 tape.min + egui::Vec2::from(size::TAPE_LABEL_AT),
                 egui::Vec2::from(size::TAPE_LABEL),
             );
+            // The label holds the name alone, as a written label would:
+            // the longest name fits, a test says so. The file name is in the
+            // tooltip and the screen reader name: the Kind row has no room.
             let file = format!("{name}.HTP");
-            let w = kit.caps_width(ui, &file);
-            kit.caps(
-                &painter,
+            let w = kit.caps_width(ui, &name);
+            let drawn = kit.caps(
+                &painter.with_clip_rect(label.intersect(r.outer)),
                 label.center().x - w / 2.0,
                 label.center().y,
-                &file,
+                &name,
                 p.dim,
             );
+            *tape_label = Some((label, drawn));
+            ui.interact(label, Id::unique("tape-label"), Sense::hover())
+                .on_hover_text(&file)
+                .widget_info(|| egui::WidgetInfo::labeled(Role::Image, true, &file));
             let facts = Rect::from_min_max(
                 egui::pos2(tape.right() + size::TAPE_FACTS_GAP, tape.top()),
                 egui::pos2(r.content.right(), tape.bottom()),
@@ -2024,6 +2042,17 @@ pub fn panes(l: &mut Layout, page: Rect) -> Panes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The longest name the manifest allows, in its widest form, fits the
+    /// tape's label field with the stated margin on each side. Every Spleen
+    /// cell has one width, so any name of that length is as wide.
+    #[test]
+    fn the_longest_name_fits_the_tape_label() {
+        let longest = "W".repeat(studio_core::manifest::MAX_NAME);
+        let w = crate::art::LabelFont::width(&longest, 1.0, 1.0, 0.0);
+        let room = size::TAPE_LABEL[0] - 2.0 * size::TAPE_LABEL_MARGIN;
+        assert!(w <= room, "{longest} is {w} points, the label has {room}");
+    }
 
     fn press(s: &mut Studio, ctx: &egui::Context, key: Key, modifiers: Modifiers) {
         let input = egui::RawInput {
