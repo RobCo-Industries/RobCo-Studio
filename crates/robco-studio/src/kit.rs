@@ -6,6 +6,9 @@
 //! Each component takes its colours and sizes from [`Theme`], draws itself,
 //! and gives the accessibility tree a role and a name.
 
+mod controls;
+pub use controls::{Rail, Slider};
+
 use crate::art::{Art, Icon, LabelFont};
 use crate::theme::{Palette, Theme, Type, size, stroke};
 use eframe::egui::{
@@ -360,6 +363,22 @@ impl<'a> Kit<'a> {
         focus_now: bool,
         add: impl FnOnce(&mut Ui, PaneRects) -> R,
     ) -> (Response, R) {
+        self.pane_as(ui, rect, name, Role::Pane, label, focus_now, add)
+    }
+
+    /// A pane, as [`Kit::pane`], whose node in the accessibility tree has
+    /// `role`: a dialog drawn as a pane.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pane_as<R>(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        name: &str,
+        role: Role,
+        label: bool,
+        focus_now: bool,
+        add: impl FnOnce(&mut Ui, PaneRects) -> R,
+    ) -> (Response, R) {
         let p = self.p();
         let mut child = ui.new_child(
             UiBuilder::new()
@@ -367,7 +386,7 @@ impl<'a> Kit<'a> {
                 .max_rect(rect)
                 .sense(Sense::focusable_noninteractive())
                 .accessibility_label(name)
-                .accessibility_role(Role::Pane),
+                .accessibility_role(role),
         );
         if focus_now {
             let id = child.unique_id();
@@ -852,6 +871,31 @@ impl<'a> Kit<'a> {
         chosen: usize,
     ) -> Option<usize> {
         let w = self.segmented_tabs_width(ui, parts);
+        self.tab_list(ui, name, parts, chosen, w)
+    }
+
+    /// The tab list of [`Kit::segmented_tabs`], `width` wide: the parts
+    /// share the room left over.
+    pub fn segmented_tabs_wide(
+        &self,
+        ui: &mut Ui,
+        name: &str,
+        parts: &[&str],
+        chosen: usize,
+        width: f32,
+    ) -> Option<usize> {
+        let w = width.max(self.segmented_tabs_width(ui, parts));
+        self.tab_list(ui, name, parts, chosen, w)
+    }
+
+    fn tab_list(
+        &self,
+        ui: &mut Ui,
+        name: &str,
+        parts: &[&str],
+        chosen: usize,
+        w: f32,
+    ) -> Option<usize> {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(w, size::FIELD_H), Sense::hover());
         let mut list = ui.new_child(
             UiBuilder::new()
@@ -871,7 +915,7 @@ impl<'a> Kit<'a> {
                 y1: rect.max.y.into(),
             });
         });
-        self.segments(&mut list, name, parts, chosen, Some(name))
+        self.segments(&mut list, name, parts, chosen, Some(w))
     }
 
     /// The width [`Kit::segmented_tabs`] takes for `parts`.
@@ -882,13 +926,15 @@ impl<'a> Kit<'a> {
             .sum()
     }
 
+    /// The parts of a segmented control. `tabs` is the width of a tab
+    /// list, None for a radio group.
     fn segments(
         &self,
         ui: &mut Ui,
         key: &str,
         parts: &[&str],
         chosen: usize,
-        tabs: Option<&str>,
+        tabs: Option<f32>,
     ) -> Option<usize> {
         let p = self.p();
         let tick = if tabs.is_some() {
@@ -901,7 +947,7 @@ impl<'a> Kit<'a> {
         } else {
             size::SMALL_H
         };
-        let widths: Vec<f32> = parts
+        let mut widths: Vec<f32> = parts
             .iter()
             .enumerate()
             .map(|(i, t)| {
@@ -910,6 +956,14 @@ impl<'a> Kit<'a> {
                     + if i == chosen { tick } else { 0.0 }
             })
             .collect();
+        let fit: f32 = widths.iter().sum();
+        if let Some(w) = tabs
+            && w > fit
+            && !parts.is_empty()
+        {
+            let more = (w - fit) / parts.len() as f32;
+            widths.iter_mut().for_each(|x| *x += more);
+        }
         let total: f32 = widths.iter().sum();
         let (rect, _) = ui.allocate_exact_size(egui::vec2(total, h), Sense::hover());
         let cr = self.theme.control_radius();
@@ -955,7 +1009,12 @@ impl<'a> Kit<'a> {
                 }
                 p.text
             };
-            let mut lx = r.left() + size::LABEL_PAD;
+            // A tab list wider than its labels centres each one.
+            let mut lx = if tabs.is_some() {
+                r.center().x - self.caps_width(ui, t) / 2.0
+            } else {
+                r.left() + size::LABEL_PAD
+            };
             if on && tick > 0.0 {
                 self.art.icon(
                     painter,
@@ -1156,6 +1215,23 @@ impl<'a> Kit<'a> {
         width: f32,
         rows: &[&str],
     ) -> Option<usize> {
+        self.dropdown_response(ui, name, icon, value, none, width, rows)
+            .1
+    }
+
+    /// The dropdown of [`Kit::dropdown`], with its response, to give it
+    /// the focus.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dropdown_response(
+        &self,
+        ui: &mut Ui,
+        name: &str,
+        icon: Icon,
+        value: &str,
+        none: bool,
+        width: f32,
+        rows: &[&str],
+    ) -> (Response, Option<usize>) {
         let p = self.p();
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::FIELD_H), Sense::click());
         let shown = format!("{name}: {value}");
@@ -1203,7 +1279,7 @@ impl<'a> Kit<'a> {
         if chosen.is_some() {
             egui::Popup::close_id(ui.ctx(), popup_id);
         }
-        chosen
+        (resp, chosen)
     }
 
     /// A row of a list or a menu: text, a note at the right such as a
