@@ -666,8 +666,9 @@ const GCC_HASH: &str = "00000000000000000000000000000000000000000000000000000000
 
 /// A cache that holds a `pipos` 1.4.0 package and a `gcc` tool, each with
 /// its `.robco-archive`, and a lock that pins both, so a build reads no
-/// index. The two programs are shell scripts: `gcc` makes an empty file at
-/// each `-o`, and `objcopy` writes a raw image as the startup code would,
+/// index. The two programs are shell scripts: `gcc` appends its arguments,
+/// one per line, to `gcc.args` beside the project and makes an empty file
+/// at each `-o`, and `objcopy` writes a raw image as the startup code would,
 /// then runs `hook`, a shell line, in the project root.
 #[cfg(unix)]
 fn warm_cache(f: &Fixture, hook: &str) {
@@ -704,7 +705,7 @@ fn warm_cache(f: &Fixture, hook: &str) {
     .unwrap();
     f.put("raw.bin", &raw);
     let raw = f.dir.join("raw.bin");
-    let gcc_sh = "#!/bin/sh\nprev=\nfor a; do [ \"$prev\" = -o ] && : > \"$a\"; prev=$a; done\n";
+    let gcc_sh = "#!/bin/sh\nprintf '%s\\n' \"$@\" >> ../gcc.args\nprev=\nfor a; do [ \"$prev\" = -o ] && : > \"$a\"; prev=$a; done\n";
     let objcopy_sh = format!(
         "#!/bin/sh\nfor a; do last=$a; done\ncp '{}' \"$last\"\n{hook}\n",
         raw.display()
@@ -767,6 +768,23 @@ fn a_warm_cache_builds_a_tape_with_no_index() {
     let o = f.robco(&["build", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     assert!(f.tape().is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_named_with_a_leading_at_builds_as_a_file() {
+    // gcc reads `@main.c` as a response file, so the plan passes `./@main.c`.
+    let f = Fixture::new("at-source");
+    warm_cache(&f, "");
+    fs::rename(f.proj().join("src/main.c"), f.proj().join("@main.c")).unwrap();
+    with_sources(&f, r#"["@main.c"]"#);
+    let o = f.robco(&["build", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(f.tape().is_file());
+    let args = fs::read_to_string(f.dir.join("gcc.args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert!(args.contains(&"./@main.c"), "{args:?}");
+    assert!(!args.contains(&"@main.c"), "{args:?}");
 }
 
 #[cfg(unix)]

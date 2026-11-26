@@ -762,6 +762,40 @@ fn plan_defines_and_abi_define_are_names() {
 }
 
 #[test]
+fn plan_sources_with_a_leading_at_or_dash_get_dot_slash() {
+    let m = manifest(&MANIFEST.replace(
+        "[\"src/main.c\", \"src/*.c\"]",
+        "[\"@main.c\", \"-x.c\", \"src/main.c\"]",
+    ));
+    let files = ["@main.c", "-x.c", "src/main.c", "robco.toml"];
+    let p = match make_with(&m, FLAGS, Host::Unix, &files) {
+        Ok(p) => p,
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(p.sources, ["@main.c", "-x.c", "src/main.c"]);
+    for (i, (arg, object)) in [
+        ("./@main.c", "build/obj/@main.c.o"),
+        ("./-x.c", "build/obj/-x.c.o"),
+        ("src/main.c", "build/obj/src/main.c.o"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let a = &p.commands[i + 1].args;
+        let at = a.iter().position(|x| x == "-c").unwrap_or(usize::MAX);
+        assert_eq!(a.get(at + 1).map(String::as_str), Some(arg));
+        assert_eq!(a.get(at + 3).map(String::as_str), Some(object));
+        assert!(p.outputs.contains(&object.to_string()));
+    }
+    assert!(
+        !p.commands
+            .iter()
+            .any(|c| c.args.iter().any(|x| x == "@main.c"))
+    );
+    assert!(p.dirs.iter().all(|d| d.starts_with("build")));
+}
+
+#[test]
 fn plan_source_with_a_leading_dash_is_not_an_option() {
     let m = manifest(&MANIFEST.replace("[\"src/main.c\", \"src/*.c\"]", "[\"*.c\"]"));
     let p = match make_with(&m, FLAGS, Host::Unix, &["-specs=x.c", "robco.toml"]) {

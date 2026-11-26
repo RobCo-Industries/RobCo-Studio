@@ -754,11 +754,11 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
         &format!("linker_scripts.{}", script_key(m.project.kind)),
         script,
     )?;
-    let crt0_path = pkg("crt0", &flags.crt0)?;
+    let crt0_path = file_arg(&pkg("crt0", &flags.crt0)?);
     let lib_paths = flags
         .libs
         .iter()
-        .map(|l| pkg("libs", l))
+        .map(|l| pkg("libs", l).map(|p| file_arg(&p)))
         .collect::<Result<Vec<String>, _>>()?;
     let mut maps = Vec::new();
     host.maps(input.project, ".", &mut maps);
@@ -786,18 +786,17 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
         Step::CompileCrt0,
         &crt0_defines,
         crt0_path,
-        &crt0_object,
+        &file_arg(&crt0_object),
     )];
     let mut objects = Vec::with_capacity(sources.len());
     for source in &sources {
         let object = format!("{OBJECT_DIR}/{source}.o");
-        // A file name that starts with `-` would read as an option.
-        let arg = if source.starts_with('-') {
-            format!("./{source}")
-        } else {
-            source.clone()
-        };
-        commands.push(compile(Step::Compile(source.clone()), &[], arg, &object));
+        commands.push(compile(
+            Step::Compile(source.clone()),
+            &[],
+            file_arg(source),
+            &file_arg(&object),
+        ));
         objects.push(object);
     }
 
@@ -805,12 +804,12 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
     let elf = format!("build/{name}.elf");
     let raw = format!("build/{name}.bin");
     let mut args = flags.ldflags.clone();
-    args.extend(["-T".into(), script_path]);
-    args.push(crt0_object.clone());
-    args.extend(objects.iter().cloned());
+    args.extend(["-T".into(), file_arg(&script_path)]);
+    args.push(file_arg(&crt0_object));
+    args.extend(objects.iter().map(|o| file_arg(o)));
     args.extend(lib_paths);
     args.extend(flags.system_libs.iter().cloned());
-    args.extend(["-o".into(), elf.clone()]);
+    args.extend(["-o".into(), file_arg(&elf)]);
     commands.push(Command {
         step: Step::Link,
         program: gcc,
@@ -820,7 +819,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
     commands.push(Command {
         step: Step::Objcopy,
         program: objcopy,
-        args: vec!["-O".into(), "binary".into(), elf.clone(), raw.clone()],
+        args: vec!["-O".into(), "binary".into(), file_arg(&elf), file_arg(&raw)],
         cwd: input.project.to_string(),
     });
 
@@ -843,6 +842,23 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
         raw,
         outputs,
     })
+}
+
+/// A file name as a command-line argument of gcc or objcopy. A relative
+/// path whose first character is `-` or `@` gets `./` in front; every other
+/// path is passed as it is. Only these two characters: gcc and objcopy read
+/// an argument that starts with `-` as an option, and one that starts with
+/// `@` as a response file whose text holds more arguments. See `@file` in
+/// <https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Overall-Options.html> and
+/// <https://sourceware.org/binutils/docs/binutils/objcopy.html>. Other
+/// paths keep their spelling, since the compiler writes the path it sees
+/// into the debug info and into `__FILE__`.
+fn file_arg(path: &str) -> String {
+    if path.starts_with(['-', '@']) {
+        format!("./{path}")
+    } else {
+        path.to_string()
+    }
 }
 
 /// True when `joined` lies strictly inside `root`, by components, with
