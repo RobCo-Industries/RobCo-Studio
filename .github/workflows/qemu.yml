@@ -197,15 +197,16 @@ jobs:
         with:
           python-version: "3.12"
       # The forbidden values reach the scan through the environment and
-      # Python's own host name, so Git Bash cannot rewrite them as it does
-      # a path passed as an argument to a native program.
+      # Python's own host and user names, so Git Bash cannot rewrite them as
+      # it does a path passed as an argument to a native program. The user
+      # name is searched only in a home path or before an @, never alone.
       - name: No path or name of the build machine in the package
         run: |
           py=python
           SCAN_WORK=$(sed -n 's/^work: //p' out/build/build.txt)
           test -n "$SCAN_WORK"
           export SCAN_WORK
-          forbid=(--forbid-env SCAN_WORK --forbid-env HOME --forbid-env GITHUB_WORKSPACE --forbid-env RUNNER_TEMP --forbid-host)
+          forbid=(--forbid-env SCAN_WORK --forbid-env HOME --forbid-env GITHUB_WORKSPACE --forbid-env RUNNER_TEMP --forbid-host --forbid-user)
           rm -rf scanned && cp -r out/qemu scanned
           # The home folder, planted in each spelling, each in its own file,
           # one in UTF-16. Python reads it from the environment; the shell
@@ -213,7 +214,10 @@ jobs:
           echo "$HOME" > scanned/planted-shell
           names=$($py - scanned <<'EOF'
           import os, re, sys
+          sys.path.insert(0, "tools/qemu")
+          import release
           home, d = os.environ["HOME"], sys.argv[1]
+          user = release.this_user()
           plant = {"as-is": home, "slash": home.replace("\\", "/"), "backslash": home.replace("/", "\\")}
           m = re.match(r"^(?:([A-Za-z]):[\\/]|/([A-Za-z])/)(.*)$", home)
           if m:
@@ -226,7 +230,22 @@ jobs:
                   f.write(b"x " + text.encode() + b"\n")
           with open(os.path.join(d, "planted-utf16"), "wb") as f:
               f.write(("x " + home + "\n").encode("utf-16-le"))
-          print(" ".join(["shell", "utf16"] + sorted(plant)))
+          # The user name alone, in each form this system's tools write it,
+          # each in its own file. The bare name goes in planted-user-bare,
+          # which the scan must not name.
+          forms = {"linux": {"user-home": f"/home/{user}/x"},
+                   "darwin": {"user-users": f"/Users/{user}/x"},
+                   "win32": {"user-users-backslash": f"\\Users\\{user}\\x",
+                             "user-users-slash": f"/Users/{user}/x"}}[sys.platform]
+          forms["user-at"] = f"ssh {user}@host"
+          for name, text in forms.items():
+              with open(os.path.join(d, f"planted-{name}"), "wb") as f:
+                  f.write(b"x " + text.encode() + b"\n")
+          with open(os.path.join(d, "planted-user-utf16"), "wb") as f:
+              f.write(f"x {user}@host\n".encode("utf-16-le"))
+          with open(os.path.join(d, "planted-user-bare"), "wb") as f:
+              f.write(f"x {user} y\n".encode())
+          print(" ".join(["shell", "utf16", "user-utf16"] + sorted(plant) + sorted(forms)))
           EOF
           )
           echo "Planted: $names"
@@ -241,6 +260,8 @@ jobs:
           for n in $names; do
             grep -qF "FAIL: planted-$n holds" scan.log || { echo "the scan missed planted-$n"; exit 1; }
           done
+          if grep -qF "FAIL: planted-user-bare" scan.log; then echo "the scan named the bare user name"; exit 1; fi
+          echo "The bare user name alone is not a hit."
           # Each hit is followed by the string around it and its offset.
           echo "The package itself:"
           $py tools/qemu/release.py scan out/qemu "${forbid[@]}"
