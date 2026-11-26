@@ -671,8 +671,9 @@ fn component_matches(pattern: &str, name: &str) -> bool {
     rest.len() >= last.len() && rest.ends_with(last)
 }
 
-/// True when a project path matches a source pattern.
-fn pattern_matches(pattern: &str, path: &str) -> bool {
+/// True when a project path, relative to the root with `/`, matches a
+/// source pattern. The one matcher of the source rules.
+pub fn pattern_matches(pattern: &str, path: &str) -> bool {
     let (pdir, pname) = pattern.rsplit_once('/').unwrap_or(("", pattern));
     let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
     pdir == dir && component_matches(pname, name)

@@ -323,15 +323,23 @@ fn source_files(root: &Path, patterns: &[String]) -> Result<Vec<String>, Failure
             manifest::inside_root(root, "build.sources", rel).map_err(|e| manifest_failure(&e))?
         };
         if let Some(dir) = dir.filter(|d| d.is_dir()) {
-            list_dir(&dir, rel, &mut out)?;
+            list_dir(&dir, rel, patterns, &mut out)?;
         }
     }
     Ok(out)
 }
 
 /// The regular files of one folder, not of its subfolders, a link to a
-/// regular file included. A dangling link is no file.
-fn list_dir(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failure> {
+/// regular file included, that a source pattern matches. A dangling link
+/// is no file. Names are matched first, by the manifest's own matcher, and
+/// only a matched entry is looked at, so an entry no pattern matches never
+/// fails the build.
+fn list_dir(
+    dir: &Path,
+    rel: &str,
+    patterns: &[String],
+    out: &mut Vec<String>,
+) -> Result<(), Failure> {
     let entries = fs::read_dir(dir).map_err(|e| read_failure(dir, &e))?;
     for entry in entries {
         let entry = entry.map_err(|e| read_failure(dir, &e))?;
@@ -339,6 +347,17 @@ fn list_dir(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failure>
             // A name that is not UTF-8 cannot match a pattern.
             continue;
         };
+        let project_path = if rel.is_empty() {
+            name
+        } else {
+            format!("{rel}/{name}")
+        };
+        if !patterns
+            .iter()
+            .any(|p| manifest::pattern_matches(p, &project_path))
+        {
+            continue;
+        }
         let path = entry.path();
         let file = match fs::metadata(&path) {
             Ok(md) => md.is_file(),
@@ -346,11 +365,7 @@ fn list_dir(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failure>
             Err(e) => return Err(read_failure(&path, &e)),
         };
         if file {
-            out.push(if rel.is_empty() {
-                name
-            } else {
-                format!("{rel}/{name}")
-            });
+            out.push(project_path);
         }
     }
     Ok(())

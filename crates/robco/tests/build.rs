@@ -608,3 +608,12 @@ fn a_source_folder_link_out_of_the_root_is_manifest_path() {
     link(&f, "../code", "proj/src");
     fails_with(&f, "manifest: path");
 }
+
+#[cfg(unix)]
+#[test]
+fn an_entry_no_pattern_matches_is_not_looked_at() {
+    // A link loop: its type cannot be read. No pattern matches its name.
+    let f = Fixture::new("loop");
+    link(&f, "loop.txt", "proj/src/loop.txt");
+    passes_step_2(&f);
+}
