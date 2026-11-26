@@ -754,3 +754,37 @@ fn a_source_removed_during_the_build_leaves_no_failure_after_the_tape() {
     assert!(f.tape().is_file());
     assert_eq!(lines(&o).pop().unwrap()["sources"], json!(["src/main.c"]));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_compiler_the_host_cannot_start_is_tool_program() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("no-exec");
+    warm_cache(&f, "");
+    f.older_tape();
+    let gcc = f.dir.join(format!(
+        "cache/tools/gcc/15.2.1-1.1/{}/bin/arm-none-eabi-gcc",
+        host()
+    ));
+    fs::set_permissions(&gcc, fs::Permissions::from_mode(0o644)).unwrap();
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("tool: program".to_owned(), 4));
+    assert!(!f.tape().exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_objcopy_leaves_no_tape_and_keeps_lock_and_cache() {
+    let f = Fixture::new("objcopy-fails");
+    warm_cache(&f, "exit 1");
+    f.older_tape();
+    let lock = fs::read(f.proj().join("robco.lock")).unwrap();
+    let sdk = f.dir.join("cache/packages/pipos/1.4.0/sdk.json");
+    let before = fs::read(&sdk).unwrap();
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("build: objcopy".to_owned(), 5));
+    assert!(!f.tape().exists());
+    assert!(!f.proj().join("build/TINY.HTP.tmp").exists());
+    assert_eq!(fs::read(f.proj().join("robco.lock")).unwrap(), lock);
+    assert_eq!(fs::read(&sdk).unwrap(), before);
+}

@@ -593,7 +593,14 @@ fn build(
             .args(&c.args)
             .current_dir(&c.cwd)
             .output()
-            .map_err(|e| Failure::new(code, format!("{item}: could not start: {}", e.kind())))?;
+            // A program the tool folder holds but the host cannot start is
+            // not a program the command can start: `tool: program`.
+            .map_err(|e| {
+                Failure::new(
+                    "tool: program",
+                    format!("{} could not start: {}", program_name(&c.program), e.kind()),
+                )
+            })?;
         for bytes in [&output.stdout, &output.stderr] {
             for line in String::from_utf8_lossy(bytes).lines() {
                 out.diagnostic(program, line);
