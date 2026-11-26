@@ -4,6 +4,7 @@
 //! from pane to pane, and the one dialog this release has.
 
 use crate::art::{Art, Icon, Mark};
+use crate::chooser::{self, Choice, FolderChooser, SystemChooser};
 use crate::editor::{Answer, Editor};
 use crate::kit::{Button, ButtonKind, Kit, Level};
 use crate::menus::{self, Command};
@@ -173,6 +174,20 @@ pub struct Studio {
     places: Vec<(Place, Rect)>,
     page_rect: Rect,
     title: String,
+    chooser: Box<dyn FolderChooser>,
+    choosing: Choosing,
+    next_project: Option<Project>,
+}
+
+/// Where File, Open folder stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Choosing {
+    /// No chooser is open.
+    Idle,
+    /// Open folder was asked: show the chooser at the top of the next frame.
+    Due,
+    /// The chooser is open.
+    Open,
 }
 
 const READY: &str = "Ready";
@@ -326,22 +341,82 @@ impl Studio {
             places: Vec::new(),
             page_rect: Rect::NOTHING,
             title: String::new(),
+            chooser: Box::new(SystemChooser::default()),
+            choosing: Choosing::Idle,
+            next_project: None,
         };
         if let Some(f) = folder {
             match Project::open(f) {
-                Ok(p) => {
-                    // A folder that is there but cannot be listed is told
-                    // the way the tree tells it, not reported as opened.
-                    s.status = match &p.error {
-                        Some(e) => (Level::Error, e.clone()),
-                        None => (Level::Info, format!("Opened {}.", p.root.display())),
-                    };
-                    s.project = Some(p);
-                }
+                Ok(p) => s.use_project(p),
                 Err(e) => s.status = (Level::Error, e),
             }
         }
         s
+    }
+
+    /// The same window, asking `chooser` for a folder on File, Open folder.
+    pub fn with_chooser(mut self, chooser: Box<dyn FolderChooser>) -> Self {
+        self.chooser = chooser;
+        self
+    }
+
+    /// Make `p` the project, with a fresh editor.
+    fn use_project(&mut self, p: Project) {
+        // A folder that is there but cannot be listed is told the way the
+        // tree tells it, not reported as opened.
+        self.status = match &p.error {
+            Some(e) => (Level::Error, e.clone()),
+            None => (Level::Info, format!("Opened {}.", p.root.display())),
+        };
+        self.project = Some(p);
+        self.editor = Editor::default();
+    }
+
+    /// Show the chooser when it is due, and act on its answer.
+    fn choose_folder(&mut self, ctx: &egui::Context) {
+        if self.choosing == Choosing::Due {
+            self.choosing = Choosing::Open;
+            let start = chooser::start_folder(self.project.as_ref().map(|p| p.root.as_path()));
+            self.chooser.start(ctx, start.as_deref());
+        }
+        if self.choosing != Choosing::Open {
+            return;
+        }
+        let Some(answer) = self.chooser.poll() else {
+            return;
+        };
+        self.choosing = Choosing::Idle;
+        match answer {
+            Choice::Cancelled => {}
+            Choice::Failed(e) => self.status = (Level::Error, e),
+            Choice::Chosen(f) => match Project::open(&f) {
+                Err(e) => self.status = (Level::Error, e),
+                Ok(p) => {
+                    self.editor.switch_allowed = false;
+                    self.next_project = Some(p);
+                    self.editor.request_switch();
+                    self.finish_switch();
+                }
+            },
+        }
+    }
+
+    /// Open the project that waits once every question is answered, or
+    /// drop it when one was cancelled.
+    fn finish_switch(&mut self) {
+        let Some(p) = self.next_project.take() else {
+            return;
+        };
+        if self.editor.switch_allowed {
+            self.use_project(p);
+        } else if self.editor.switching {
+            self.next_project = Some(p);
+        }
+    }
+
+    /// The folder chooser is open or about to open.
+    pub fn choosing(&self) -> bool {
+        self.choosing != Choosing::Idle
     }
 
     /// Where `place` was drawn in the last frame, if it was.
@@ -406,7 +481,18 @@ impl Studio {
 
     /// Run a menu command.
     pub fn run(&mut self, ctx: &egui::Context, c: Command) {
+        if self.choosing() {
+            return;
+        }
         match c {
+            Command::OpenFolder => {
+                // A question on the screen comes first; a switch then asks
+                // its own.
+                if self.editor.question.is_none() {
+                    self.choosing = Choosing::Due;
+                    ctx.request_repaint();
+                }
+            }
             Command::Save => self.editor.save(),
             Command::SaveAll => self.editor.save_all(),
             Command::CloseTab => {
@@ -488,13 +574,14 @@ impl Studio {
                 Key::L,
                 Command::HighLegibility,
             );
+            k(Modifiers::COMMAND, Key::O, Command::OpenFolder);
             k(Modifiers::COMMAND, Key::Q, Command::Quit);
         });
         cmds.append(&mut self.pending);
         for c in cmds {
             self.run(ctx, c);
         }
-        if self.page == Page::Project {
+        if self.page == Page::Project && !self.choosing() {
             self.editor.keys(ctx);
         }
     }
@@ -532,6 +619,7 @@ impl Studio {
     /// Draw one frame of the window into `ui`.
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.choose_folder(&ctx);
         self.prepare(&ctx);
         if ctx.input(|i| i.viewport().close_requested()) && !self.editor.request_quit() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -566,6 +654,7 @@ impl Studio {
         }
         self.status_bar(&kit, ui, status);
         self.dialog(&kit, &ctx, full);
+        self.finish_switch();
         if self.theme.effects() == Effects::Soft {
             art.scanlines(
                 &ctx.layer_painter(egui::LayerId::new(
@@ -1404,13 +1493,13 @@ impl Studio {
             let mut body = r.content;
             if let Some((level, text)) = &banner {
                 let mut b = ui.new_child(UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
-                let other = Button::quiet("Open another folder").unavailable(menus::NO_DIALOG);
+                let other = Button::quiet("Open another folder").unavailable(menus::USE_FILE_MENU);
                 kit.banner(&mut b, *level, text, Some(other));
                 body.min.y = b.min_rect().bottom() + size::UNIT * 2.0;
             }
             if no_project {
                 let new = Button::quiet("New project").kind(ButtonKind::Filled).icon(Icon::Add).unavailable(menus::LATER);
-                let open = Button::quiet("Open folder").icon(Icon::Folder).unavailable(menus::NO_DIALOG);
+                let open = Button::quiet("Open folder").icon(Icon::Folder).unavailable(menus::USE_FILE_MENU);
                 kit.empty_state(ui, body, Icon::Tape, "No project is open. Make one from a template, or open a folder that holds a robco.toml.", &[new, open]);
             } else if !has_docs {
                 kit.empty_state(ui, body, Icon::File, "No file is open. Choose one in Files.", &[]);

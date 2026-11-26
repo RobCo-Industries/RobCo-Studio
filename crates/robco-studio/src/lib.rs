@@ -14,6 +14,7 @@
 pub mod app;
 pub mod art;
 pub mod c_lex;
+pub mod chooser;
 pub mod document;
 pub mod editor;
 pub mod kit;

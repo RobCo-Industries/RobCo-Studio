@@ -85,6 +85,10 @@ pub struct Editor {
     pub question: Option<Question>,
     /// Quitting is agreed: the window may close.
     pub quit_allowed: bool,
+    /// A project switch asks about each document with edits.
+    pub switching: bool,
+    /// The switch is agreed: no document with edits is left.
+    pub switch_allowed: bool,
     /// The find and replace bar.
     pub find: Find,
     /// A sentence for the status line, taken by the shell.
@@ -307,6 +311,28 @@ impl Editor {
         }
     }
 
+    /// Another project is to open. True if it may open now; otherwise a
+    /// question is open about the first document with edits, the same
+    /// question quitting asks.
+    pub fn request_switch(&mut self) -> bool {
+        if self.question.is_some() {
+            return false;
+        }
+        match self.docs.iter().find(|d| d.is_dirty()) {
+            Some(d) => {
+                self.question = Some(Question::Quit { doc: d.id });
+                self.active = self.index_of(d.id);
+                self.switching = true;
+                false
+            }
+            None => {
+                self.switching = false;
+                self.switch_allowed = true;
+                true
+            }
+        }
+    }
+
     /// Answer the open question about `doc`. An answer about another
     /// document changes nothing.
     pub fn answer(&mut self, doc: u64, a: Answer) {
@@ -340,6 +366,7 @@ impl Editor {
         }
         if a == Answer::Cancel {
             self.question = None;
+            self.switching = false;
             return;
         }
         if a == Answer::Save && self.docs[i].changed_on_disk() {
@@ -363,7 +390,11 @@ impl Editor {
         self.question = None;
         self.remove(i);
         if let Question::Quit { .. } = q {
-            self.request_quit();
+            if self.switching {
+                self.request_switch();
+            } else {
+                self.request_quit();
+            }
         }
     }
 

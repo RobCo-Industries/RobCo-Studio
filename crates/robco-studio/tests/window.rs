@@ -990,7 +990,7 @@ fn the_tree_has_the_project_as_its_root() {
 /// What the project dropdown offered lives in the File menu.
 #[test]
 fn the_file_menu_opens_a_project() {
-    use robco_studio::menus::{Command, NO_DIALOG, menus};
+    use robco_studio::menus::{Command, menus};
     let file = menus().into_iter().find(|m| m.title == "File").unwrap();
     let open = file
         .items
@@ -998,7 +998,7 @@ fn the_file_menu_opens_a_project() {
         .find(|i| i.command == Command::OpenFolder)
         .unwrap();
     assert_eq!(open.text, "Open folder");
-    assert_eq!(open.unavailable, Some(NO_DIALOG));
+    assert_eq!(open.unavailable, None);
     let mut h = harness(None);
     h.get_by_label("File").click();
     h.run_steps(2);
@@ -1204,4 +1204,237 @@ fn the_log_filter_keeps_the_rows_gap() {
     assert!(before >= gap - 0.5, "{text:?} {field:?}");
     assert!(after >= gap - 0.5, "{field:?} {follow:?}");
     assert_eq!(field.width(), size::LOG_FILTER_W);
+}
+
+/// What the fake folder chooser was asked, and what it answers.
+#[derive(Default)]
+struct FakeState {
+    /// The answer to give; None keeps the chooser open.
+    answer: Option<robco_studio::chooser::Choice>,
+    /// The start folder of each time it was shown.
+    starts: Vec<Option<PathBuf>>,
+}
+
+struct FakeChooser(std::sync::Arc<std::sync::Mutex<FakeState>>);
+
+impl robco_studio::chooser::FolderChooser for FakeChooser {
+    fn start(&mut self, _ctx: &egui::Context, start: Option<&Path>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts
+            .push(start.map(Path::to_path_buf));
+    }
+    fn poll(&mut self) -> Option<robco_studio::chooser::Choice> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .answer
+            .take()
+    }
+}
+
+type Fake = std::sync::Arc<std::sync::Mutex<FakeState>>;
+
+/// A window on `folder` whose chooser answers `answer`.
+fn with_fake(
+    folder: Option<&Path>,
+    answer: Option<robco_studio::chooser::Choice>,
+) -> (Harness<'static, Studio>, Fake) {
+    let fake = Fake::default();
+    fake.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .answer = answer;
+    let studio = Studio::new(folder).with_chooser(Box::new(FakeChooser(fake.clone())));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), studio);
+    h.run_steps(3);
+    (h, fake)
+}
+
+fn press_open(h: &mut Harness<'static, Studio>) {
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    h.run_steps(3);
+}
+
+use robco_studio::chooser::Choice;
+
+#[test]
+fn open_folder_switches_the_project() {
+    let a = pipes("switch-from").unwrap();
+    let b = sample("switch-to").unwrap();
+    let (mut h, fake) = with_fake(Some(&*a), Some(Choice::Chosen(b.to_path_buf())));
+    assert_eq!(h.state().title(), "PIPES - RobCo Studio");
+    press_open(&mut h);
+    let name = folder_name(&b);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts,
+        [a.parent().map(Path::to_path_buf)]
+    );
+    assert_eq!(h.state().title(), format!("{name} - RobCo Studio"));
+    assert!(tree_root(&h, &name).is_some());
+    assert!(tree_root(&h, "PIPES").is_none());
+    assert_eq!(h.state().status, Studio::new(Some(&*b)).status);
+}
+
+#[test]
+fn open_folder_starts_at_home_without_a_project() {
+    let (mut h, fake) = with_fake(None, Some(Choice::Cancelled));
+    press_open(&mut h);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts,
+        [std::env::home_dir()]
+    );
+}
+
+#[test]
+fn cancel_in_the_chooser_changes_nothing() {
+    let a = pipes("chooser-cancel").unwrap();
+    let (mut h, fake) = with_fake(Some(&*a), Some(Choice::Cancelled));
+    let status = h.state().status.clone();
+    press_open(&mut h);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts
+            .len(),
+        1
+    );
+    assert_eq!(h.state().status, status);
+    assert_eq!(h.state().title(), "PIPES - RobCo Studio");
+    assert!(tree_root(&h, "PIPES").is_some());
+}
+
+#[test]
+fn a_chosen_folder_says_what_the_command_line_says() {
+    let a = pipes("chooser-msg-from").unwrap();
+    // No manifest: the same status line and the same banner.
+    let b = sample("chooser-msg-bare").unwrap();
+    let (mut h, _) = with_fake(Some(&*a), Some(Choice::Chosen(b.to_path_buf())));
+    press_open(&mut h);
+    assert_eq!(h.state().status, Studio::new(Some(&*b)).status);
+    h.get_by_label("This folder has no robco.toml, so Studio cannot build it.");
+    // Not a folder: the project stays, and the line is the same.
+    let file = b.join("notes.txt");
+    let (mut h, _) = with_fake(Some(&*a), Some(Choice::Chosen(file.clone())));
+    press_open(&mut h);
+    assert_eq!(h.state().status, Studio::new(Some(&file)).status);
+    assert_eq!(h.state().status.0, robco_studio::kit::Level::Error);
+    assert_eq!(h.state().title(), "PIPES - RobCo Studio");
+}
+
+#[test]
+fn edits_are_asked_about_before_the_switch() {
+    let a = sample("chooser-edit-from").unwrap();
+    let b = pipes("chooser-edit-to").unwrap();
+    let (mut h, fake) = with_fake(Some(&*a), Some(Choice::Chosen(b.to_path_buf())));
+    open_main(&mut h);
+    h.state_mut().editor.docs[0].pending_sel = Some((0, 0));
+    h.run_steps(3);
+    h.event(Event::Text("x".into()));
+    h.run_steps(2);
+    press_open(&mut h);
+    assert!(
+        h.query_all_by_label("Save src/main.c before closing?")
+            .next()
+            .is_some()
+    );
+    assert!(tree_root(&h, &folder_name(&a)).is_some(), "no switch yet");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(
+        tree_root(&h, &folder_name(&a)).is_some(),
+        "Cancel keeps the project"
+    );
+    assert_eq!(h.state().editor.docs.len(), 1);
+    assert!(
+        h.state().editor.docs[0].text.starts_with('x'),
+        "and the edit"
+    );
+    // Asked again, Do not save drops the edit and opens the project.
+    fake.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .answer = Some(Choice::Chosen(b.to_path_buf()));
+    press_open(&mut h);
+    h.get_by_label("Do not save").click();
+    h.run_steps(3);
+    assert!(tree_root(&h, "PIPES").is_some());
+    assert!(h.state().editor.docs.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(a.join("src/main.c")).unwrap(),
+        MAIN_C
+    );
+}
+
+#[test]
+fn a_chooser_error_shows_in_the_status_bar() {
+    let a = pipes("chooser-error").unwrap();
+    let e = "No folder dialog opened.";
+    let (mut h, _) = with_fake(Some(&*a), Some(Choice::Failed(e.to_owned())));
+    press_open(&mut h);
+    assert_eq!(
+        h.state().status,
+        (robco_studio::kit::Level::Error, e.to_owned())
+    );
+    assert_eq!(h.state().title(), "PIPES - RobCo Studio");
+}
+
+#[test]
+fn the_menu_opens_the_chooser_as_the_shortcut_does() {
+    let a = pipes("chooser-menu-from").unwrap();
+    let b = sample("chooser-menu-to").unwrap();
+    let (mut h, fake) = with_fake(Some(&*a), Some(Choice::Chosen(b.to_path_buf())));
+    h.get_by_label("File").click();
+    h.run_steps(2);
+    h.query_all_by_label("Open folder")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts
+            .len(),
+        1
+    );
+    assert!(tree_root(&h, &folder_name(&b)).is_some());
+}
+
+#[test]
+fn an_open_chooser_takes_no_other_command() {
+    let a = pipes("chooser-busy").unwrap();
+    let (mut h, fake) = with_fake(Some(&*a), None);
+    press_open(&mut h);
+    assert!(h.state().choosing());
+    press_open(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num2);
+    h.run_steps(2);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts
+            .len(),
+        1,
+        "no second chooser"
+    );
+    assert_eq!(h.state().page, Page::Project, "no other command");
+    fake.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .answer = Some(Choice::Cancelled);
+    h.run_steps(2);
+    assert!(!h.state().choosing());
+    press_open(&mut h);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts
+            .len(),
+        2
+    );
 }

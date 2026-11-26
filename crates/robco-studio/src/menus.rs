@@ -161,9 +161,8 @@ pub fn not_yet(c: Command) -> Option<&'static str> {
 pub fn not_yet_news(name: &str) -> String {
     format!("{name} is not in this version yet.")
 }
-/// Said by Open folder.
-pub const NO_DIALOG: &str =
-    "Studio has no folder dialog yet. Start it with a folder: robco-studio PATH.";
+/// Said by the Open folder buttons of the editor pane, which do not act.
+pub const USE_FILE_MENU: &str = "Use File, Open folder.";
 /// Said by an edit command the editor takes from its keys only.
 pub const KEYS_ONLY: &str = "Use the shortcut in the editor. The menu item does not act yet.";
 
@@ -242,12 +241,7 @@ pub fn menus() -> Vec<Menu> {
             title: "File",
             items: vec![
                 it("New project", C::NewProject, sc(M::CmdShift, "N"), l),
-                it(
-                    "Open folder",
-                    C::OpenFolder,
-                    sc(M::Cmd, "O"),
-                    Some(NO_DIALOG),
-                ),
+                it("Open folder", C::OpenFolder, sc(M::Cmd, "O"), None),
                 it("Open recent", C::OpenRecent, None, l),
                 it("Save", C::Save, sc(M::Cmd, "S"), None),
                 it("Save all", C::SaveAll, sc(M::CmdAlt, "S"), None),
