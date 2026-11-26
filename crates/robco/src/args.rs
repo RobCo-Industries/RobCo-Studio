@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Reads the command line, by "Options" of RobCo-Core
-//! `docs/spec/STUDIO_CLI.md`. Two commands with two options need no parser
+//! `docs/spec/STUDIO_CLI.md`. A few commands with two options need no parser
 //! crate. Every wrong form gives `usage`.
 
 use studio_core::resolve::{Abi, InstallPick, Version};
@@ -20,6 +20,13 @@ pub enum Command {
     Build {
         /// The location of the index, when given.
         index: Option<String>,
+    },
+    /// `robco new TEMPLATE NAME`.
+    New {
+        /// The template's id.
+        template: String,
+        /// The project name, as given.
+        name: String,
     },
     /// `robco sdk install PACKAGE[@VERSION] [--index LOCATION]`.
     SdkInstall {
@@ -57,16 +64,17 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
         ["sdk", "list", rest @ ..] => ("sdk list", rest),
         ["sdk", "install", rest @ ..] => ("sdk install", rest),
         ["build", rest @ ..] => ("build", rest),
+        ["new", rest @ ..] => ("new", rest),
         [] => {
             return Err(usage(
                 "",
-                "no command: robco build, sdk list or sdk install",
+                "no command: robco build, new, sdk list or sdk install",
             ));
         }
         _ => {
             return Err(usage(
                 "",
-                "unknown command: robco build, sdk list or sdk install",
+                "unknown command: robco build, new, sdk list or sdk install",
             ));
         }
     };
@@ -110,6 +118,16 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
         "sdk list" => match positional.as_slice() {
             [] => Ok(Command::SdkList { index }),
             [extra, ..] => Err(usage(command, &format!("extra argument {extra}"))),
+        },
+        // `robco new` shows no `--index`: it reads no index.
+        "new" if index.is_some() => Err(usage(command, "unknown option --index")),
+        "new" => match positional.as_slice() {
+            [] | [_] => Err(usage(command, "missing argument: robco new TEMPLATE NAME")),
+            [template, name] => Ok(Command::New {
+                template: (*template).to_owned(),
+                name: (*name).to_owned(),
+            }),
+            [_, _, extra, ..] => Err(usage(command, &format!("extra argument {extra}"))),
         },
         "build" => match positional.as_slice() {
             [] => Ok(Command::Build { index }),
@@ -210,6 +228,16 @@ mod tests {
     }
 
     #[test]
+    fn new_takes_a_template_and_a_name_in_any_place() {
+        let want = Command::New {
+            template: "holotape-c".to_owned(),
+            name: "PIPES".to_owned(),
+        };
+        assert_eq!(p(&["new", "holotape-c", "PIPES"]).unwrap(), want);
+        assert_eq!(p(&["new", "--json", "holotape-c", "PIPES"]).unwrap(), want);
+    }
+
+    #[test]
     fn the_three_install_forms() {
         let pick = |a: &str| match p(&["sdk", "install", a]).unwrap() {
             Command::SdkInstall { pick, name, .. } => (name, pick),
@@ -238,6 +266,11 @@ mod tests {
             (&["build", "--index"], "build"),
             (&["build", "--bogus"], "build"),
             (&["build", "--json", "--json"], "build"),
+            (&["new"], "new"),
+            (&["new", "holotape-c"], "new"),
+            (&["new", "holotape-c", "PIPES", "extra"], "new"),
+            (&["new", "holotape-c", "PIPES", "--index", "i.json"], "new"),
+            (&["new", "holotape-c", "-P"], "new"),
             (&["sdk"], ""),
             (&["sdk", "remove", "pipos"], ""),
             (&["sdk", "doctor"], ""),
