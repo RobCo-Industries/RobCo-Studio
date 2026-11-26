@@ -1,0 +1,1155 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The thin layer: Studio's own components over the window toolkit.
+//!
+//! A view builds the window from these and never styles the toolkit itself.
+//! Each component takes its colours and sizes from [`Theme`], draws itself,
+//! and gives the accessibility tree a role and a name.
+
+use crate::art::{Art, Icon, LabelFont};
+use crate::theme::{Palette, Theme, Type, size, stroke};
+use eframe::egui::{
+    self, Color32, CornerRadius, Id, Key, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind,
+    Ui, UiBuilder, WidgetInfo, accesskit::Role,
+};
+
+/// The level of a message: each has an icon, a word and a colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    /// A job ended well.
+    Success,
+    /// A step, or plain news.
+    Info,
+    /// It went on, and something needs a look.
+    Warning,
+    /// It stopped.
+    Error,
+}
+
+impl Level {
+    /// The level's icon.
+    pub fn icon(self) -> Icon {
+        match self {
+            Level::Success => Icon::Ok,
+            Level::Info => Icon::Info,
+            Level::Warning => Icon::Warn,
+            Level::Error => Icon::Error,
+        }
+    }
+
+    /// The level's colour.
+    pub fn color(self, p: &Palette) -> Color32 {
+        match self {
+            Level::Success => p.bright,
+            Level::Info => p.text,
+            Level::Warning => p.warn,
+            Level::Error => p.alarm,
+        }
+    }
+}
+
+/// The kinds of button of the design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    /// The next step: `bright` fill, `ink` label, a halo.
+    Primary,
+    /// Build, Debug, Write card: `select` fill, `bright` label.
+    Toolbar,
+    /// Everything else: `frame` stroke, `bright` label, no fill.
+    Quiet,
+}
+
+/// A button to draw.
+#[derive(Debug, Clone, Copy)]
+pub struct Button<'a> {
+    /// Its kind.
+    pub kind: ButtonKind,
+    /// Its label, a verb. Drawn in caps, named in normal case.
+    pub text: &'a str,
+    /// An icon before the label.
+    pub icon: Option<Icon>,
+    /// 24 high in place of 28.
+    pub small: bool,
+    /// Why it cannot act, or None when it can.
+    pub unavailable: Option<&'a str>,
+}
+
+impl<'a> Button<'a> {
+    /// A quiet button that acts.
+    pub fn quiet(text: &'a str) -> Self {
+        Self {
+            kind: ButtonKind::Quiet,
+            text,
+            icon: None,
+            small: false,
+            unavailable: None,
+        }
+    }
+
+    /// The same button of another kind.
+    pub fn kind(mut self, kind: ButtonKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// The same button with an icon.
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// The same button, small.
+    pub fn small(mut self) -> Self {
+        self.small = true;
+        self
+    }
+
+    /// The same button, shown as not available, with the reason.
+    pub fn unavailable(mut self, why: &'a str) -> Self {
+        self.unavailable = Some(why);
+        self
+    }
+}
+
+/// What a tab reports.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TabOut {
+    /// The tab was chosen.
+    pub chosen: bool,
+    /// Its close button was pressed.
+    pub close: bool,
+}
+
+/// What a divider reports.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DividerOut {
+    /// Moved by this much this frame.
+    pub delta: f32,
+    /// Enter: put it back.
+    pub reset: bool,
+}
+
+/// The rectangles of a pane.
+#[derive(Debug, Clone, Copy)]
+pub struct PaneRects {
+    /// The whole pane, frame included.
+    pub outer: Rect,
+    /// Where the content goes, inside the padding.
+    pub content: Rect,
+    /// The band around the top line, where labels and tabs stand.
+    pub header: Rect,
+}
+
+/// The theme and the textures, which every component needs.
+#[derive(Clone, Copy)]
+pub struct Kit<'a> {
+    /// The tokens.
+    pub theme: &'a Theme,
+    /// The textures.
+    pub art: &'a Art,
+}
+
+impl<'a> Kit<'a> {
+    /// The colours.
+    pub fn p(&self) -> Palette {
+        self.theme.palette()
+    }
+
+    fn label_scale(&self, ui: &Ui) -> Option<f32> {
+        LabelFont::device_scale(ui.ctx().pixels_per_point())
+    }
+
+    /// The width of a caps label.
+    pub fn caps_width(&self, ui: &Ui, text: &str) -> f32 {
+        match self.label_scale(ui) {
+            Some(k) => LabelFont::width(text, k, ui.ctx().pixels_per_point()),
+            None => {
+                ui.painter()
+                    .layout_no_wrap(
+                        text.to_uppercase(),
+                        self.theme.font(Type::LabelFallback),
+                        Color32::PLACEHOLDER,
+                    )
+                    .size()
+                    .x
+            }
+        }
+    }
+
+    /// Paint a caps label in Spleen, or in Plex Mono bold caps when the
+    /// display scale is not a whole Spleen scale. Its vertical centre is `y`.
+    pub fn caps(
+        &self,
+        painter: &egui::Painter,
+        x: f32,
+        y: f32,
+        text: &str,
+        color: Color32,
+    ) -> Rect {
+        let half = crate::theme::text::LABEL_CELL_H / 2.0;
+        match LabelFont::device_scale(painter.ctx().pixels_per_point()) {
+            Some(k) => self
+                .art
+                .label
+                .paint(painter, egui::pos2(x, y - half), text, color, k),
+            None => {
+                let g = painter.layout_no_wrap(
+                    text.to_uppercase(),
+                    self.theme.font(Type::LabelFallback),
+                    color,
+                );
+                let r = Rect::from_min_size(egui::pos2(x, y - g.size().y / 2.0), g.size());
+                painter.galley(r.min, g, color);
+                r
+            }
+        }
+    }
+
+    /// One line of text cut to `max_w` with an ellipsis. The second value
+    /// is true when the text was cut: then the caller gives the full text
+    /// in a tooltip and to the screen reader.
+    pub fn fit(
+        &self,
+        painter: &egui::Painter,
+        text: &str,
+        t: Type,
+        color: Color32,
+        max_w: f32,
+    ) -> (std::sync::Arc<egui::Galley>, bool) {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.to_owned(), self.theme.font(t), color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
+        let g = painter.layout_job(job);
+        let cut = g.elided;
+        (g, cut)
+    }
+
+    /// Body text as a widget, so that it is in the accessibility tree.
+    pub fn text(&self, ui: &mut Ui, text: &str, t: Type, color: Color32) -> Response {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(self.theme.font(t))
+                    .color(color),
+            )
+            .wrap(),
+        )
+    }
+
+    /// The 2 px focus ring, 2 px away from `rect`.
+    pub fn focus_ring(&self, painter: &egui::Painter, rect: Rect) {
+        painter.rect_stroke(
+            rect.expand(stroke::FOCUS_GAP),
+            self.theme.control_radius(),
+            Stroke::new(stroke::FOCUS_RING, self.p().bright),
+            StrokeKind::Outside,
+        );
+    }
+
+    fn dashed_rect(&self, painter: &egui::Painter, rect: Rect, color: Color32) {
+        let r = rect.shrink(stroke::FRAME / 2.0);
+        let pts = [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+            r.left_top(),
+        ];
+        painter.extend(Shape::dashed_line(
+            &pts,
+            Stroke::new(stroke::FRAME, color),
+            stroke::DASH,
+            stroke::DASH_GAP,
+        ));
+    }
+
+    /// A pane: a frame with its top right corner clipped and its label in the
+    /// top line. The pane is a node of its own in the accessibility tree, named
+    /// `name`, and it can take focus. `header` draws in the top line in place
+    /// of the label, for tabs.
+    pub fn pane<R>(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        name: &str,
+        label: bool,
+        focus_now: bool,
+        add: impl FnOnce(&mut Ui, PaneRects) -> R,
+    ) -> (Response, R) {
+        let p = self.p();
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .id_salt(("pane", name))
+                .max_rect(rect)
+                .sense(Sense::focusable_noninteractive())
+                .accessibility_label(name)
+                .accessibility_role(Role::Pane),
+        );
+        if focus_now {
+            let id = child.unique_id();
+            child.memory_mut(|m| m.request_focus(id));
+        }
+        let focused = self.contains_focus(&child, rect);
+        let c = stroke::PANE_CLIP;
+        let pts = vec![
+            rect.left_top(),
+            egui::pos2(rect.right() - c, rect.top()),
+            egui::pos2(rect.right(), rect.top() + c),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ];
+        let painter = child.painter().clone();
+        if focused && let Some(h) = self.theme.halo() {
+            painter.add(h.as_shape(rect, CornerRadius::ZERO));
+        }
+        painter.add(Shape::convex_polygon(pts.clone(), p.pane, Stroke::NONE));
+        let line = if focused { p.bright } else { p.frame };
+        painter.add(Shape::closed_line(pts, self.theme.frame(line)));
+        let half = crate::theme::text::LABEL_CELL_H / 2.0;
+        let header = Rect::from_min_max(
+            egui::pos2(rect.left() + size::PAD_SIDE, rect.top() - half),
+            egui::pos2(rect.right() - c - size::PAD_SIDE, rect.top() + half),
+        );
+        if label {
+            let w = self.caps_width(&child, name);
+            let x = header.left();
+            let gap = size::UNIT;
+            painter.rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(x - gap, header.top()),
+                    egui::pos2(x + w + gap, rect.top()),
+                ),
+                CornerRadius::ZERO,
+                p.ground,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(x - gap, rect.top() + stroke::FRAME),
+                    egui::pos2(x + w + gap, header.bottom()),
+                ),
+                CornerRadius::ZERO,
+                p.pane,
+            );
+            self.caps(
+                &painter,
+                x,
+                rect.top(),
+                name,
+                if focused { p.bright } else { p.dim },
+            );
+        }
+        let content = Rect::from_min_max(
+            egui::pos2(rect.left() + size::PAD_SIDE, rect.top() + size::PAD_TOP),
+            egui::pos2(
+                rect.right() - size::PAD_SIDE,
+                rect.bottom() - size::PAD_BOTTOM,
+            ),
+        );
+        let r = add(
+            &mut child,
+            PaneRects {
+                outer: rect,
+                content,
+                header,
+            },
+        );
+        (child.response(), r)
+    }
+
+    /// Whether the focused widget lies in `rect`.
+    pub fn contains_focus(&self, ui: &Ui, rect: Rect) -> bool {
+        let ctx = ui.ctx();
+        ctx.memory(|m| m.focused())
+            .and_then(|id| ctx.read_response(id))
+            .is_some_and(|r| rect.contains(r.rect.center()))
+    }
+
+    /// The width `button` gives `b`.
+    pub fn button_width(&self, ui: &Ui, b: &Button<'_>) -> f32 {
+        let pad = size::UNIT * 2.0;
+        let icon_w = if b.icon.is_some() {
+            size::ICON + size::STEP_6
+        } else {
+            0.0
+        };
+        (pad * 2.0 + icon_w + self.caps_width(ui, b.text)).max(size::SMALL_H)
+    }
+
+    /// A button. It always takes keyboard focus. An unavailable one never
+    /// acts: it is marked so in the accessibility tree, and says why.
+    pub fn button(&self, ui: &mut Ui, b: Button<'_>) -> Response {
+        let p = self.p();
+        let h = if b.small {
+            size::SMALL_H
+        } else {
+            size::CONTROL_H
+        };
+        let w = self.button_width(ui, &b);
+        let pad = size::UNIT * 2.0;
+        let icon_w = if b.icon.is_some() {
+            size::ICON + size::STEP_6
+        } else {
+            0.0
+        };
+        let sense = if b.unavailable.is_some() {
+            Sense::focusable_noninteractive()
+        } else {
+            Sense::click()
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), sense);
+        let able = b.unavailable.is_none();
+        resp.widget_info(|| WidgetInfo::labeled(Role::Button, able, b.text));
+        if let Some(why) = b.unavailable {
+            ui.ctx().accesskit_node_builder(resp.id, |n| {
+                n.set_disabled();
+                n.set_description(why.to_owned());
+            });
+        }
+        let painter = ui.painter();
+        let pressed = resp.is_pointer_button_down_on();
+        let hovered = resp.hovered();
+        let cr = self.theme.control_radius();
+        let fg = match (b.unavailable, b.kind) {
+            (Some(_), _) => {
+                self.dashed_rect(painter, rect, p.frame);
+                p.dim
+            }
+            (None, ButtonKind::Primary) => {
+                if !pressed && let Some(h) = self.theme.halo() {
+                    painter.add(h.as_shape(rect, cr));
+                }
+                let fill = if pressed {
+                    p.text
+                } else if hovered {
+                    self.theme.hovered(p.bright)
+                } else {
+                    p.bright
+                };
+                painter.rect_filled(rect, cr, fill);
+                p.ink
+            }
+            (None, ButtonKind::Toolbar) => {
+                let fill = if pressed {
+                    p.frame_dim
+                } else if hovered {
+                    p.raised
+                } else {
+                    p.select
+                };
+                painter.rect_filled(rect, cr, fill);
+                p.bright
+            }
+            (None, ButtonKind::Quiet) => {
+                let fill = if pressed {
+                    p.select
+                } else if hovered {
+                    p.raised
+                } else {
+                    Color32::TRANSPARENT
+                };
+                painter.rect_filled(rect, cr, fill);
+                painter.rect_stroke(rect, cr, self.theme.frame(p.frame), StrokeKind::Inside);
+                p.bright
+            }
+        };
+        let mut x = rect.left() + pad;
+        if let Some(i) = b.icon {
+            let r = Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(size::ICON, h));
+            self.art.icon(painter, r, i, fg);
+            x += icon_w;
+        }
+        self.caps(painter, x, rect.center().y, b.text, fg);
+        if resp.has_focus() {
+            self.focus_ring(painter, rect);
+        }
+        if let Some(why) = b.unavailable {
+            if resp.has_focus() {
+                resp.show_tooltip_text(why);
+            }
+            resp.on_hover_text(why)
+        } else {
+            resp
+        }
+    }
+
+    /// A 24 by 24 button with an icon only, a tooltip and a name.
+    pub fn icon_button(
+        &self,
+        ui: &mut Ui,
+        icon: Icon,
+        name: &str,
+        unavailable: Option<&str>,
+    ) -> Response {
+        let p = self.p();
+        let sense = if unavailable.is_some() {
+            Sense::focusable_noninteractive()
+        } else {
+            Sense::click()
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(size::SMALL_H, size::SMALL_H), sense);
+        resp.widget_info(|| WidgetInfo::labeled(Role::Button, unavailable.is_none(), name));
+        if let Some(why) = unavailable {
+            ui.ctx().accesskit_node_builder(resp.id, |n| {
+                n.set_disabled();
+                n.set_description(why.to_owned());
+            });
+        }
+        let painter = ui.painter();
+        if unavailable.is_none() && resp.hovered() {
+            painter.rect_filled(rect, self.theme.control_radius(), p.raised);
+        }
+        let fg = if unavailable.is_some() {
+            p.dim
+        } else {
+            p.bright
+        };
+        self.art.icon(painter, rect, icon, fg);
+        if resp.has_focus() {
+            self.focus_ring(painter, rect);
+            resp.show_tooltip_text(unavailable.unwrap_or(name));
+        }
+        resp.on_hover_text(unavailable.unwrap_or(name))
+    }
+
+    /// A tab standing on a pane's top line. `caps` for the bottom pane's
+    /// tabs; otherwise a file tab with an icon, a name, a square when not
+    /// saved and a close button. `key` names the tab apart from its text,
+    /// which two tabs may share.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tab(
+        &self,
+        ui: &mut Ui,
+        at: Pos2,
+        key: impl std::hash::Hash + std::fmt::Debug,
+        text: &str,
+        icon: Option<Icon>,
+        active: bool,
+        caps: bool,
+        dirty: bool,
+    ) -> (Rect, TabOut) {
+        let p = self.p();
+        let pad = size::UNIT * 2.0;
+        let h = size::SMALL_H;
+        let font = self.theme.font(Type::Body);
+        let text_w = if caps {
+            self.caps_width(ui, text)
+        } else {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), font.clone(), p.text)
+                .size()
+                .x
+        };
+        let icon_w = if icon.is_some() {
+            size::ICON + size::UNIT
+        } else {
+            0.0
+        };
+        let mark_w = if dirty { size::STEP_12 } else { 0.0 };
+        let close_w = if caps { 0.0 } else { size::SMALL_H };
+        let w = pad * 2.0 + icon_w + text_w + mark_w + close_w;
+        let rect = Rect::from_min_size(egui::pos2(at.x, at.y - h / 2.0), egui::vec2(w, h));
+        let name = if dirty {
+            format!("{text}, not saved")
+        } else {
+            text.to_owned()
+        };
+        let id = ui.scope_id().with(("tab", key));
+        let resp = ui.interact(rect, id, Sense::click());
+        resp.widget_info(|| WidgetInfo::selected(Role::Tab, true, active, &name));
+        let painter = ui.painter();
+        let (fill, fg) = if active {
+            (p.pane, p.bright)
+        } else {
+            (p.ground, p.dim)
+        };
+        painter.rect_filled(rect, CornerRadius::ZERO, fill);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            self.theme.frame(p.frame_dim),
+            StrokeKind::Inside,
+        );
+        if active {
+            painter.rect_filled(
+                Rect::from_min_size(rect.min, egui::vec2(w, stroke::TAB_BAR)),
+                CornerRadius::ZERO,
+                p.bright,
+            );
+        }
+        let mut x = rect.left() + pad;
+        if let Some(i) = icon {
+            self.art.icon(
+                painter,
+                Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(size::ICON, h)),
+                i,
+                fg,
+            );
+            x += icon_w;
+        }
+        if caps {
+            self.caps(painter, x, rect.center().y, text, fg);
+        } else {
+            let g = painter.layout_no_wrap(
+                text.to_owned(),
+                font,
+                if active { p.bright } else { p.text },
+            );
+            painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
+        }
+        x += text_w;
+        if dirty {
+            let s = size::STEP_6;
+            painter.rect_filled(
+                Rect::from_center_size(
+                    egui::pos2(x + mark_w / 2.0, rect.center().y),
+                    egui::vec2(s, s),
+                ),
+                CornerRadius::ZERO,
+                fg,
+            );
+        }
+        let mut out = TabOut {
+            chosen: resp.clicked(),
+            close: false,
+        };
+        if !caps {
+            let cr = Rect::from_min_size(
+                egui::pos2(rect.right() - close_w, rect.top()),
+                egui::vec2(close_w, h),
+            );
+            let cid = id.with("close");
+            let c = ui.interact(cr, cid, Sense::click());
+            let close_name = format!("Close {text}");
+            c.widget_info(|| WidgetInfo::labeled(Role::Button, true, &close_name));
+            if c.hovered() {
+                painter.rect_filled(cr, self.theme.control_radius(), p.raised);
+            }
+            self.art.icon(painter, cr, Icon::Close, p.dim);
+            if c.has_focus() {
+                self.focus_ring(painter, cr);
+            }
+            out.close = c.clicked();
+            out.chosen &= !out.close;
+        }
+        if resp.has_focus() {
+            self.focus_ring(painter, rect);
+            out.chosen |= ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Space));
+        }
+        (rect, out)
+    }
+
+    /// One row of the tree: indent, chevron for a folder, icon, name.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tree_row(
+        &self,
+        ui: &mut Ui,
+        id: Id,
+        rect: Rect,
+        depth: usize,
+        name: &str,
+        icon: Icon,
+        folder: Option<bool>,
+        selected: bool,
+    ) -> Response {
+        let p = self.p();
+        let resp = ui.interact(rect, id, Sense::click());
+        resp.widget_info(|| WidgetInfo::selected(Role::TreeItem, true, selected, name));
+        if let Some(open) = folder {
+            ui.ctx()
+                .accesskit_node_builder(id, |n| n.set_expanded(open));
+        }
+        let painter = ui.painter();
+        if selected {
+            painter.rect_filled(rect, CornerRadius::ZERO, p.select);
+            painter.rect_filled(
+                Rect::from_min_size(rect.min, egui::vec2(stroke::SELECT_BAR, rect.height())),
+                CornerRadius::ZERO,
+                p.bright,
+            );
+        } else if resp.hovered() {
+            painter.rect_filled(rect, CornerRadius::ZERO, p.raised);
+        }
+        let mut x = rect.left() + size::UNIT * 2.0 + depth as f32 * size::TREE_INDENT;
+        let slot = |x: f32| {
+            Rect::from_min_size(
+                egui::pos2(x, rect.top()),
+                egui::vec2(size::ICON, rect.height()),
+            )
+        };
+        let fg = if selected {
+            p.bright
+        } else if folder.is_some() {
+            p.dim
+        } else {
+            p.text
+        };
+        if let Some(open) = folder {
+            self.art.icon(
+                painter,
+                slot(x),
+                if open {
+                    Icon::ChevDown
+                } else {
+                    Icon::ChevRight
+                },
+                p.dim,
+            );
+        } else {
+            self.art.icon(painter, slot(x), icon, fg);
+        }
+        x += size::ICON + size::UNIT;
+        let (g, cut) = self.fit(
+            painter,
+            name,
+            Type::Body,
+            fg,
+            rect.right() - size::UNIT * 2.0 - x,
+        );
+        painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
+        if resp.has_focus() {
+            self.focus_ring(painter, rect.shrink(stroke::FOCUS_GAP + stroke::FOCUS_RING));
+        }
+        if cut { resp.on_hover_text(name) } else { resp }
+    }
+
+    /// A one-line text field: a 1 px `frame` on `ground`, 26 high, a hint in
+    /// `dim` while empty, a doubled `bright` stroke while focused, an `alarm`
+    /// one while refused. Named `name` for a screen reader.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_field(
+        &self,
+        ui: &mut Ui,
+        id: Id,
+        value: &mut String,
+        name: &str,
+        hint: &str,
+        width: f32,
+        refused: bool,
+    ) -> Response {
+        let p = self.p();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, size::FIELD_H), Sense::hover());
+        let inner = rect.shrink2(egui::vec2(size::UNIT * 2.0, size::UNIT));
+        // The fill goes first: shapes later on the same layer cover earlier
+        // ones, so a fill after the text would hide it.
+        ui.painter()
+            .rect_filled(rect, self.theme.control_radius(), p.ground);
+        let resp = ui.put(
+            inner,
+            egui::TextEdit::singleline(value)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .font(self.theme.font(Type::Body))
+                .text_color(p.text)
+                .hint_text(egui::RichText::new(hint).color(p.dim))
+                .desired_width(inner.width()),
+        );
+        ui.ctx()
+            .accesskit_node_builder(id, |n| n.set_label(name.to_owned()));
+        let painter = ui.painter();
+        let (line, w) = if refused {
+            (p.alarm, stroke::FRAME * 2.0)
+        } else if resp.has_focus() {
+            (p.bright, stroke::FRAME * 2.0)
+        } else {
+            (p.frame, stroke::FRAME)
+        };
+        painter.rect_stroke(
+            rect,
+            self.theme.control_radius(),
+            Stroke::new(w, line),
+            StrokeKind::Inside,
+        );
+        resp
+    }
+
+    /// A closed dropdown: an icon, the value, a chevron. A click opens its
+    /// list; Esc and a click outside close it. Returns the row chosen.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dropdown(
+        &self,
+        ui: &mut Ui,
+        name: &str,
+        icon: Icon,
+        value: &str,
+        none: bool,
+        width: f32,
+        rows: &[&str],
+    ) -> Option<usize> {
+        let p = self.p();
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::FIELD_H), Sense::click());
+        let shown = format!("{name}: {value}");
+        resp.widget_info(|| WidgetInfo::labeled(Role::ComboBox, true, &shown));
+        let painter = ui.painter();
+        let cr = self.theme.control_radius();
+        painter.rect_filled(rect, cr, if resp.hovered() { p.raised } else { p.ground });
+        painter.rect_stroke(rect, cr, self.theme.frame(p.frame), StrokeKind::Inside);
+        let slot = |x: f32| {
+            Rect::from_min_size(
+                egui::pos2(x, rect.top()),
+                egui::vec2(size::ICON, rect.height()),
+            )
+        };
+        let x = rect.left() + size::UNIT * 2.0;
+        self.art.icon(painter, slot(x), icon, p.dim);
+        let fg = if none { p.dim } else { p.text };
+        let tx = x + size::ICON + size::UNIT * 2.0;
+        let chev = rect.right() - size::UNIT * 2.0 - size::ICON;
+        let (g, cut) = self.fit(painter, value, Type::Body, fg, chev - size::UNIT - tx);
+        painter.galley(egui::pos2(tx, rect.center().y - g.size().y / 2.0), g, fg);
+        self.art.icon(painter, slot(chev), Icon::ChevDown, p.dim);
+        if resp.has_focus() {
+            self.focus_ring(painter, rect);
+        }
+        let resp = if cut { resp.on_hover_text(value) } else { resp };
+        // Toggle before the popup reads its state, so the click's own
+        // frame lays the list out.
+        let popup_id = egui::Popup::default_response_id(&resp);
+        if resp.clicked() {
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
+        }
+        let mut chosen = None;
+        egui::Popup::from_response(&resp)
+            .open_memory(None)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .width(width)
+            .show(|ui| {
+                for (i, r) in rows.iter().enumerate() {
+                    if self.menu_row(ui, r, "", None, width).clicked() {
+                        chosen = Some(i);
+                    }
+                }
+            });
+        if chosen.is_some() {
+            egui::Popup::close_id(ui.ctx(), popup_id);
+        }
+        chosen
+    }
+
+    /// A row of a list or a menu: text, a note at the right such as a
+    /// shortcut, and, when it cannot act, the lock and the reason.
+    pub fn menu_row(
+        &self,
+        ui: &mut Ui,
+        text: &str,
+        note: &str,
+        unavailable: Option<&str>,
+        width: f32,
+    ) -> Response {
+        let p = self.p();
+        let sense = if unavailable.is_some() {
+            Sense::focusable_noninteractive()
+        } else {
+            Sense::click()
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::ROW_TREE), sense);
+        resp.widget_info(|| WidgetInfo::labeled(Role::MenuItem, unavailable.is_none(), text));
+        if let Some(why) = unavailable {
+            ui.ctx().accesskit_node_builder(resp.id, |n| {
+                n.set_disabled();
+                n.set_description(why.to_owned());
+            });
+        }
+        let painter = ui.painter();
+        if unavailable.is_none() && (resp.hovered() || resp.has_focus()) {
+            painter.rect_filled(rect, CornerRadius::ZERO, p.raised);
+        }
+        let fg = if unavailable.is_some() { p.dim } else { p.text };
+        let mut x = rect.left() + size::UNIT * 2.0;
+        if unavailable.is_some() {
+            self.art.icon(
+                painter,
+                Rect::from_min_size(
+                    egui::pos2(x, rect.top()),
+                    egui::vec2(size::ICON, rect.height()),
+                ),
+                Icon::Lock,
+                p.dim,
+            );
+        }
+        x += size::ICON + size::UNIT;
+        let n = painter.layout_no_wrap(note.to_owned(), self.theme.font(Type::Small), p.dim);
+        let note_x = rect.right() - size::UNIT * 2.0 - n.size().x;
+        let gap = if note.is_empty() {
+            0.0
+        } else {
+            size::UNIT * 2.0
+        };
+        let (g, cut) = self.fit(painter, text, Type::Body, fg, note_x - gap - x);
+        painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
+        painter.galley(
+            egui::pos2(note_x, rect.center().y - n.size().y / 2.0),
+            n,
+            p.dim,
+        );
+        if resp.has_focus() {
+            self.focus_ring(painter, rect.shrink(stroke::FOCUS_GAP + stroke::FOCUS_RING));
+        }
+        match unavailable {
+            Some(why) => resp.on_hover_text(why),
+            None if cut => resp.on_hover_text(text),
+            None => resp,
+        }
+    }
+
+    /// A banner: a full-width line with a level icon, a sentence or two, and
+    /// the one button that moves on.
+    pub fn banner(
+        &self,
+        ui: &mut Ui,
+        level: Level,
+        text: &str,
+        button: Option<Button<'_>>,
+    ) -> Option<Response> {
+        let p = self.p();
+        let frame = egui::Frame::NONE
+            .fill(p.raised)
+            .stroke(self.theme.frame(level.color(&p)))
+            .inner_margin(egui::Margin::same(size::UNIT as i8 * 2));
+        frame
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let (r, _) =
+                        ui.allocate_exact_size(egui::vec2(size::ICON, size::ICON), Sense::hover());
+                    self.art
+                        .icon(ui.painter(), r, level.icon(), level.color(&p));
+                    self.text(ui, text, Type::Body, p.text);
+                    button.map(|b| self.button(ui, b.small()))
+                })
+                .inner
+            })
+            .inner
+    }
+
+    /// An empty state: an icon, one sentence, at most two buttons, centred
+    /// in `rect`. Returns the buttons' responses.
+    pub fn empty_state(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        icon: Icon,
+        text: &str,
+        buttons: &[Button<'_>],
+    ) -> Vec<Response> {
+        let p = self.p();
+        let mut out = Vec::new();
+        let w = size::EMPTY_TEXT_W.min(rect.width());
+        let inner = Rect::from_center_size(rect.center(), egui::vec2(w, rect.height()));
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+            |ui| {
+                let used = size::ICON
+                    + size::UNIT * 2.0
+                    + crate::theme::text::BODY_LINE * 2.0
+                    + if buttons.is_empty() {
+                        0.0
+                    } else {
+                        size::CONTROL_H + size::STEP_12
+                    };
+                ui.add_space(((inner.height() - used) / 2.0).max(0.0));
+                let (r, _) =
+                    ui.allocate_exact_size(egui::vec2(size::ICON, size::ICON), Sense::hover());
+                self.art.icon(ui.painter(), r, icon, p.dim);
+                ui.add_space(size::UNIT * 2.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text)
+                            .font(self.theme.font(Type::Body))
+                            .color(p.dim),
+                    )
+                    .wrap()
+                    .halign(egui::Align::Center),
+                );
+                if !buttons.is_empty() {
+                    ui.add_space(size::STEP_12);
+                    ui.horizontal(|ui| {
+                        let total: f32 = buttons
+                            .iter()
+                            .map(|b| self.caps_width(ui, b.text) + size::STEP_24)
+                            .sum();
+                        ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+                        for b in buttons {
+                            out.push(self.button(ui, *b));
+                        }
+                    });
+                }
+            },
+        );
+        out
+    }
+
+    /// A divider: an 8 px strip that can be dragged, and that takes focus.
+    /// Arrow keys move it 8 px; Enter puts it back.
+    pub fn divider(&self, ui: &mut Ui, id: Id, rect: Rect, across: bool, name: &str) -> DividerOut {
+        let resp = ui.interact(rect, id, Sense::click_and_drag());
+        resp.widget_info(|| WidgetInfo::labeled(Role::Splitter, true, name));
+        let mut out = DividerOut::default();
+        let d = resp.drag_delta();
+        out.delta = if across { d.x } else { d.y };
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(if across {
+                egui::CursorIcon::ResizeHorizontal
+            } else {
+                egui::CursorIcon::ResizeVertical
+            });
+        }
+        if resp.has_focus() {
+            let (less, more) = if across {
+                (Key::ArrowLeft, Key::ArrowRight)
+            } else {
+                (Key::ArrowUp, Key::ArrowDown)
+            };
+            ui.input(|i| {
+                if i.key_pressed(less) {
+                    out.delta -= size::DIVIDER;
+                }
+                if i.key_pressed(more) {
+                    out.delta += size::DIVIDER;
+                }
+                out.reset = i.key_pressed(Key::Enter);
+            });
+            let p = self.p();
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, p.select);
+            self.focus_ring(ui.painter(), rect);
+        }
+        out
+    }
+
+    /// A region of the window: a node of its own in the accessibility tree,
+    /// with a role and a name, that can take focus.
+    pub fn region(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        name: &str,
+        role: Role,
+        fill: Color32,
+        focus_now: bool,
+    ) -> Ui {
+        let child = ui.new_child(
+            UiBuilder::new()
+                .id_salt(("region", name))
+                .max_rect(rect)
+                .sense(Sense::focusable_noninteractive())
+                .accessibility_label(name)
+                .accessibility_role(role),
+        );
+        child.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+        if focus_now {
+            let id = child.unique_id();
+            child.memory_mut(|m| m.request_focus(id));
+        }
+        child
+    }
+
+    /// A page button of the rail: an icon over a caps label, a 3 px bar and
+    /// a `select` fill when it is the current page.
+    pub fn rail_item(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        icon: Icon,
+        name: &str,
+        current: bool,
+    ) -> Response {
+        let p = self.p();
+        let resp = ui.interact(rect, ui.scope_id().with(("rail", name)), Sense::click());
+        resp.widget_info(|| WidgetInfo::selected(Role::Tab, true, current, name));
+        let painter = ui.painter();
+        if current {
+            painter.rect_filled(rect, CornerRadius::ZERO, p.select);
+            painter.rect_filled(
+                Rect::from_min_size(rect.min, egui::vec2(stroke::SELECT_BAR, rect.height())),
+                CornerRadius::ZERO,
+                p.bright,
+            );
+        } else if resp.hovered() {
+            painter.rect_filled(rect, CornerRadius::ZERO, p.raised);
+        }
+        let fg = if current { p.bright } else { p.dim };
+        let icon_rect = Rect::from_center_size(
+            egui::pos2(rect.center().x, rect.top() + size::RAIL_ICON_Y),
+            egui::vec2(size::ICON, size::ICON),
+        );
+        self.art.icon(painter, icon_rect, icon, fg);
+        let w = self.caps_width(ui, name);
+        self.caps(
+            painter,
+            rect.center().x - w / 2.0,
+            rect.top() + size::RAIL_LABEL_Y,
+            name,
+            fg,
+        );
+        if resp.has_focus() {
+            self.focus_ring(painter, rect.shrink(stroke::FOCUS_GAP + stroke::FOCUS_RING));
+        }
+        resp
+    }
+
+    /// The width one status bar segment wants for `text`, uncut.
+    pub fn status_segment_width(&self, ui: &Ui, icon: Option<Icon>, text: &str) -> f32 {
+        let g = ui.painter().layout_no_wrap(
+            text.to_owned(),
+            self.theme.font(Type::Small),
+            self.p().text,
+        );
+        Self::status_segment_chrome(icon) + g.size().x
+    }
+
+    /// The padding and icon width of a segment, around its text.
+    fn status_segment_chrome(icon: Option<Icon>) -> f32 {
+        let icon_w = if icon.is_some() {
+            size::ICON + size::UNIT
+        } else {
+            0.0
+        };
+        size::UNIT * 2.0 * 2.0 + icon_w
+    }
+
+    /// Paint one segment of the status bar in `r`. Text that does not fit
+    /// is cut with an ellipsis and shown whole in a tooltip.
+    pub fn status_segment(&self, ui: &mut Ui, r: Rect, icon: Option<Icon>, text: &str) {
+        let p = self.p();
+        let painter = ui.painter().clone();
+        let pad = size::UNIT * 2.0;
+        let icon_w = Self::status_segment_chrome(icon) - pad * 2.0;
+        let (g, cut) = self.fit(
+            &painter,
+            text,
+            Type::Small,
+            p.text,
+            r.width() - Self::status_segment_chrome(icon),
+        );
+        painter.line_segment(
+            [r.left_top(), r.left_bottom()],
+            self.theme.frame(p.frame_dim),
+        );
+        if let Some(i) = icon {
+            self.art.icon(
+                &painter,
+                Rect::from_min_size(
+                    egui::pos2(r.left() + pad, r.top()),
+                    egui::vec2(size::ICON, r.height()),
+                ),
+                i,
+                p.dim,
+            );
+        }
+        let y = r.center().y - g.size().y / 2.0;
+        painter.galley(egui::pos2(r.left() + pad + icon_w, y), g, p.text);
+        // In the accessibility tree too: an invisible label over the segment.
+        let resp = ui.put(
+            r,
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .color(Color32::TRANSPARENT)
+                    .font(self.theme.font(Type::Small)),
+            ),
+        );
+        if cut {
+            resp.on_hover_text(text);
+        }
+    }
+}

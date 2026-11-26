@@ -140,4 +140,39 @@ flowchart LR
 
 ### robco-studio
 
-The window. It will draw views and editors through a thin layer of our own over the toolkit, and hold no logic a test cannot reach through the core. Today it prints its version and opens no window. `unsafe` is forbidden.
+The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and nothing depends on it. `unsafe` is forbidden. It opens no network connection, starts no process and writes no file except one a person saves in the editor.
+
+| Module | Holds |
+|---|---|
+| `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, effects Off and Soft. The only module that may hold a colour or a size literal. |
+| `kit` | The thin layer: pane, buttons, tabs, tree row, text field, dropdown, menu row, banner, empty state, divider, status segment. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
+| `art` | The wordmark and the icons, rasterised from their SVG files at start with `resvg`, and the Spleen 8x16 label atlas built from its BDF file. |
+| `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. |
+| `native_menu` | macOS only: the system menu bar, through `muda`. |
+| `project` | The open folder, its `robco.toml` read by `studio-core`, and the rows of the Files tree. |
+| `document` | One open file: bytes to text and back, LF in the editor, CRLF kept on save. |
+| `editor` | Tabs, the text widget per document, the gutter, colours for C, find and replace, and the one question about unsaved edits. |
+| `c_lex` | A token pass over C for its colours. |
+| `app` | The window: regions, pages, the panes of the Project page, focus with F6, the dialog. |
+
+Rules, each with a test:
+
+- No colour, float size or font outside `theme`. `tests/tokens.rs` searches the source.
+- Text is never dropped without asking. Closing a tab or quitting with edits opens one question, which names its document.
+- A control that cannot act is marked disabled in the accessibility tree and says why.
+- F6 moves through toolbar, rail, the page's panes left to right and top to bottom, then the status bar.
+
+Known limits:
+
+- Save writes a temporary file and renames it over the file. The old file stays whole if a save fails, and the permission bits are kept. The saved file is a new file, so it does not keep extended attributes, access control lists, an owner or group that differ from the person saving, or hard links to the old file.
+- Studio tells open files apart by their canonical path, taken at open. A file that does not exist yet stands for its folder's canonical path and its name. On macOS the canonical path carries the stored spelling, so two spellings of one name open one tab; this was checked on macOS only.
+- Save writes only a document with edits. Before it writes, it compares the file's bytes with those of the last read or save, and asks before it overwrites a file that changed, was removed or cannot be read. Another program can still write between that check and the rename. Saving from the close or quit question refuses a changed file; Cancel, then Save, to choose. Studio does not watch files and does not reload them.
+- There is no Save as yet, and no next tab or previous tab command.
+- Save refuses a read-only file.
+- Tabs that do not fit scroll sideways and a menu at their end lists them all. A tab out of view is reached by the wheel, the menu or a click in Files; the keyboard cannot scroll the strip.
+- Each frame lays out and searches the whole text. A file near 16 MiB, or one very long line, makes the window slow.
+- Studio opens regular files only, links followed. A folder, a named pipe, a device or a socket is refused, and a named pipe is not waited on. A file or a `robco.toml` larger than 16 MiB is refused before it is read. The crate's docs name no limit, so 16 MiB is a default, not a measured need.
+
+`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI.
+
+A settings file does not exist yet. It would hold the scheme, high legibility, the effects level, the pane sizes and which panes are shown, the text size, and the recent projects.

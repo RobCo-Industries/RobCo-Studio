@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1040" width="800" height="1040" role="img" aria-labelledby="ic-t" style="color:#5cff8f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+<title id="ic-t">RobCo Studio icon set</title>
+<!-- Original icon set for RobCo Studio. Each icon is one path on a 16 by 16 grid: 1.5 stroke, round caps and
+     joins, no fill. Use a symbol by its id, i-NAME. Studio bakes them into one atlas at 1x, 2x and 3x, in
+     white with alpha, and tints them with the scheme colour.
+     Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+<rect class="asset-ground" width="800" height="1040" fill="#07110b"/>
+<style>.g{font:700 12px ui-monospace,Menlo,Consolas,monospace;fill:currentColor;letter-spacing:.08em;text-transform:uppercase;stroke:none}.n{font:10px ui-monospace,Menlo,Consolas,monospace;fill:currentColor;opacity:.7;text-anchor:middle;stroke:none}</style>
+<defs fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><g id="ic-all"><symbol id="i-bench" viewBox="0 0 16 16"><path d="M2 5.5h12M3.5 5.5V13M12.5 5.5V13M3.5 9.5h9M6 3h4v2.5H6z"/></symbol><symbol id="i-card" viewBox="0 0 16 16"><path d="M4 2h5.5L12 4.5V14H4zM6 4.5v2M8 4.5v2"/></symbol><symbol id="i-cable" viewBox="0 0 16 16"><path d="M6 2v3M10 2v3M4.5 5h7v3a3.5 3.5 0 0 1-7 0zM8 11.5V14"/></symbol><symbol id="i-sdk" viewBox="0 0 16 16"><path d="M8 1.8l5.5 3v6.4L8 14.2l-5.5-3V4.8zM2.5 4.8L8 7.8l5.5-3M8 7.8v6.4"/></symbol><symbol id="i-settings" viewBox="0 0 16 16"><path d="M2.5 4.5h7M12 4.5h1.5M2.5 11.5H4M6.5 11.5h7M9.5 3v3H12V3zM4 10v3h2.5v-3z"/></symbol><symbol id="i-help" viewBox="0 0 16 16"><path d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zM6.2 6.2a1.9 1.9 0 1 1 2.6 1.9c-.5.3-.8.6-.8 1.2M8 11.3v.01"/></symbol><symbol id="i-build" viewBox="0 0 16 16"><path d="M2.5 4h7L12 6.5H9.5M5 4v3h4.5V4M7.25 7v7"/></symbol><symbol id="i-run" viewBox="0 0 16 16"><path d="M4.5 3l8 5-8 5z"/></symbol><symbol id="i-stop" viewBox="0 0 16 16"><path d="M4 4h8v8H4z"/></symbol><symbol id="i-debug" viewBox="0 0 16 16"><path d="M8 5.5a3 3 0 0 1 3 3v2a3 3 0 0 1-6 0v-2a3 3 0 0 1 3-3zM6 5L4.5 3M10 5l1.5-2M5 8.5H2.5M5 11l-2 1.5M11 8.5h2.5M11 11l2 1.5M8 8v5"/></symbol><symbol id="i-write-card" viewBox="0 0 16 16"><path d="M11.5 7V4.5L9 2H4.5v12h3M11 10v4M9 12.5l2 2 2-2"/></symbol><symbol id="i-sync" viewBox="0 0 16 16"><path d="M3 8a5 5 0 0 1 8.5-3.5L13 6M13 3v3h-3M13 8a5 5 0 0 1-8.5 3.5L3 10M3 13v-3h3"/></symbol><symbol id="i-reset" viewBox="0 0 16 16"><path d="M3.5 8a4.5 4.5 0 1 0 1.6-3.4M3 2.5v3h3"/></symbol><symbol id="i-pause" viewBox="0 0 16 16"><path d="M5.5 3.5v9M10.5 3.5v9"/></symbol><symbol id="i-step" viewBox="0 0 16 16"><path d="M3 6.5a5 5 0 0 1 9.5-.5M12.5 3v3h-3M8 11.8v.01"/></symbol><symbol id="i-continue" viewBox="0 0 16 16"><path d="M3.5 3.5v9M6.5 3.5l7 4.5-7 4.5z"/></symbol><symbol id="i-insert" viewBox="0 0 16 16"><path d="M8 2v7M5 6l3 3 3-3M3 11v2.5h10V11"/></symbol><symbol id="i-eject" viewBox="0 0 16 16"><path d="M8 3l5 6H3zM3 12.5h10"/></symbol><symbol id="i-export" viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M3 9v4.5h10V9"/></symbol><symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2v8M5 7l3 3 3-3M3 13.5h10"/></symbol><symbol id="i-save" viewBox="0 0 16 16"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5V6H10V2.5M5.5 13.5v-4h5v4"/></symbol><symbol id="i-undo" viewBox="0 0 16 16"><path d="M5.5 3l-3 3 3 3M2.5 6H10a3.5 3.5 0 0 1 0 7H7"/></symbol><symbol id="i-redo" viewBox="0 0 16 16"><path d="M10.5 3l3 3-3 3M13.5 6H6a3.5 3.5 0 0 0 0 7h3"/></symbol><symbol id="i-search" viewBox="0 0 16 16"><path d="M7 2.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9zM10.5 10.5l3 3"/></symbol><symbol id="i-copy" viewBox="0 0 16 16"><path d="M5.5 5.5h8v8h-8zM10.5 5.5v-3h-8v8h3"/></symbol><symbol id="i-external" viewBox="0 0 16 16"><path d="M9 2.5h4.5V7M13.5 2.5l-6 6M11.5 9.5v4h-9v-9h4"/></symbol><symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol><symbol id="i-add" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol><symbol id="i-remove" viewBox="0 0 16 16"><path d="M3 8h10"/></symbol><symbol id="i-fit" viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></symbol><symbol id="i-zoom-in" viewBox="0 0 16 16"><path d="M7 2.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9zM10.5 10.5l3 3M5 7h4M7 5v4"/></symbol><symbol id="i-zoom-out" viewBox="0 0 16 16"><path d="M7 2.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9zM10.5 10.5l3 3M5 7h4"/></symbol><symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.5h4L7.5 6H14v7H2z"/></symbol><symbol id="i-file" viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v3h3"/></symbol><symbol id="i-file-c" viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v3h3M9.5 9a1.8 1.8 0 1 0 0 2.5"/></symbol><symbol id="i-manifest" viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v3h3M6 8.5h4M6 11h4"/></symbol><symbol id="i-sprite" viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11zM5.5 5.5h2v2h-2zM8.5 8.5h2v2h-2zM5.5 10.5h1M10 5.5h.5"/></symbol><symbol id="i-map" viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11zM2.5 6.2h11M2.5 9.8h11M6.2 2.5v11M9.8 2.5v11"/></symbol><symbol id="i-tune" viewBox="0 0 16 16"><path d="M2 10h2.5V5h3v6h3V5H13v5h1"/></symbol><symbol id="i-recording" viewBox="0 0 16 16"><path d="M3 7v2M5.5 5v6M8 3v10M10.5 5.5v5M13 7v2"/></symbol><symbol id="i-strings" viewBox="0 0 16 16"><path d="M4 12.5L8 3l4 9.5M5.5 9.5h5"/></symbol><symbol id="i-tape" viewBox="0 0 16 16"><path d="M2 3.5h9.5L14 6v6.5H2zM4 8a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0zM9 8a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z"/></symbol><symbol id="i-rom" viewBox="0 0 16 16"><path d="M4.5 4.5h7v7h-7zM6.5 2v2.5M9.5 2v2.5M6.5 11.5V14M9.5 11.5V14M2 6.5h2.5M2 9.5h2.5M11.5 6.5H14M11.5 9.5H14"/></symbol><symbol id="i-terminal" viewBox="0 0 16 16"><path d="M2 3h12v8.5H2zM5 13.5h6M4.5 6l2 1.5-2 1.5M8 9h3"/></symbol><symbol id="i-wrist" viewBox="0 0 16 16"><path d="M4 3.5h8v9H4zM6 1.5h4v2H6zM6 12.5h4v2H6zM6 6h4v3H6z"/></symbol><symbol id="i-dial" viewBox="0 0 16 16"><path d="M8 3.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9zM8 8l2-2.5M8 1v1M8 14v1M1 8h1M14 8h1"/></symbol><symbol id="i-keys" viewBox="0 0 16 16"><path d="M2.5 4.5h11v7h-11zM5 7h.01M8 7h.01M11 7h.01M5.5 9.5h5"/></symbol><symbol id="i-port" viewBox="0 0 16 16"><path d="M2.5 5h11L12 11H4zM5.5 7h.01M8 7h.01M10.5 7h.01M6.75 9h.01M9.25 9h.01"/></symbol><symbol id="i-lock" viewBox="0 0 16 16"><path d="M4 7.5h8v6H4zM5.5 7.5v-2a2.5 2.5 0 0 1 5 0v2"/></symbol><symbol id="i-wearer" viewBox="0 0 16 16"><path d="M8 2.5a2.2 2.2 0 1 0 0 4.4a2.2 2.2 0 0 0 0-4.4zM3.5 13.5a4.5 4.5 0 0 1 9 0"/></symbol><symbol id="i-breakpoint" viewBox="0 0 16 16"><path d="M8 4a4 4 0 1 0 0 8a4 4 0 0 0 0-8z"/></symbol><symbol id="i-ok" viewBox="0 0 16 16"><path d="M3 8.5L6.5 12L13 4.5"/></symbol><symbol id="i-verified" viewBox="0 0 16 16"><path d="M1.5 8.5l3 3 5-6M9 11.5l1 1 4.5-5.5"/></symbol><symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.5l6 10.5H2zM8 6.5v3M8 11.2v.01"/></symbol><symbol id="i-error" viewBox="0 0 16 16"><path d="M5.5 2h5L14 5.5v5L10.5 14h-5L2 10.5v-5zM6 6l4 4M10 6l-4 4"/></symbol><symbol id="i-info" viewBox="0 0 16 16"><path d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zM8 7.5V11M8 5v.01"/></symbol><symbol id="i-refused" viewBox="0 0 16 16"><path d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zM3.8 3.8l8.4 8.4"/></symbol><symbol id="i-wait" viewBox="0 0 16 16"><path d="M4 2.5h8M4 13.5h8M5 2.5v2L8 8l3-3.5v-2M5 13.5v-2L8 8l3 3.5v2"/></symbol><symbol id="i-fault" viewBox="0 0 16 16"><path d="M2 8h3l1.5-3 3 6L11 8h3"/></symbol><symbol id="i-slow" viewBox="0 0 16 16"><path d="M8 2.5a5.5 5.5 0 1 0 0 11a5.5 5.5 0 0 0 0-11zM8 5v3l2 1.5"/></symbol><symbol id="i-pencil" viewBox="0 0 16 16"><path d="M3 13l.7-3 6.8-6.8 2.3 2.3L6 12.3zM9.3 4.4l2.3 2.3"/></symbol><symbol id="i-eraser" viewBox="0 0 16 16"><path d="M6.5 13.5h7M3 10l6-6.5 4 4-5 6H5.5zM6.5 6.5l4 4"/></symbol><symbol id="i-fill" viewBox="0 0 16 16"><path d="M3 8.5l5-5 5 5-4.5 4.5a1 1 0 0 1-1.4 0zM3 8.5h10M6 2l2 1.5"/></symbol><symbol id="i-grid" viewBox="0 0 16 16"><path d="M2.5 5.5h11M2.5 10.5h11M5.5 2.5v11M10.5 2.5v11"/></symbol><symbol id="i-note" viewBox="0 0 16 16"><path d="M6 11.5V3.5l6-1.5v8M6 11.5a1.8 1.8 0 1 1-1.8-1.8H6M12 10a1.8 1.8 0 1 1-1.8-1.8H12"/></symbol><symbol id="i-trim" viewBox="0 0 16 16"><path d="M5 2.5H3v11h2M11 2.5h2v11h-2M6.5 8h3"/></symbol><symbol id="i-level" viewBox="0 0 16 16"><path d="M3 13V9M6.5 13V5M10 13V7M13.5 13V3"/></symbol><symbol id="i-scheme" viewBox="0 0 16 16"><path d="M8 5a3 3 0 1 0 0 6a3 3 0 0 0 0-6zM8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/></symbol><symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8zM8 6.2a1.8 1.8 0 1 0 0 3.6a1.8 1.8 0 0 0 0-3.6z"/></symbol><symbol id="i-chev-right" viewBox="0 0 16 16"><path d="M6 3.5L10.5 8 6 12.5"/></symbol><symbol id="i-chev-down" viewBox="0 0 16 16"><path d="M3.5 6L8 10.5 12.5 6"/></symbol></g></defs>
+<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+<text x="16" y="28" class="g">Places</text>
+<use href="#i-bench" x="48" y="40" width="32" height="32"/><text x="64" y="88" class="n">bench</text>
+<use href="#i-card" x="144" y="40" width="32" height="32"/><text x="160" y="88" class="n">card</text>
+<use href="#i-cable" x="240" y="40" width="32" height="32"/><text x="256" y="88" class="n">cable</text>
+<use href="#i-sdk" x="336" y="40" width="32" height="32"/><text x="352" y="88" class="n">sdk</text>
+<use href="#i-settings" x="432" y="40" width="32" height="32"/><text x="448" y="88" class="n">settings</text>
+<use href="#i-help" x="528" y="40" width="32" height="32"/><text x="544" y="88" class="n">help</text>
+<text x="16" y="124" class="g">Actions</text>
+<use href="#i-build" x="48" y="136" width="32" height="32"/><text x="64" y="184" class="n">build</text>
+<use href="#i-run" x="144" y="136" width="32" height="32"/><text x="160" y="184" class="n">run</text>
+<use href="#i-stop" x="240" y="136" width="32" height="32"/><text x="256" y="184" class="n">stop</text>
+<use href="#i-debug" x="336" y="136" width="32" height="32"/><text x="352" y="184" class="n">debug</text>
+<use href="#i-write-card" x="432" y="136" width="32" height="32"/><text x="448" y="184" class="n">write-card</text>
+<use href="#i-sync" x="528" y="136" width="32" height="32"/><text x="544" y="184" class="n">sync</text>
+<use href="#i-reset" x="624" y="136" width="32" height="32"/><text x="640" y="184" class="n">reset</text>
+<use href="#i-pause" x="720" y="136" width="32" height="32"/><text x="736" y="184" class="n">pause</text>
+<use href="#i-step" x="48" y="200" width="32" height="32"/><text x="64" y="248" class="n">step</text>
+<use href="#i-continue" x="144" y="200" width="32" height="32"/><text x="160" y="248" class="n">continue</text>
+<use href="#i-insert" x="240" y="200" width="32" height="32"/><text x="256" y="248" class="n">insert</text>
+<use href="#i-eject" x="336" y="200" width="32" height="32"/><text x="352" y="248" class="n">eject</text>
+<use href="#i-export" x="432" y="200" width="32" height="32"/><text x="448" y="248" class="n">export</text>
+<use href="#i-download" x="528" y="200" width="32" height="32"/><text x="544" y="248" class="n">download</text>
+<use href="#i-save" x="624" y="200" width="32" height="32"/><text x="640" y="248" class="n">save</text>
+<use href="#i-undo" x="720" y="200" width="32" height="32"/><text x="736" y="248" class="n">undo</text>
+<use href="#i-redo" x="48" y="264" width="32" height="32"/><text x="64" y="312" class="n">redo</text>
+<use href="#i-search" x="144" y="264" width="32" height="32"/><text x="160" y="312" class="n">search</text>
+<use href="#i-copy" x="240" y="264" width="32" height="32"/><text x="256" y="312" class="n">copy</text>
+<use href="#i-external" x="336" y="264" width="32" height="32"/><text x="352" y="312" class="n">external</text>
+<use href="#i-close" x="432" y="264" width="32" height="32"/><text x="448" y="312" class="n">close</text>
+<use href="#i-add" x="528" y="264" width="32" height="32"/><text x="544" y="312" class="n">add</text>
+<use href="#i-remove" x="624" y="264" width="32" height="32"/><text x="640" y="312" class="n">remove</text>
+<use href="#i-fit" x="720" y="264" width="32" height="32"/><text x="736" y="312" class="n">fit</text>
+<use href="#i-zoom-in" x="48" y="328" width="32" height="32"/><text x="64" y="376" class="n">zoom-in</text>
+<use href="#i-zoom-out" x="144" y="328" width="32" height="32"/><text x="160" y="376" class="n">zoom-out</text>
+<text x="16" y="412" class="g">Things</text>
+<use href="#i-folder" x="48" y="424" width="32" height="32"/><text x="64" y="472" class="n">folder</text>
+<use href="#i-file" x="144" y="424" width="32" height="32"/><text x="160" y="472" class="n">file</text>
+<use href="#i-file-c" x="240" y="424" width="32" height="32"/><text x="256" y="472" class="n">file-c</text>
+<use href="#i-manifest" x="336" y="424" width="32" height="32"/><text x="352" y="472" class="n">manifest</text>
+<use href="#i-sprite" x="432" y="424" width="32" height="32"/><text x="448" y="472" class="n">sprite</text>
+<use href="#i-map" x="528" y="424" width="32" height="32"/><text x="544" y="472" class="n">map</text>
+<use href="#i-tune" x="624" y="424" width="32" height="32"/><text x="640" y="472" class="n">tune</text>
+<use href="#i-recording" x="720" y="424" width="32" height="32"/><text x="736" y="472" class="n">recording</text>
+<use href="#i-strings" x="48" y="488" width="32" height="32"/><text x="64" y="536" class="n">strings</text>
+<use href="#i-tape" x="144" y="488" width="32" height="32"/><text x="160" y="536" class="n">tape</text>
+<use href="#i-rom" x="240" y="488" width="32" height="32"/><text x="256" y="536" class="n">rom</text>
+<use href="#i-terminal" x="336" y="488" width="32" height="32"/><text x="352" y="536" class="n">terminal</text>
+<use href="#i-wrist" x="432" y="488" width="32" height="32"/><text x="448" y="536" class="n">wrist</text>
+<use href="#i-dial" x="528" y="488" width="32" height="32"/><text x="544" y="536" class="n">dial</text>
+<use href="#i-keys" x="624" y="488" width="32" height="32"/><text x="640" y="536" class="n">keys</text>
+<use href="#i-port" x="720" y="488" width="32" height="32"/><text x="736" y="536" class="n">port</text>
+<use href="#i-lock" x="48" y="552" width="32" height="32"/><text x="64" y="600" class="n">lock</text>
+<use href="#i-wearer" x="144" y="552" width="32" height="32"/><text x="160" y="600" class="n">wearer</text>
+<use href="#i-breakpoint" x="240" y="552" width="32" height="32"/><text x="256" y="600" class="n">breakpoint</text>
+<text x="16" y="636" class="g">States</text>
+<use href="#i-ok" x="48" y="648" width="32" height="32"/><text x="64" y="696" class="n">ok</text>
+<use href="#i-verified" x="144" y="648" width="32" height="32"/><text x="160" y="696" class="n">verified</text>
+<use href="#i-warn" x="240" y="648" width="32" height="32"/><text x="256" y="696" class="n">warn</text>
+<use href="#i-error" x="336" y="648" width="32" height="32"/><text x="352" y="696" class="n">error</text>
+<use href="#i-info" x="432" y="648" width="32" height="32"/><text x="448" y="696" class="n">info</text>
+<use href="#i-refused" x="528" y="648" width="32" height="32"/><text x="544" y="696" class="n">refused</text>
+<use href="#i-wait" x="624" y="648" width="32" height="32"/><text x="640" y="696" class="n">wait</text>
+<use href="#i-fault" x="720" y="648" width="32" height="32"/><text x="736" y="696" class="n">fault</text>
+<use href="#i-slow" x="48" y="712" width="32" height="32"/><text x="64" y="760" class="n">slow</text>
+<text x="16" y="796" class="g">Editor tools</text>
+<use href="#i-pencil" x="48" y="808" width="32" height="32"/><text x="64" y="856" class="n">pencil</text>
+<use href="#i-eraser" x="144" y="808" width="32" height="32"/><text x="160" y="856" class="n">eraser</text>
+<use href="#i-fill" x="240" y="808" width="32" height="32"/><text x="256" y="856" class="n">fill</text>
+<use href="#i-grid" x="336" y="808" width="32" height="32"/><text x="352" y="856" class="n">grid</text>
+<use href="#i-note" x="432" y="808" width="32" height="32"/><text x="448" y="856" class="n">note</text>
+<use href="#i-trim" x="528" y="808" width="32" height="32"/><text x="544" y="856" class="n">trim</text>
+<use href="#i-level" x="624" y="808" width="32" height="32"/><text x="640" y="856" class="n">level</text>
+<use href="#i-scheme" x="720" y="808" width="32" height="32"/><text x="736" y="856" class="n">scheme</text>
+<use href="#i-eye" x="48" y="872" width="32" height="32"/><text x="64" y="920" class="n">eye</text>
+<text x="16" y="956" class="g">Arrows</text>
+<use href="#i-chev-right" x="48" y="968" width="32" height="32"/><text x="64" y="1016" class="n">chev-right</text>
+<use href="#i-chev-down" x="144" y="968" width="32" height="32"/><text x="160" y="1016" class="n">chev-down</text>
+</g>
+</svg>

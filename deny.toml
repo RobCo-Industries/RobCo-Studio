@@ -28,6 +28,7 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",                          # serialport; allows combination with the GPL
+    "BSL-1.0",                          # clipboard-win and error-code, the window's clipboard on Windows; permissive, compatible with GPL-3.0-or-later
 ]
 
 [advisories]
