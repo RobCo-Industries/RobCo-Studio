@@ -1170,3 +1170,17 @@ fn a_file_name_of_any_length_saves_renames_and_deletes_or_is_refused() {
         }
     }
 }
+
+#[test]
+fn a_listed_theme_is_picked_by_its_file() {
+    let mut s = Studio::new(None);
+    let calm = Spec {
+        name: "Calm".into(),
+        ..SHIPPED[0].clone()
+    };
+    s.list_theme(calm, "calm.toml");
+    let i = s.themes().len() - 1;
+    s.pick_theme(i);
+    assert_eq!(s.current, i);
+    assert_eq!(s.in_use().name, "Calm");
+}

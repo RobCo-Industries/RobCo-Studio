@@ -266,6 +266,7 @@ impl Studio {
     /// How `settings.toml` names the theme at `i`: its file, or the name
     /// of a theme that ships.
     pub(super) fn key(&self, i: usize) -> String {
+        debug_assert_eq!(self.themes.len(), self.theme_files.len());
         match self.theme_files.get(i) {
             Some(Some(f)) => f.clone(),
             _ => self

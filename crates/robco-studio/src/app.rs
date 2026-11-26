@@ -179,7 +179,7 @@ pub struct Studio {
     /// legibility is the person's switch.
     pub theme: Theme,
     /// Every theme known, the six that ship first.
-    pub themes: Vec<Spec>,
+    pub(crate) themes: Vec<Spec>,
     /// The place of the theme in use in `themes`.
     pub current: usize,
     /// The theme in use, changed and not saved, or None.
@@ -192,7 +192,7 @@ pub struct Studio {
     pub adrift: Option<String>,
     /// For each theme of `themes`, its file in the themes folder, or None
     /// for a theme that ships.
-    pub theme_files: Vec<Option<String>>,
+    pub(crate) theme_files: Vec<Option<String>>,
     /// Each file of the themes folder that is not a theme, with the line
     /// that says why.
     pub refused: Vec<(String, String)>,
@@ -722,6 +722,19 @@ impl Studio {
         if self.settings_due && !held {
             self.save_settings();
         }
+    }
+
+    /// Every theme known, the six that ship first.
+    pub fn themes(&self) -> &[Spec] {
+        &self.themes
+    }
+
+    /// List `spec` as the theme of `file` in the themes folder, after the
+    /// others. Studio writes nothing. The two lists grow together, so a
+    /// pick finds the theme by its file.
+    pub fn list_theme(&mut self, spec: Spec, file: &str) {
+        self.themes.push(spec);
+        self.theme_files.push(Some(file.to_owned()));
     }
 
     /// Pick the theme at place `i` of the list, from the menu or the

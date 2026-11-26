@@ -1847,7 +1847,7 @@ fn adjust_moves_a_strength_and_reset_brings_it_back() {
     assert_eq!(h.state().status.1, "Theme: Green, changed. Not saved.");
     assert!(shown(&h, "Theme: Green, changed"));
     // The theme that ships keeps its numbers.
-    assert_eq!(h.state().themes[GREEN].strengths, crt::LIVE);
+    assert_eq!(h.state().themes()[GREEN].strengths, crt::LIVE);
     // Revert drops the change.
     h.query_all_by_label("Revert")
         .find(|n| !n.accesskit_node().is_disabled())
