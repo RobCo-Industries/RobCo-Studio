@@ -6,11 +6,13 @@ This page shows where the code is and where it will go.
 
 ## Crates
 
-The build arrows go one way: the two low libraries, then the core, then the two programs.
+The build arrows go one way: the two low libraries, then the core, then the transport, then the two programs.
 
 ```mermaid
 flowchart TB
-    ROBCO["robco<br/>the command"] --> CORE
+    ROBCO["robco<br/>the command"] --> NET
+    ROBCO --> CORE
+    NET["studio-net<br/>https transport"] --> CORE
     WIN["robco-studio<br/>the window"] --> CORE
     CORE["studio-core<br/>no window dependency"] --> SYS
     CORE --> DISK
@@ -92,15 +94,31 @@ How it keeps the cache whole:
 
 `codes` holds the table of error codes and the exit code of each, from the "Exit codes" and "Error codes" sections of [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). Every error of `manifest`, `resolve`, `install` and `boot` gives its code through the `ErrorCode` trait, and `exit_code` maps a code to the number the command ends with. It reads no file and prints nothing.
 
+### studio-net
+
+The `https` transport. It implements `studio-core`'s `Transport` trait, so the installer still counts, hashes and bounds every byte and decides every error code. It is a crate of its own so that the TLS stack stays out of `studio-core`, and out of any program that downloads nothing. It is a small HTTP/1.1 client over `rustls`, so each rule below is in one file, `crates/studio-net/src/lib.rs`:
+
+- Only `https://`, also after a redirect. At most 5 redirects, to any host, since release files on GitHub are served from another host. A `Location` that is not `https://`, `//host/...` or `/path` is refused.
+- Certificates are checked by `rustls-platform-verifier`, which asks the system's verifier and trust store. No list of roots is bundled, and no switch turns the check off.
+- 30 s to connect to one address and 60 s for a read or a write that moves no byte. No retry: a failed fetch is a failure, by "Hashes" of [SDK_PACKAGE.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/SDK_PACKAGE.md#hashes).
+- The body streams into the caller's writer. When the writer refuses, the transfer ends and the connection closes. Nothing holds an archive in memory. An index is held, up to 8 MiB.
+- A request carries exactly `Host`, `User-Agent: robco/<version>`, `Accept-Encoding: identity` and `Connection: close`. No cookie and no token. `HTTPS_PROXY` and the other proxy variables are not read.
+- An error names a URL without its query, its fragment and any user info, and never prints a header.
+
+The `test-trust` feature adds a constructor that trusts one certificate, and a TLS server on 127.0.0.1 for tests. Only dev-dependencies turn it on, so no program build has it.
+
+`ring` compiles C on every system through the `cc` crate, with the compiler `cc` finds: MSVC on Windows, as for any crate but `studio-sys`. On Linux and macOS it also assembles `.S` files with that compiler. On Windows x64 it links assembly objects that ship with the crate, so no assembler is needed.
+
 ### robco
 
-The command. It reads the command line, writes the two output streams and leaves all work to the core. It answers `robco --version`, `robco version`, `robco sdk list` and `robco sdk install`, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). `unsafe` is forbidden.
+The command. `main.rs` calls the library's `run`, which the program's tests also call with a transport that trusts a test certificate. It reads the command line, writes the two output streams and leaves all work to the core. It answers `robco --version`, `robco version`, `robco sdk list` and `robco sdk install`, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). `unsafe` is forbidden.
 
 Each part is a module of its own:
 
 - `args` reads the command line by hand. Every wrong form gives `usage`.
 - `cache` finds the cache folder, with `ROBCO_CACHE` first.
-- `index` sorts a `--index` location and reads a local index. An `https://` index fails with `index: read`, since no `https` transport exists yet.
+- `index` sorts a `--index` location and reads the index, from a local file or from an `https://` URL through `studio-net`. A download that fails, or an index longer than 8 MiB, gives `index: read`.
+- `net` starts TLS on the first download only, and sends each archive `url` to `studio-net` or, for a relative path in a local index, to the index folder.
 - `list` and `install` are the two commands.
 - `lines` writes JSON lines with `--json`, and text and the one error line without it.
 
