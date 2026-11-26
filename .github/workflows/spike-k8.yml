@@ -1,0 +1,66 @@
+name: spike-k8
+
+on:
+  push:
+    branches: [spike-k8]
+  pull_request:
+    paths:
+      - "spikes/k8/**"
+      - ".github/workflows/spike-k8.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-k8-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  crt:
+    name: "crt on ${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: spikes/k8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install system packages for egui
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev libx11-dev
+      - name: Count packages in the lock file
+        run: |
+          echo "lock packages: $(grep -c '^name = ' Cargo.lock)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Clean debug build
+        run: |
+          start=$(date +%s)
+          cargo build --locked --all-targets
+          echo "clean debug build: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Headless tests
+        run: cargo test --locked
+      - name: Clean release build
+        run: cargo build --release --locked
+      - name: Offscreen render, pass timings and curvature check, if the runner has a GPU adapter
+        run: cargo run --release --locked --bin render -- "$RUNNER_TEMP/k8" | grep -v "^wrote" | tee -a "$GITHUB_STEP_SUMMARY"

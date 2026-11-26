@@ -1,0 +1,29 @@
+[package]
+name = "k8-crt"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+# The window, egui-wgpu and wgpu come through it. MIT OR Apache-2.0.
+eframe = { version = "=0.37.0", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+# Blocks on wgpu's futures in the offscreen renderer. Already in eframe's tree. MIT OR Apache-2.0.
+pollster = "1.0.3"
+# Writes the PNG pictures. Already in eframe's tree. MIT OR Apache-2.0.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+# Parses and validates the WGSL with no GPU. Already in eframe's tree. MIT OR Apache-2.0.
+naga = { version = "30.0.2", features = ["wgsl-in"] }
+
+[profile.release]
+strip = true
