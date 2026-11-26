@@ -430,6 +430,27 @@ impl Studio {
         }
     }
 
+    /// Whether the menu item of command `c` shows its mark now, by
+    /// [`menus::check`]. False for an item with no state.
+    pub fn checked(&self, c: Command) -> bool {
+        match c {
+            Command::PageProject => self.page == Page::Project,
+            Command::PageCard => self.page == Page::Card,
+            Command::PageDevice => self.page == Page::Device,
+            Command::PageSdk => self.page == Page::Sdk,
+            Command::ToggleFiles => self.layout.files,
+            Command::ToggleBottom => self.layout.bottom,
+            Command::CompactHeader => self.compact_header,
+            Command::HighLegibility => self.theme.high_legibility,
+            Command::SimZoom(z) => self.sim_zoom == z,
+            Command::Phosphor(s) => self.theme.scheme == s,
+            // The effects drawn, so high legibility marks Off.
+            Command::EffectsOff => self.theme.effects() == Effects::Off,
+            Command::EffectsSoft => self.theme.effects() == Effects::Soft,
+            _ => false,
+        }
+    }
+
     /// The folder chooser is open or about to open.
     pub fn choosing(&self) -> bool {
         self.choosing != Choosing::Idle
@@ -2364,5 +2385,123 @@ mod tests {
         let l = status_layout(40.0, 500.0, None, &long, &give, 0, 0.0);
         assert_eq!(l.segs.last(), Some(&None), "{l:?}");
         assert!(l.segs[0].is_some(), "{l:?}");
+    }
+
+    fn native(s: &Studio, c: Command) -> menus::NativeItem {
+        menus::native_items(s)
+            .into_iter()
+            .find(|i| i.command == c)
+            .unwrap()
+    }
+
+    /// Each choice set has exactly one item marked.
+    fn one_per_choice(s: &Studio) {
+        let list = menus::native_items(s);
+        for set in ["page", "phosphor", "effects", "scale"] {
+            let on = list
+                .iter()
+                .filter(|i| menus::check(i.command) == menus::Check::Choice(set) && i.checked)
+                .count();
+            assert_eq!(on, 1, "{set}");
+        }
+    }
+
+    #[test]
+    fn every_toggle_and_choice_is_a_check_item() {
+        let s = Studio::new(None);
+        let want = [
+            Command::PageProject,
+            Command::PageCard,
+            Command::PageDevice,
+            Command::PageSdk,
+            Command::ToggleFiles,
+            Command::ToggleBottom,
+            Command::CompactHeader,
+            Command::HighLegibility,
+            Command::EffectsOff,
+            Command::EffectsSoft,
+            Command::SimZoom(1),
+            Command::SimZoom(2),
+            Command::SimZoom(3),
+        ];
+        let list = menus::native_items(&s);
+        for i in &list {
+            let is_state = want.contains(&i.command) || matches!(i.command, Command::Phosphor(_));
+            let kind = if is_state {
+                menus::NativeKind::Check
+            } else {
+                menus::NativeKind::Plain
+            };
+            assert_eq!(i.kind, kind, "{}", i.title);
+            if kind == menus::NativeKind::Plain {
+                assert!(!i.checked, "{}", i.title);
+            }
+        }
+        for sc in crate::theme::Scheme::ALL {
+            assert_eq!(
+                native(&s, Command::Phosphor(sc)).kind,
+                menus::NativeKind::Check
+            );
+        }
+        assert_eq!(
+            list.len(),
+            menus::menus().iter().map(|m| m.items.len()).sum::<usize>()
+        );
+        one_per_choice(&s);
+    }
+
+    #[test]
+    fn marks_follow_the_state_by_menu_key_and_rule() {
+        let ctx = egui::Context::default();
+        let mut s = Studio::new(None);
+        // By the menu.
+        assert!(!native(&s, Command::HighLegibility).checked);
+        s.run(&ctx, Command::HighLegibility);
+        assert!(native(&s, Command::HighLegibility).checked);
+        // By the rule: high legibility draws no effects, so Off is marked.
+        assert!(native(&s, Command::EffectsOff).checked);
+        assert!(!native(&s, Command::EffectsSoft).checked);
+        one_per_choice(&s);
+        // Soft is refused while high legibility holds: the mark stays on Off.
+        s.run(&ctx, Command::EffectsSoft);
+        assert!(native(&s, Command::EffectsOff).checked);
+        assert!(!native(&s, Command::EffectsSoft).checked);
+        // By the shortcut.
+        press(&mut s, &ctx, Key::L, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(!native(&s, Command::HighLegibility).checked);
+        assert!(native(&s, Command::EffectsSoft).checked);
+        press(&mut s, &ctx, Key::Num3, Modifiers::COMMAND);
+        assert!(native(&s, Command::PageDevice).checked);
+        assert!(!native(&s, Command::PageProject).checked);
+        press(&mut s, &ctx, Key::J, Modifiers::COMMAND);
+        assert_eq!(native(&s, Command::ToggleBottom).checked, s.layout.bottom);
+        let files = s.layout.files;
+        s.run(&ctx, Command::ToggleFiles);
+        assert_eq!(native(&s, Command::ToggleFiles).checked, !files);
+        s.run(&ctx, Command::CompactHeader);
+        assert!(native(&s, Command::CompactHeader).checked);
+        s.run(&ctx, Command::Phosphor(crate::theme::Scheme::Amber));
+        assert!(native(&s, Command::Phosphor(crate::theme::Scheme::Amber)).checked);
+        assert!(!native(&s, Command::Phosphor(crate::theme::Scheme::Green)).checked);
+        one_per_choice(&s);
+    }
+
+    #[test]
+    fn a_refused_scale_keeps_its_mark_and_stays_greyed() {
+        let ctx = egui::Context::default();
+        let mut s = Studio::new(None);
+        let z3 = native(&s, Command::SimZoom(3));
+        assert!(!z3.enabled);
+        s.run(&ctx, Command::SimZoom(3));
+        assert!(!native(&s, Command::SimZoom(3)).checked);
+        assert!(native(&s, Command::SimZoom(1)).checked);
+        s.sim_room = 3;
+        s.run(&ctx, Command::SimZoom(3));
+        assert!(native(&s, Command::SimZoom(3)).checked);
+        // The room shrinks: the item greys and keeps its mark.
+        s.sim_room = 1;
+        let z3 = native(&s, Command::SimZoom(3));
+        assert!(!z3.enabled && z3.checked);
+        one_per_choice(&s);
     }
 }

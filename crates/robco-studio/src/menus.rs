@@ -361,6 +361,86 @@ pub fn command_for_id(id: &str) -> Option<Command> {
     )
 }
 
+/// What state a menu item shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    /// No state: the item only acts.
+    Plain,
+    /// On or off, flipped by the item.
+    Toggle,
+    /// One of a set, named here; the chosen one is marked.
+    Choice(&'static str),
+}
+
+/// The state command `c` shows in a menu.
+pub fn check(c: Command) -> Check {
+    use Command as C;
+    match c {
+        C::ToggleFiles | C::ToggleBottom | C::CompactHeader | C::HighLegibility => Check::Toggle,
+        C::PageProject | C::PageCard | C::PageDevice | C::PageSdk => Check::Choice("page"),
+        C::Phosphor(_) => Check::Choice("phosphor"),
+        C::EffectsOff | C::EffectsSoft => Check::Choice("effects"),
+        C::SimZoom(_) => Check::Choice("scale"),
+        _ => Check::Plain,
+    }
+}
+
+/// The kind of a native menu item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeKind {
+    /// An item with no mark.
+    Plain,
+    /// An item with a check mark.
+    Check,
+}
+
+/// One item of a native menu bar, as the program's state gives it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeItem {
+    /// The id the native item carries, by [`item_id`].
+    pub id: String,
+    /// The index of its menu in [`menus`].
+    pub menu: usize,
+    /// What it does.
+    pub command: Command,
+    /// Plain or check.
+    pub kind: NativeKind,
+    /// Its text.
+    pub title: &'static str,
+    /// It can act now.
+    pub enabled: bool,
+    /// Its mark is on. Always false for a plain item.
+    pub checked: bool,
+    /// The key it carries. None for an item this release cannot do, so
+    /// the key still reaches the window.
+    pub shortcut: Option<Shortcut>,
+}
+
+/// Every item of the model, in order, as a native menu bar shows it for
+/// `studio` now. The bar builds and syncs from this list alone.
+pub fn native_items(studio: &crate::Studio) -> Vec<NativeItem> {
+    let mut out = Vec::new();
+    for (m, menu) in menus().iter().enumerate() {
+        for (i, it) in menu.items.iter().enumerate() {
+            let kind = match check(it.command) {
+                Check::Plain => NativeKind::Plain,
+                Check::Toggle | Check::Choice(_) => NativeKind::Check,
+            };
+            out.push(NativeItem {
+                id: item_id(m, i),
+                menu: m,
+                command: it.command,
+                kind,
+                title: it.text,
+                enabled: studio.unavailable(it).is_none(),
+                checked: kind == NativeKind::Check && studio.checked(it.command),
+                shortcut: it.shortcut.filter(|_| it.unavailable.is_none()),
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
