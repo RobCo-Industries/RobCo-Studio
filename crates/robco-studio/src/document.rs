@@ -162,10 +162,16 @@ impl Doc {
 /// The bytes go to a new temporary file in the same folder, synced, then
 /// renamed over the file. A link is followed: the file it points to is
 /// replaced and the link stays. The new file keeps the old file's permission
-/// bits. The temporary file is created new under a name no one has, so an
-/// existing file of that name is never opened. On failure the temporary file
-/// is removed and the file is not touched. `std::fs::rename` replaces an
-/// existing file on Windows too.
+/// bits. If those bits cannot be read for any reason but a missing file, the
+/// save fails rather than write the file with default bits. The temporary
+/// file is created new under a name no one has, so an existing file of that
+/// name is never opened. On failure the temporary file is removed and the
+/// file is not touched. `std::fs::rename` replaces an existing file on
+/// Windows too.
+///
+/// Known limit: the saved file is a new file. It does not keep extended
+/// attributes, access control lists, an owner or group that differ from the
+/// person saving, or hard links to the old file.
 fn write_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::{ErrorKind, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -182,7 +188,11 @@ fn write_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let name = target
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    let perms = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    let perms = match std::fs::metadata(&target) {
+        Ok(m) => Some(m.permissions()),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
     let mut tries = 0;
     let (tmp, mut file) = loop {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
