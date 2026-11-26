@@ -10,8 +10,8 @@
 //! lock is written at step 10, only after a resolution and once every
 //! install passed. A lock that is there is never written.
 
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -120,12 +120,7 @@ pub fn run(out: &mut Out<'_>, cache: &Path, net: &Net, req: &Request<'_>) -> Res
 
     // Step 3: delete the older tape.
     let tape_rel = format!("build/{}.HTP", m.project.name);
-    let tape = root.join(&tape_rel);
-    match fs::remove_file(&tape) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => return Err(write_failure(&tape, &e)),
-    }
+    delete_older_tape(root, &tape_rel)?;
 
     // Step 5, and step 6 without a lock.
     let target = Target {
@@ -523,8 +518,15 @@ fn build(
     }
 
     for d in &bp.dirs {
-        let p = root.join(d);
-        fs::create_dir_all(&p).map_err(|e| write_failure(&p, &e))?;
+        out_dir(root, d)?;
+    }
+    let outputs = bp
+        .commands
+        .iter()
+        .filter_map(|c| c.args.iter().skip_while(|a| *a != "-o").nth(1))
+        .chain([&bp.raw]);
+    for o in outputs {
+        drop_link(&root.join(o))?;
     }
 
     // 3 to 5.
@@ -565,14 +567,104 @@ fn build(
     out.step("seal", "", "done");
 
     // 7. Write the tape. The ELF is where the link wrote it.
-    let tape = root.join(format!("build/{}.HTP", m.project.name));
-    let tmp = root.join(format!("build/{}.HTP.tmp", m.project.name));
-    fs::write(&tmp, &sealed).map_err(|e| write_failure(&tmp, &e))?;
-    if let Err(e) = fs::rename(&tmp, &tape) {
-        let _ = fs::remove_file(&tmp);
-        return Err(write_failure(&tape, &e));
-    }
+    write_tape(root, &m.project.name, &sealed)?;
     Ok(sealed)
+}
+
+fn link_failure(path: &Path) -> Failure {
+    Failure::new(
+        "io: write",
+        format!(
+            "{}: a symbolic link or not a folder, not followed",
+            path.display()
+        ),
+    )
+}
+
+/// Step 3: deletes `build/NAME.HTP`. A `build` that is a link is refused,
+/// so no file outside the project is deleted. A tape that is a link is
+/// removed as a link.
+fn delete_older_tape(root: &Path, tape_rel: &str) -> Result<(), Failure> {
+    let build = root.join("build");
+    match fs::symlink_metadata(&build) {
+        Ok(md) if md.is_dir() => {}
+        Ok(_) => return Err(link_failure(&build)),
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(write_failure(&build, &e)),
+    }
+    let tape = root.join(tape_rel);
+    match fs::remove_file(&tape) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(write_failure(&tape, &e)),
+    }
+}
+
+/// Creates the folder `rel` under the root one component at a time. A
+/// component that is a link or not a folder is refused, so the build never
+/// writes through a link.
+fn out_dir(root: &Path, rel: &str) -> Result<(), Failure> {
+    let mut path = root.to_path_buf();
+    for part in rel.split('/').filter(|p| !p.is_empty()) {
+        path.push(part);
+        if let Err(e) = fs::create_dir(&path)
+            && e.kind() != ErrorKind::AlreadyExists
+        {
+            return Err(write_failure(&path, &e));
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(md) if md.is_dir() => {}
+            Ok(_) => return Err(link_failure(&path)),
+            Err(e) => return Err(write_failure(&path, &e)),
+        }
+    }
+    Ok(())
+}
+
+/// Removes a link at a path a compiler or `objcopy` writes, so the program
+/// writes a new file there and not the link's target.
+fn drop_link(path: &Path) -> Result<(), Failure> {
+    match fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_symlink() => {
+            fs::remove_file(path).map_err(|e| write_failure(path, &e))
+        }
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(write_failure(path, &e)),
+    }
+}
+
+/// Writes `build/NAME.HTP` through `build/NAME.HTP.tmp`, renamed over it.
+/// A stale regular temporary file is removed first; any other entry there
+/// is refused. The temporary file is created new, so nothing is followed.
+fn write_tape(root: &Path, name: &str, bytes: &[u8]) -> Result<(), Failure> {
+    let tape = root.join(format!("build/{name}.HTP"));
+    let tmp = root.join(format!("build/{name}.HTP.tmp"));
+    match fs::symlink_metadata(&tmp) {
+        Ok(md) if md.file_type().is_file() => {
+            fs::remove_file(&tmp).map_err(|e| write_failure(&tmp, &e))?;
+        }
+        Ok(_) => return Err(link_failure(&tmp)),
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(write_failure(&tmp, &e)),
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| write_failure(&tmp, &e))?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| write_failure(&tmp, &e))
+        .and_then(|()| {
+            drop(file);
+            fs::rename(&tmp, &tape).map_err(|e| write_failure(&tape, &e))
+        });
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 fn program_name(path: &str) -> &str {
@@ -706,6 +798,72 @@ mod tests {
         let e = got.err().unwrap();
         assert_eq!(e.code, "io: read");
         assert!(e.detail.contains("src"), "{}", e.detail);
+    }
+
+    /// `d/build` and a file outside the project, `outside`, removed with it.
+    #[cfg(unix)]
+    fn outside(d: &Dir) -> PathBuf {
+        let o = d.0.with_extension("outside");
+        let _ = fs::remove_dir_all(&o);
+        fs::create_dir_all(&o).unwrap();
+        fs::write(o.join("keep"), b"keep").unwrap();
+        o
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_tape_that_is_a_link_is_not_written_through() {
+        let d = Dir::new("tmp-link");
+        let o = outside(&d);
+        fs::create_dir(d.0.join("build")).unwrap();
+        std::os::unix::fs::symlink(o.join("keep"), d.0.join("build/TINY.HTP.tmp")).unwrap();
+        let got = write_tape(&d.0, "TINY", b"tape");
+        let kept = fs::read(o.join("keep")).unwrap();
+        let tape = fs::symlink_metadata(d.0.join("build/TINY.HTP")).ok();
+        fs::remove_dir_all(&o).unwrap();
+        assert_eq!(kept, b"keep");
+        assert!(got.is_err());
+        assert!(tape.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_temporary_tape_is_replaced() {
+        let d = Dir::new("tmp-stale");
+        fs::create_dir(d.0.join("build")).unwrap();
+        fs::write(d.0.join("build/TINY.HTP.tmp"), b"old").unwrap();
+        write_tape(&d.0, "TINY", b"tape").unwrap();
+        assert_eq!(fs::read(d.0.join("build/TINY.HTP")).unwrap(), b"tape");
+        assert!(!d.0.join("build/TINY.HTP.tmp").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_build_folder_that_is_a_link_is_refused() {
+        let d = Dir::new("build-link");
+        let o = outside(&d);
+        fs::write(o.join("TINY.HTP"), b"theirs").unwrap();
+        std::os::unix::fs::symlink(&o, d.0.join("build")).unwrap();
+        let deleted = delete_older_tape(&d.0, "build/TINY.HTP");
+        let made = out_dir(&d.0, "build/obj/src");
+        let (tape, obj) = (o.join("TINY.HTP").exists(), o.join("obj").exists());
+        fs::remove_dir_all(&o).unwrap();
+        assert!(deleted.is_err() && made.is_err());
+        assert!(tape && !obj);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_output_that_is_a_link_is_dropped_and_its_target_kept() {
+        let d = Dir::new("elf-link");
+        let o = outside(&d);
+        fs::create_dir(d.0.join("build")).unwrap();
+        let elf = d.0.join("build/TINY.elf");
+        std::os::unix::fs::symlink(o.join("keep"), &elf).unwrap();
+        drop_link(&elf).unwrap();
+        let (gone, kept) = (fs::symlink_metadata(&elf).is_err(), o.join("keep").exists());
+        fs::remove_dir_all(&o).unwrap();
+        assert!(gone && kept);
     }
 
     #[test]
