@@ -114,8 +114,8 @@ fn open_main(h: &mut Harness<'static, Studio>) {
     h.run_steps(2);
 }
 
-/// The Project page with the sample project in each scheme, the compact
-/// header, the find bar, and two empty pages.
+/// The Project page with the sample project in each scheme, the Card
+/// page, the compact header, the find bar, and two empty pages.
 #[test]
 #[ignore = "writes PNG files; needs a wgpu adapter"]
 fn render_the_window() {
@@ -127,6 +127,9 @@ fn render_the_window() {
     let mut h = harness(Some(&d));
     open_main(&mut h);
     shot(&mut h, &dir, "window-green.png").unwrap();
+    h.state_mut().page = Page::Card;
+    shot(&mut h, &dir, "window-card.png").unwrap();
+    h.state_mut().page = Page::Project;
     h.state_mut().theme.scheme = Scheme::Amber;
     shot(&mut h, &dir, "window-amber.png").unwrap();
     h.state_mut().theme.scheme = Scheme::Blue;
