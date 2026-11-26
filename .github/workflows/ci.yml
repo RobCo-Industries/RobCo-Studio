@@ -262,6 +262,134 @@ jobs:
       - name: Read the card with mtools
         run: crates/studio-sys/scripts/check_card.sh card/card.img
 
+  # The pipos package that robco build installs in build-tape. It is not
+  # published yet, so this job builds it from Pip-OS at a pinned commit,
+  # with the pinned xPack compiler, in the suite's CI image, and keeps it
+  # as an artifact.
+  pipos-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/robco-industries/robco-ci:ba6372158e4b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      PIPOS_COMMIT: 93a07d266be43feab3e96e186d40c8b536f54bae
+      XPACK_RELEASE: 15.2.1-1.1
+      XPACK_SHA256: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: RobCo-Industries/Pip-OS
+          ref: ${{ env.PIPOS_COMMIT }}
+          submodules: recursive
+          persist-credentials: false
+      # The container's user does not own the checkout, and the Makefile
+      # asks git for the files that go into the package.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory '*'
+      - name: xPack arm-none-eabi-gcc
+        run: |
+          name="xpack-arm-none-eabi-gcc-$XPACK_RELEASE"
+          f="$name-linux-x64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/gcc"
+          python3 -I -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+            "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v$XPACK_RELEASE/$f" "$RUNNER_TEMP/gcc/$f"
+          echo "$XPACK_SHA256  $RUNNER_TEMP/gcc/$f" | sha256sum -c -
+          tar -C "$RUNNER_TEMP/gcc" -xzf "$RUNNER_TEMP/gcc/$f"
+          echo "CROSS=$RUNNER_TEMP/gcc/$name/bin/arm-none-eabi-" >> "$GITHUB_ENV"
+      # make sdk-package runs the package checker on the zip it writes.
+      - name: Build and check the package
+        run: |
+          make sdk-package CROSS="$CROSS" SDK_GCC_RELEASE="$XPACK_RELEASE" PYTHON=python3
+          python3 tools/sdk_package.py check build/pipos-*.zip
+          sha256sum build/pipos-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pipos-package
+          path: build/pipos-*.zip
+          if-no-files-found: error
+
+  # robco build on the three systems: installs the package above and the
+  # xPack compiler of the host from a fixture index of local files, then
+  # builds a small project of one C file. The test writes the index; this
+  # job only fetches the files. Each tape goes up for tape-hashes.
+  build-tape:
+    needs: pipos-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archive: linux-x64.tar.gz
+            sha: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6
+          - os: macos-latest
+            archive: darwin-arm64.tar.gz
+            sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870
+          - os: windows-latest
+            archive: win32-x64.zip
+            sha: bae6a3d1667697ce750c3b13d6d26d80973ecedc2cc87bf04869e83447fd93ea
+    runs-on: ${{ matrix.os }}
+    env:
+      XPACK_RELEASE: 15.2.1-1.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pipos-package
+          path: ${{ runner.temp }}/pipos
+      - name: Fetch the xPack compiler and check its SHA-256
+        run: |
+          f="xpack-arm-none-eabi-gcc-$XPACK_RELEASE-${{ matrix.archive }}"
+          mkdir -p "$RUNNER_TEMP/gcc"
+          curl -fsSLo "$RUNNER_TEMP/gcc/$f" "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v$XPACK_RELEASE/$f"
+          python -I -c "import hashlib,sys; h=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest(); print(h); sys.exit(h!=sys.argv[2])" "$RUNNER_TEMP/gcc/$f" "${{ matrix.sha }}"
+          zip=$(ls "$RUNNER_TEMP"/pipos/pipos-*.zip)
+          {
+            echo "ROBCO_TEST_PIPOS=$zip"
+            echo "ROBCO_TEST_GCC=$RUNNER_TEMP/gcc/$f"
+            echo "ROBCO_TEST_GCC_ROOT=xpack-arm-none-eabi-gcc-$XPACK_RELEASE"
+            echo "ROBCO_TEST_TAPE_OUT=$RUNNER_TEMP/tape/TINY.HTP"
+            echo "ROBCO_TEST_REQUIRE_BUILD=1"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/tape"
+      - name: robco build
+        run: cargo test --locked -p robco --test build
+      - name: rimg.py verify passes
+        if: runner.os == 'Linux'
+        run: python -I external/robco-core/tools/rimg.py verify "$RUNNER_TEMP/tape/TINY.HTP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tape-${{ runner.os }}
+          path: ${{ runner.temp }}/tape/TINY.HTP
+          if-no-files-found: error
+
+  # The tape must be byte-equal on the three systems.
+  tape-hashes:
+    needs: build-tape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tape-*
+          path: tapes
+      - name: One SHA-256 on the three systems
+        run: |
+          sha256sum tapes/*/TINY.HTP | tee sums.txt
+          test "$(wc -l < sums.txt)" -eq 3
+          test "$(cut -d' ' -f1 sums.txt | sort -u | wc -l)" -eq 1
+
   docs:
     runs-on: ubuntu-latest
     steps:
