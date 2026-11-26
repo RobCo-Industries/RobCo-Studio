@@ -7,7 +7,7 @@
 use super::{Studio, ThemeFault, page_area};
 use crate::art::Icon;
 use crate::editor::Answer;
-use crate::kit::{Button, ButtonKind, Kit, Level, Rail, Slider};
+use crate::kit::{Button, ButtonKind, Kit, Level, MovedBy, Rail, Slider};
 use crate::palette::{self, QUICK};
 use crate::screen::Held;
 use crate::theme::{Strengths, Type, crt, size, stroke};
@@ -270,7 +270,12 @@ pub fn moves_held(moves: bool, reduce: bool) -> Option<String> {
 /// What the pane asks of the theme this frame.
 #[derive(Default)]
 struct Asked {
+    /// The base colour from an act on a control: a quick colour, a
+    /// colour slider's rail, the field as it is typed in.
     base: Option<Color32>,
+    /// The base colour from text committed as a field lost focus. It
+    /// applies before `base`, so the act of the same frame wins.
+    base_typed: Option<Color32>,
     strengths: Option<Strengths>,
     moves: Option<bool>,
     rate: Option<u32>,
@@ -293,6 +298,7 @@ struct Asked {
 #[derive(Debug, Default)]
 struct Edit {
     base: Option<Color32>,
+    base_typed: Option<Color32>,
     strengths: Option<Strengths>,
     moves: Option<bool>,
     rate: Option<u32>,
@@ -319,6 +325,7 @@ impl Asked {
     fn split(self) -> (Edit, Act) {
         let Asked {
             base,
+            base_typed,
             strengths,
             moves,
             rate,
@@ -336,6 +343,7 @@ impl Asked {
         (
             Edit {
                 base,
+                base_typed,
                 strengths,
                 moves,
                 rate,
@@ -647,7 +655,7 @@ impl Studio {
             if left {
                 if let Some((c, 3)) = parsed {
                     ed.hex_for = Some(c);
-                    asked.base = Some(c);
+                    asked.base_typed = Some(c);
                 }
                 // Enter keeps the caret in the field.
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -677,7 +685,7 @@ impl Studio {
         }
 
         let rails = ed.rails();
-        let mut moved = false;
+        let mut moved = MovedBy::Nothing;
         for (i, name) in COLOUR_SLIDERS.iter().enumerate() {
             let v = ed.sliders[i];
             let (range, wrap, rail, text) = match i {
@@ -711,11 +719,13 @@ impl Studio {
                 value_text: Some(text),
                 held: None,
             };
-            if kit.slider(ui, &s, &mut ed.sliders[i]).changed() {
-                moved = true;
+            match kit.slider_by(ui, &s, &mut ed.sliders[i]).1 {
+                MovedBy::Nothing => {}
+                MovedBy::Text if moved == MovedBy::Act => {}
+                by => moved = by,
             }
         }
-        if moved {
+        if moved != MovedBy::Nothing {
             let [h, s, l] = ed.sliders;
             let c = match ed.slid_from {
                 Some((k, c)) if k == ed.sliders => c,
@@ -724,7 +734,11 @@ impl Studio {
             ed.sliders_for = Some(c);
             ed.hex = palette::hex_text(c);
             ed.hex_for = Some(c);
-            asked.base = Some(c);
+            if moved == MovedBy::Act {
+                asked.base = Some(c);
+            } else {
+                asked.base_typed = Some(c);
+            }
         }
 
         kit.text(ui, SIGNALS, Type::Body, p.text);
@@ -785,6 +799,10 @@ impl Studio {
     /// Change the theme by the edits of a frame, through `edit_theme`.
     fn apply_edit(&mut self, e: &Edit) {
         self.edit_theme(|t| {
+            // Text committed first, then the act of the same frame.
+            if let Some(c) = e.base_typed {
+                t.base = c;
+            }
             if let Some(c) = e.base {
                 t.base = c;
             }

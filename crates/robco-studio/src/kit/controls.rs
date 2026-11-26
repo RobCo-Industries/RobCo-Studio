@@ -69,6 +69,26 @@ pub fn hold_text(ui: &Ui, id: egui::Id, focused: bool, text: &str) -> Option<Str
 
 const HELD: &str = "held text";
 
+/// What moved a slider in a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovedBy {
+    /// It did not move.
+    Nothing,
+    /// Its number box committed typed text, and nothing came after.
+    Text,
+    /// The rail, a key or an action moved it, after any typed text.
+    Act,
+}
+
+/// One act on a slider's rail, applied after the number box.
+#[derive(Debug, Clone, Copy)]
+enum Move {
+    /// To this value.
+    To(f64),
+    /// This many steps.
+    By(f64),
+}
+
 /// Steps for Shift with an arrow, and for Page Up and Page Down.
 const BIG: f64 = 10.0;
 
@@ -99,6 +119,13 @@ impl Kit<'_> {
     /// tooltip and description say why. Returns the rail's response,
     /// changed when the value moved.
     pub fn slider(&self, ui: &mut Ui, s: &Slider<'_>, value: &mut f64) -> Response {
+        self.slider_by(ui, s, value).0
+    }
+
+    /// [`Kit::slider`], and what moved it this frame. In a frame where
+    /// the number box loses focus and the rail is used, the typed text
+    /// commits first and the rail's act comes last, so the act wins.
+    pub fn slider_by(&self, ui: &mut Ui, s: &Slider<'_>, value: &mut f64) -> (Response, MovedBy) {
         let p = self.p();
         let held = s.held.is_some();
         let w = ui.available_width();
@@ -126,10 +153,13 @@ impl Kit<'_> {
         let able = ui.is_enabled() && !held;
         let travel = rail_area.x_range().shrink(size::HANDLE_W / 2.0);
         let (lo, hi) = s.range;
+        // What the person did on the rail this frame. It applies after the
+        // number box commits its text, so the last act wins.
+        let mut acts: Vec<Move> = Vec::new();
         if able {
             if let Some(at) = resp.interact_pointer_pos() {
                 let t = f64::from(((at.x - travel.min) / travel.span().max(1.0)).clamp(0.0, 1.0));
-                *value = s.settle(lo + t * (hi - lo)).clamp(lo, hi);
+                acts.push(Move::To(lo + t * (hi - lo)));
             }
             if resp.has_focus() {
                 ui.memory_mut(|m| {
@@ -156,13 +186,13 @@ impl Kit<'_> {
                 let by = if shift { BIG } else { 1.0 };
                 let steps = (right - left) * by + (up - down) * BIG;
                 if steps != 0.0 {
-                    *value = s.settle(*value + steps * s.step);
+                    acts.push(Move::By(steps));
                 }
                 if home {
-                    *value = lo;
+                    acts.push(Move::To(lo));
                 }
                 if end {
-                    *value = hi;
+                    acts.push(Move::To(hi));
                 }
                 if enter {
                     ui.memory_mut(|m| m.request_focus(nid));
@@ -181,12 +211,82 @@ impl Kit<'_> {
                 )
             });
             if inc != dec {
-                *value = s.settle(*value + (inc - dec) * s.step);
+                acts.push(Move::By(inc - dec));
             }
             if let Some(v) = set {
-                *value = s.settle(v.clamp(lo, hi));
+                acts.push(Move::To(v));
             }
         }
+
+        // The number box, before the rail is drawn: its text commits
+        // first, then the acts, whatever the order of focus.
+        let cr = self.theme.control_radius();
+        let painter = ui.painter().clone();
+        painter.rect_filled(num, cr, p.ground);
+        let mut typed_moved = false;
+        if held || !ui.is_enabled() {
+            painter.text(
+                egui::pos2(num.right() - size::UNIT * 2.0, num.center().y),
+                Align2::RIGHT_CENTER,
+                s.number(*value),
+                self.theme.font(Type::Body),
+                if held { p.dim } else { p.text },
+            );
+            if held {
+                self.dashed_rect(&painter, num, p.frame);
+            } else {
+                painter.rect_stroke(num, cr, self.theme.frame(p.frame), StrokeKind::Inside);
+            }
+        } else {
+            // The text typed stays until the frame focus leaves, which
+            // commits it, whatever took the focus.
+            let mut text = held_text(ui, nid).unwrap_or_else(|| s.number(*value));
+            let inner = num.shrink2(egui::vec2(size::UNIT, 0.0));
+            let r = ui.place(
+                inner,
+                egui::TextEdit::singleline(&mut text)
+                    .id(nid)
+                    .frame(egui::Frame::NONE)
+                    .font(self.theme.font(Type::Body))
+                    .text_color(p.text)
+                    .align(Align2::RIGHT_CENTER)
+                    .desired_width(inner.width()),
+            );
+            ui.ctx()
+                .accesskit_node_builder(nid, |n| n.set_label(s.name.to_owned()));
+            let focused = r.has_focus() && acts.is_empty();
+            if r.has_focus() && !focused {
+                // An act on the rail while the box has focus ends the
+                // typing: the text commits now, before the act.
+                ui.memory_mut(|m| m.surrender_focus(nid));
+            }
+            if let Some(typed) = hold_text(ui, nid, focused, &text) {
+                if let Ok(n) = typed.trim().parse::<f64>()
+                    && n.is_finite()
+                {
+                    let was = *value;
+                    *value = s.settle(n.clamp(lo, hi));
+                    typed_moved = *value != was;
+                }
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    ui.memory_mut(|m| m.request_focus(id));
+                }
+            }
+            let (line, sw) = if focused {
+                (p.bright, stroke::FRAME * 2.0)
+            } else {
+                (p.frame, stroke::FRAME)
+            };
+            painter.rect_stroke(num, cr, Stroke::new(sw, line), StrokeKind::Inside);
+        }
+        let after_text = *value;
+        for m in &acts {
+            *value = match *m {
+                Move::To(v) => s.settle(v.clamp(lo, hi)),
+                Move::By(n) => s.settle(*value + n * s.step),
+            };
+        }
+        let acted = !acts.is_empty() && *value != after_text;
         let v = *value;
         resp.widget_info(|| WidgetInfo::slider(!held, v, s.name));
         let text = s.value_text.clone().unwrap_or_else(|| s.number(v));
@@ -207,7 +307,6 @@ impl Kit<'_> {
             }
         });
 
-        let painter = ui.painter().clone();
         let fg = if held { p.dim } else { p.text };
         painter.text(
             egui::pos2(row.left(), row.center().y),
@@ -220,7 +319,6 @@ impl Kit<'_> {
             rail_area.center(),
             egui::vec2(rail_area.width(), size::RAIL_H),
         );
-        let cr = self.theme.control_radius();
         let t = if hi > lo {
             ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32
         } else {
@@ -260,63 +358,22 @@ impl Kit<'_> {
             self.focus_ring(&painter, rail);
         }
 
-        // The number box.
-        painter.rect_filled(num, cr, p.ground);
-        if held || !ui.is_enabled() {
-            painter.text(
-                egui::pos2(num.right() - size::UNIT * 2.0, num.center().y),
-                Align2::RIGHT_CENTER,
-                s.number(v),
-                self.theme.font(Type::Body),
-                if held { p.dim } else { p.text },
-            );
-            if held {
-                self.dashed_rect(&painter, num, p.frame);
-            } else {
-                painter.rect_stroke(num, cr, self.theme.frame(p.frame), StrokeKind::Inside);
-            }
-        } else {
-            // The text typed stays until the frame focus leaves, which
-            // commits it, whatever took the focus.
-            let mut text = held_text(ui, nid).unwrap_or_else(|| s.number(v));
-            let inner = num.shrink2(egui::vec2(size::UNIT, 0.0));
-            let r = ui.place(
-                inner,
-                egui::TextEdit::singleline(&mut text)
-                    .id(nid)
-                    .frame(egui::Frame::NONE)
-                    .font(self.theme.font(Type::Body))
-                    .text_color(p.text)
-                    .align(Align2::RIGHT_CENTER)
-                    .desired_width(inner.width()),
-            );
-            ui.ctx()
-                .accesskit_node_builder(nid, |n| n.set_label(s.name.to_owned()));
-            if let Some(typed) = hold_text(ui, nid, r.has_focus(), &text) {
-                if let Ok(n) = typed.trim().parse::<f64>()
-                    && n.is_finite()
-                {
-                    *value = s.settle(n.clamp(lo, hi));
-                }
-                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    ui.memory_mut(|m| m.request_focus(id));
-                }
-            }
-            let (line, sw) = if r.has_focus() {
-                (p.bright, stroke::FRAME * 2.0)
-            } else {
-                (p.frame, stroke::FRAME)
-            };
-            painter.rect_stroke(num, cr, Stroke::new(sw, line), StrokeKind::Inside);
-        }
         let mut resp = resp;
         if *value != before {
             resp.mark_changed();
         }
-        match &s.held {
+        let by = if acted {
+            MovedBy::Act
+        } else if typed_moved && *value != before {
+            MovedBy::Text
+        } else {
+            MovedBy::Nothing
+        };
+        let resp = match &s.held {
             Some(why) => resp.on_hover_text(why.as_str()),
             None => resp,
-        }
+        };
+        (resp, by)
     }
 
     /// A row of colour swatches, one radio group named `name` and one stop

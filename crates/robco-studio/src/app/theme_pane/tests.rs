@@ -1887,6 +1887,220 @@ fn a_field_commits_its_text_whatever_takes_the_focus() {
     assert_eq!(rows, 24);
 }
 
+/// A second way to set the value a field holds typed text for, in the
+/// frame the field loses focus.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Last {
+    /// A click on the rail of the slider, at a quarter of its length.
+    RailClick,
+    /// A press on the rail, a drag and a release, at three quarters.
+    RailDrag,
+    /// Focus to the slider and Right.
+    Arrow,
+    Home,
+    End,
+    /// A click on a quick colour.
+    Quick,
+}
+
+/// One row: the field typed in, and the slider whose rail takes the act.
+struct Order {
+    field: Typed,
+    slider: &'static str,
+    last: Last,
+}
+
+/// The value the row sets: the strength, the hue, or the base colour
+/// for a quick colour row and the base colour field. Then the text the
+/// field should show for it, and the text it shows.
+fn order_state(h: &egui_kittest::Harness<'_, Studio>, o: &Order) -> (String, String, String) {
+    let s = h.state();
+    let hue = format!("{:.0}", s.theme_editor.sliders[0]);
+    let (value, field) = match o.field {
+        Typed::Vignette => {
+            let v = format!("{:.2}", s.spec().strengths.vignette);
+            (v.clone(), v)
+        }
+        Typed::Hue if o.last == Last::Quick => (palette::hex_text(s.spec().base), hue),
+        Typed::Hue => (hue.clone(), hue),
+        Typed::Hex => {
+            let v = palette::hex_text(s.spec().base);
+            (v.clone(), v)
+        }
+    };
+    let (label, ..) = o.field.parts();
+    let shown = h
+        .query_by_role_and_label(Role::TextInput, label)
+        .map_or_else(|| "no field".to_owned(), |n| n.value().unwrap_or_default());
+    (value, field, shown)
+}
+
+/// The pane on Ember, on the tab of the field, after `text` typed in it.
+fn order_harness(
+    d: &TempDir,
+    o: &Order,
+    text: Option<&str>,
+) -> egui_kittest::Harness<'static, Studio> {
+    let mut s = on_ember(d);
+    // A known adapter, so no strength is held when the theme changes.
+    s.screen.adapter = crate::screen::Adapter::Hardware;
+    s.refresh_theme();
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.state_mut().theme_editor.open = true;
+    if matches!(o.field, Typed::Vignette) {
+        h.state_mut().theme_editor.tab = ThemeTab::Screen;
+    }
+    h.run_steps(3);
+    if let Some(text) = text {
+        let (label, ..) = o.field.parts();
+        h.get_by_role_and_label(Role::TextInput, label).focus();
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.get_by_role_and_label(Role::TextInput, label)
+            .type_text(text);
+        h.run_steps(2);
+    }
+    h
+}
+
+/// Queue the act of `o`, all in one frame.
+fn order_act(h: &egui_kittest::Harness<'_, Studio>, o: &Order) {
+    let pointer = |events: &[(egui::Pos2, Option<bool>)]| {
+        for (at, pressed) in events {
+            h.event(egui::Event::PointerMoved(*at));
+            if let Some(pressed) = pressed {
+                h.event(egui::Event::PointerButton {
+                    pos: *at,
+                    button: egui::PointerButton::Primary,
+                    pressed: *pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        }
+    };
+    let rail = h.get_by_role_and_label(Role::Slider, o.slider).rect();
+    let at = |t: f32| egui::pos2(rail.left() + rail.width() * t, rail.center().y);
+    match o.last {
+        Last::RailClick => pointer(&[(at(0.25), Some(true)), (at(0.25), Some(false))]),
+        Last::RailDrag => pointer(&[
+            (at(0.5), Some(true)),
+            (at(0.6), None),
+            (at(0.75), None),
+            (at(0.75), Some(false)),
+        ]),
+        Last::Arrow | Last::Home | Last::End => {
+            h.get_by_role_and_label(Role::Slider, o.slider).focus();
+            h.key_press(match o.last {
+                Last::Arrow => egui::Key::ArrowRight,
+                Last::Home => egui::Key::Home,
+                _ => egui::Key::End,
+            });
+        }
+        Last::Quick => {
+            let c = h
+                .get_by_role_and_label(Role::RadioButton, QUICK[2].0)
+                .rect();
+            pointer(&[(c.center(), Some(true)), (c.center(), Some(false))]);
+        }
+    }
+}
+
+/// Each control made of several parts that write one value: text pending
+/// in its field, then each other way to set that value in the frame the
+/// field loses focus. The typed text commits first and the last act wins,
+/// and the field then shows the value. Each act alone, from the typed
+/// value, gives the expected value.
+#[test]
+fn the_last_act_wins_over_text_pending() {
+    use Last::*;
+    let mut rows = Vec::new();
+    for last in [RailClick, RailDrag, Arrow, Home, End] {
+        rows.push(Order {
+            field: Typed::Vignette,
+            slider: Strengths::NAMES[1],
+            last,
+        });
+        rows.push(Order {
+            field: Typed::Hue,
+            slider: COLOUR_SLIDERS[0],
+            last,
+        });
+        rows.push(Order {
+            field: Typed::Hex,
+            slider: COLOUR_SLIDERS[0],
+            last,
+        });
+    }
+    for field in [Typed::Hex, Typed::Hue] {
+        rows.push(Order {
+            field,
+            slider: COLOUR_SLIDERS[0],
+            last: Quick,
+        });
+    }
+    let mut failed = Vec::new();
+    for (k, o) in rows.iter().enumerate() {
+        let row = format!("{:?} then {:?} on {}", o.field, o.last, o.slider);
+        let (_, text, ..) = o.field.parts();
+        // What the act gives from the typed value: the text committed
+        // alone first, then the act.
+        let d = TempDir::new(&format!("order-want-{k}"));
+        let mut h = order_harness(&d, o, Some(text));
+        h.key_press(egui::Key::Tab);
+        h.run_steps(3);
+        order_act(&h, o);
+        h.run_steps(3);
+        let want = order_state(&h, o).0;
+        drop(h);
+        // Both in one frame.
+        let d = TempDir::new(&format!("order-{k}"));
+        let mut h = order_harness(&d, o, Some(text));
+        order_act(&h, o);
+        h.run_steps(3);
+        let (got, field, shown) = order_state(&h, o);
+        if got != want || !shown.eq_ignore_ascii_case(&field) {
+            failed.push(format!(
+                "{row}: got {got}, want {want}, field shows {shown}, not {field}"
+            ));
+        }
+    }
+    assert_eq!(failed, Vec::<String>::new());
+    assert_eq!(rows.len(), 17);
+}
+
+/// Text pending in a number box, a rail click and Save in one frame: the
+/// edits apply before the action, and the file holds the rail's value.
+#[test]
+fn save_in_the_frame_of_a_rail_click_keeps_the_rail_value() {
+    let o = Order {
+        field: Typed::Vignette,
+        slider: Strengths::NAMES[1],
+        last: Last::RailClick,
+    };
+    let d = TempDir::new("order-save");
+    let mut h = order_harness(&d, &o, Some("0.9"));
+    order_act(&h, &o);
+    h.get_by_role_and_label(Role::Button, BUTTONS[4]).click();
+    h.run_steps(3);
+    let s = h.state();
+    assert!(s.changed.is_none());
+    let rail = s.spec().strengths.vignette;
+    assert!(
+        (rail - 0.9).abs() > 0.05,
+        "the rail's value, not the text: {rail}"
+    );
+    let saved = store::read_folder(&themes(&d));
+    let (_, spec) = saved
+        .themes
+        .iter()
+        .find(|(f, _)| f == "ember.toml")
+        .unwrap();
+    assert_eq!(store::stored(spec.strengths.vignette), store::stored(rail));
+}
+
 /// A theme of the person's own on a quick colour, every strength at 0.35,
 /// the screen moving.
 const MINE: &str = "version = 1\nname = \"Mine\"\nbase = \"#5aff7f\"\n[screen]\nbloom = 0.35\nvignette = 0.35\nscanlines = 0.35\ncurvature = 0.35\npersistence = 0.35\nnoise = 0.35\nflicker = 0.35\nband = 0.35\nmask = 0.35\naberration = 0.35\nmoves = true\nrate = 30\n";
