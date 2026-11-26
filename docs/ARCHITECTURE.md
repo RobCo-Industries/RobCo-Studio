@@ -104,6 +104,9 @@ The `https` transport. It implements `studio-core`'s `Transport` trait, so the i
 - The body streams into the caller's writer. When the writer refuses, the transfer ends and the connection closes. Nothing holds an archive in memory. An index is held, up to 8 MiB.
 - A request carries exactly `Host`, `User-Agent: robco/<version>`, `Accept-Encoding: identity` and `Connection: close`. No cookie and no token. `HTTPS_PROXY` and the other proxy variables are not read.
 - An error names a URL without its query, its fragment and any user info, and never prints a header.
+- Only a `200` answer has a body. Up to 4 informational `1xx` answers, such as `103 Early Hints`, are read past. A `101` is an error, since the client asked for no upgrade. `301`, `302`, `303`, `307` and `308` are followed. Every other status fails.
+- The response is read strictly, since the caller knows each archive's size and hash and an odd answer is better refused than guessed at. Refused: a version other than HTTP/1.1 and HTTP/1.0; a status of other than three digits; a bare LF, a folded line or a control character in the header block; a header block over 64 KiB or 64 fields; a second `Content-Length`, `Transfer-Encoding`, `Content-Encoding` or `Location`; `Transfer-Encoding` with `Content-Length`, or in an HTTP/1.0 answer; a coding other than `chunked` or `identity`; a `Content-Length` that is not plain digits; a chunk size that is not hex or overflows; more than 64 trailer fields; bytes already read past the end of a framed body; an empty `Location`.
+- With no length, the body ends with the connection. Only TLS `close_notify` ends it cleanly: a close without it is an error, so a cut body never passes as a whole one.
 
 The `test-trust` feature adds a constructor that trusts one certificate, and a TLS server on 127.0.0.1 for tests. Only dev-dependencies turn it on, so no program build has it.
 
