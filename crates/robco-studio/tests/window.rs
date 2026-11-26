@@ -1772,17 +1772,19 @@ fn a_click_on_the_curve_lands_where_it_is_drawn() {
     use robco_studio::screen::drawn_at;
     use robco_studio::theme::Screen;
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+    // Where the tab is laid out: the tree follows the curve, so read it
+    // with no curve.
+    let tab = screen_at(Screen::Soft)
+        .query_all_by_label("Card")
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+        .unwrap()
+        .rect();
     let click = |level: Screen| {
         let mut h = screen_at(level);
         // egui grows a hit area by 5 points, which hides a small miss.
         h.ctx
             .all_styles_mut(|s| s.interaction.interact_radius = 0.0);
         h.run_steps(2);
-        let tab = h
-            .query_all_by_label("Card")
-            .find(|n| n.accesskit_node().role() == Role::Tab)
-            .unwrap()
-            .rect();
         // The bottom edge of the tab, which the curve draws lower.
         let target = egui::pos2(tab.center().x, tab.max.y - 1.5);
         let glass = drawn_at(target, screen, Screen::Arcade.strengths().curvature);
@@ -1960,10 +1962,15 @@ fn the_tree_follows_the_curve() {
             if p.y < 120.0 && off > 2.0 {
                 seen[1] = true;
             }
-            let corner = [screen.left_top(), screen.right_top(), screen.left_bottom(), screen.right_bottom()]
-                .iter()
-                .map(|k| (p - *k).length())
-                .fold(f32::MAX, f32::min);
+            let corner = [
+                screen.left_top(),
+                screen.right_top(),
+                screen.left_bottom(),
+                screen.right_bottom(),
+            ]
+            .iter()
+            .map(|k| (p - *k).length())
+            .fold(f32::MAX, f32::min);
             if corner < 120.0 && off > 5.0 {
                 seen[2] = true;
             }

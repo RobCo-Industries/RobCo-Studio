@@ -521,9 +521,9 @@ mod tests {
             ..Default::default()
         };
         let mut out = ctx.run_ui(input, |ui| {
-            ui.button("Top left");
+            let _ = ui.button("Top left");
             ui.add_space(500.0);
-            ui.button("Lower");
+            let _ = ui.button("Lower");
         });
         out.textures_delta.clear();
         out.platform_output.accesskit_update
