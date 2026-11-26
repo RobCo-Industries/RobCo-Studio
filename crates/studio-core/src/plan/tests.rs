@@ -194,6 +194,17 @@ fn plan_unix_matches_fixture() {
     assert_eq!(p.elf, "build/PIPES.elf");
     assert_eq!(p.raw, "build/PIPES.bin");
     assert_eq!(p.dirs, ["build", "build/obj", "build/obj/src"]);
+    assert_eq!(
+        p.outputs,
+        [
+            "build/obj/crt0.o",
+            "build/obj/src/main.c.o",
+            "build/obj/src/draw.c.o",
+            "build/obj/src/game.c.o",
+            "build/PIPES.elf",
+            "build/PIPES.bin",
+        ]
+    );
     assert_eq!(p.commands, want);
 }
 
@@ -539,13 +550,7 @@ fn plan_dirs_source_at_root() {
 fn plan_dirs_hold_every_output() {
     for host in [Host::Unix, Host::Windows] {
         let p = ok(host);
-        let mut outputs: Vec<&str> = vec![p.elf.as_str(), p.raw.as_str()];
-        for c in &p.commands {
-            if let Some(i) = c.args.iter().position(|a| a == "-o") {
-                outputs.push(&c.args[i + 1]);
-            }
-        }
-        for out in outputs {
+        for out in &p.outputs {
             let parent = &out[..out.rfind('/').unwrap_or(0)];
             assert!(p.dirs.iter().any(|d| d == parent), "{out}");
         }
@@ -603,4 +608,27 @@ fn plan_flags_paths_in_field_order_after_types() {
         .replace("\"lib/libpip.a\"", "\"/x\"")
         .replace("\"include\"", "\"../x\"");
     assert!(flags_err(&text).detail().starts_with("include_dirs:"));
+}
+
+#[test]
+fn plan_flags_refuse_a_flag_that_holds_a_path() {
+    for (from, key) in [("\"-O2\"", "cflags"), ("\"-Wl,--gc-sections\"", "ldflags")] {
+        for flag in [
+            "-o",
+            "-oout.o",
+            "-T",
+            "-Tx.ld",
+            "-Iinc",
+            "-L/lib",
+            "-include",
+            "-MFdeps",
+            "-specs=nano.specs",
+            "--sysroot=/x",
+            "@args",
+        ] {
+            let e = path_err(from, &format!("\"{flag}\""));
+            assert_eq!(e.code(), "manifest", "{key} {flag}");
+            assert_eq!(e.detail(), format!("{key}: {flag:?}: holds a path"));
+        }
+    }
 }

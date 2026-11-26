@@ -24,7 +24,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use studio_core::install::{self, Cached, LocalFiles, Phase, Pin, Progress, sha256_hex};
@@ -571,12 +571,14 @@ fn build(
     for d in &bp.dirs {
         out_dir(root, d)?;
     }
-    let outputs = bp
-        .commands
-        .iter()
-        .filter_map(|c| c.args.iter().skip_while(|a| *a != "-o").nth(1))
-        .chain([&bp.raw]);
-    for o in outputs {
+    // The plan's own record of the outputs, never a scan of the arguments.
+    for o in &bp.outputs {
+        if !in_build(o) {
+            return Err(Failure::new(
+                "internal",
+                format!("{o}: a planned output is not inside build/"),
+            ));
+        }
         drop_link(&root.join(o))?;
     }
 
@@ -681,6 +683,21 @@ fn out_dir(root: &Path, rel: &str) -> Result<(), Failure> {
 
 /// Removes a link at a path a compiler or `objcopy` writes, so the program
 /// writes a new file there and not the link's target.
+/// True when `rel` is a relative path, inside `build/` by its components,
+/// split on `/`, with no empty, `.`, `..`, root or prefix component.
+fn in_build(rel: &str) -> bool {
+    let mut parts = rel.split('/');
+    parts.next() == Some("build")
+        && parts.clone().next().is_some()
+        && parts.all(|c| {
+            !c.is_empty()
+                && !c.contains('\\')
+                && c != "."
+                && c != ".."
+                && matches!(Path::new(c).components().next(), Some(Component::Normal(_)))
+        })
+}
+
 fn drop_link(path: &Path) -> Result<(), Failure> {
     match fs::symlink_metadata(path) {
         Ok(md) if md.file_type().is_symlink() => {
@@ -785,6 +802,27 @@ fn seal(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_build_takes_only_paths_under_build() {
+        for ok in ["build/x.elf", "build/obj/src/a.c.o"] {
+            assert!(in_build(ok), "{ok}");
+        }
+        for bad in [
+            "/build/x",
+            "build",
+            "x/build/y",
+            "build/../x",
+            "build/./x",
+            "build//x",
+            "build\\x",
+            "/etc/passwd",
+            "out.o",
+            "",
+        ] {
+            assert!(!in_build(bad), "{bad}");
+        }
+    }
 
     const MANIFEST: &str = "format = 1\n[project]\nname = \"TINY\"\nversion = \"1.0.0\"\n\
         kind = \"holotape\"\nsubtype = \"utility\"\n[target]\nplatform = \"pipos\"\nabi = \"1.4\"\n";

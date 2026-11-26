@@ -152,7 +152,41 @@ pub fn parse_flags(bytes: &[u8]) -> Result<Flags, FlagsError> {
 }
 
 /// Checks each package-relative path, in the order of the spec's table.
+/// Options whose value is a path, alone or joined to it. SDK_PACKAGE.md:
+/// "No flag in `cflags` or `ldflags` holds a path."
+const PATH_OPTIONS: &[&str] = &[
+    "-o",
+    "-T",
+    "-I",
+    "-L",
+    "-B",
+    "-include",
+    "-imacros",
+    "-isystem",
+    "-iquote",
+    "-idirafter",
+    "-iprefix",
+    "-iwithprefix",
+    "-isysroot",
+    "-MF",
+    "-specs=",
+    "--sysroot",
+];
+
+/// Refuses a flag that holds a path: an option of [`PATH_OPTIONS`], alone
+/// or with its value joined, or a response file `@file`.
+fn check_flags(key: &str, list: &[String]) -> Result<(), FlagsError> {
+    for f in list {
+        if f.starts_with('@') || PATH_OPTIONS.iter().any(|o| f.starts_with(o)) {
+            return Err(FlagsError::Manifest(format!("{key}: {f:?}: holds a path")));
+        }
+    }
+    Ok(())
+}
+
 fn check_paths(flags: Flags) -> Result<Flags, FlagsError> {
+    check_flags("cflags", &flags.cflags)?;
+    check_flags("ldflags", &flags.ldflags)?;
     let one = |key: &str, path: &str| {
         manifest::check_path(key, path, false).map_err(|e| FlagsError::Manifest(e.detail()))
     };
@@ -317,6 +351,11 @@ pub struct BuildPlan {
     pub elf: String,
     /// The raw image `objcopy` writes, relative to the project root.
     pub raw: String,
+    /// Every file the commands write, relative to the project root, with
+    /// `/`, in the order the commands run: the crt0 object, each source's
+    /// object, the ELF and the raw image. A caller that guards the outputs
+    /// reads them here, never from the arguments.
+    pub outputs: Vec<String>,
 }
 
 /// What a plan needs.
@@ -491,12 +530,18 @@ pub fn plan(input: &PlanInput<'_>) -> Result<BuildPlan, PlanError> {
             .chain([elf.as_str(), raw.as_str()]),
     );
 
+    let outputs = std::iter::once(crt0_object)
+        .chain(objects)
+        .chain([elf.clone(), raw.clone()])
+        .collect();
+
     Ok(BuildPlan {
         sources,
         dirs,
         commands,
         elf,
         raw,
+        outputs,
     })
 }
 
