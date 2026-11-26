@@ -694,6 +694,43 @@ fn install_keeps_the_install_that_took_the_place() {
     holds_whole(&d, &bytes);
 }
 
+/// A took aside B's install of one archive, and C installed another archive
+/// of the same package into the free place. A judges the record in place,
+/// C's, against its own pin: a hash error, and C's folder stays.
+#[test]
+fn install_judges_the_install_in_place_not_the_one_it_held() {
+    let d = Dir::new("aside-other");
+    let mine = good_zip();
+    // The same files in another order: another archive, another hash.
+    let mut rev = files();
+    rev.reverse();
+    let theirs = package_zip(&files(), &rev);
+    assert_ne!(sha256_hex(&mine), sha256_hex(&theirs));
+    d.put("p.zip", &mine);
+    d.put("q.zip", &theirs);
+    leave_unfinished(&d);
+    let e = entry_for("p.zip", &mine);
+    let other = entry_for("q.zip", &theirs);
+    let (cache, local, b) = (d.cache(), d.local(), e.clone());
+    hook_once(Step::BeforeAside, move || {
+        assert_eq!(
+            package(&cache, &b, &local, Pin::Index),
+            Ok(State::Installed)
+        );
+        let (cache, local) = (cache.clone(), local.clone());
+        hook_once(Step::BeforePutBack, move || {
+            assert_eq!(
+                package(&cache, &other, &local, Pin::Index),
+                Ok(State::Installed)
+            );
+        });
+    });
+    let r = package(&d.cache(), &e, &Offline, Pin::Index);
+    clear_hook();
+    assert_eq!(r.unwrap_err().error_code(), "package: hash");
+    holds_whole(&d, &theirs);
+}
+
 /// The join refuses, by itself, a name the system reads as more than one
 /// plain component, whatever the name rule says.
 #[test]
