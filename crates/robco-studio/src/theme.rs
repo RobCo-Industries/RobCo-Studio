@@ -978,20 +978,15 @@ mod tests {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
+    /// Every palette holds the contrast pairs of the palette rule.
     #[test]
     fn contrast_pairs_hold() {
         for p in [GREEN, AMBER, BLUE, WHITE, HIGH_LEGIBILITY] {
-            assert!(ratio(p.text, p.pane) >= 4.5);
-            assert!(ratio(p.dim, p.select) >= 4.5);
-            assert!(ratio(p.bright, p.select) >= 4.5);
-            assert!(ratio(p.ink, p.bright) >= 4.5);
-            assert!(ratio(p.frame, p.pane) >= 3.0);
-            assert!(ratio(p.frame, p.select) >= 3.0);
-            assert!(ratio(p.text, p.raised) >= 4.5);
-            assert!(ratio(p.frame, p.raised) >= 3.0);
+            for pair in crate::palette::pairs(&p) {
+                assert!(pair.ratio >= pair.limit, "{p:?}: {}", pair.name);
+            }
             let pressed = mix(p.bright, p.ink, effect::PRESS_DARKEN);
             assert!(ratio(p.ink, pressed) >= 4.5);
-            assert!(ratio(p.bright, mix(p.pane, p.bright, 0.29)) >= 4.5);
         }
     }
 
