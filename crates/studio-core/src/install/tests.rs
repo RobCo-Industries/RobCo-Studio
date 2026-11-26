@@ -1178,9 +1178,13 @@ impl io::Write for Failing {
 fn a_tool_entry_tells_a_read_failure_from_a_write_failure() {
     let path = Path::new("bin/x");
     let mut sink = Vec::new();
-    let e = copy_entry("bin/x", path, &mut Failing, &mut sink).unwrap_err();
+    let mut budget = Budget {
+        written: 0,
+        limit: 100,
+    };
+    let e = copy_entry("bin/x", path, &mut Failing, &mut sink, &mut budget).unwrap_err();
     assert_eq!(e.error_code(), "tool: archive");
-    let e = copy_entry("bin/x", path, &mut &b"data"[..], &mut Failing).unwrap_err();
+    let e = copy_entry("bin/x", path, &mut &b"data"[..], &mut Failing, &mut budget).unwrap_err();
     assert_eq!(e.error_code(), "io: write");
 }
 
@@ -1452,4 +1456,290 @@ fn install_reports_a_failed_flush_as_a_write_error() {
     assert_eq!(e.error_code(), "io: write", "{e}");
     // The same transport with a file that flushes is a match.
     assert!(fetch_checked(part, &item, &Flushes(bytes), Vec::new()).is_ok());
+}
+
+// Bounds on what an archive makes the installer read and write.
+
+fn lim(manifest: u64, tool_bytes: u64, tool_entries: u64, meta: u64) -> Limits {
+    Limits {
+        manifest,
+        tool_bytes,
+        tool_entries,
+        meta,
+    }
+}
+
+/// A reader of `n` zero bytes that counts what was taken from it.
+struct Zeros {
+    left: u64,
+    taken: u64,
+}
+
+impl io::Read for Zeros {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = buf
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        buf[..n].fill(0);
+        self.left -= n as u64;
+        self.taken += n as u64;
+        Ok(n)
+    }
+}
+
+#[test]
+fn copy_bounded_stops_one_byte_past_the_limit() {
+    let n = 200_000u64;
+    for (limit, count) in [(10, 11), (n - 1, n), (n, n), (n + 1, n)] {
+        let mut from = Zeros { left: n, taken: 0 };
+        let mut to = Vec::new();
+        let got = copy_bounded(&mut from, &mut to, limit).unwrap();
+        assert_eq!((got, to.len() as u64, from.taken), (count, count, count));
+    }
+}
+
+#[test]
+fn a_package_file_never_writes_more_than_its_size_and_one_byte() {
+    let mut from = Zeros {
+        left: 300_000,
+        taken: 0,
+    };
+    let mut to = Vec::new();
+    let (n, _) = copy_listed(&mut from, &mut to, 5).unwrap();
+    assert_eq!((n, to.len(), from.taken), (6, 6, 6));
+}
+
+#[test]
+fn install_refuses_a_package_file_one_byte_over_or_under_its_size() {
+    let listed: &[(&str, &[u8])] = &[("templates.json", b"0123456789")];
+    for (put, ok) in [
+        (&b"0123456789"[..], true),
+        (&b"0123456789x"[..], false),
+        (&b"012345678"[..], false),
+    ] {
+        let d = Dir::new("file-size");
+        let r = install_zip(&d, &package_zip(listed, &[("templates.json", put)]));
+        if ok {
+            assert_eq!(r, Ok(State::Installed));
+        } else {
+            refused(&d, r, "package: hash");
+        }
+    }
+}
+
+fn install_zip_with(d: &Dir, bytes: &[u8], limits: Limits) -> Result<State, Error> {
+    d.put("templates-0.1.0.zip", bytes);
+    let e = entry_for("templates-0.1.0.zip", bytes);
+    package_with(&d.cache(), &e, &d.local(), Pin::Index, limits)
+}
+
+#[test]
+fn install_refuses_a_manifest_over_its_limit() {
+    let n = sdk_json(&files()).len() as u64;
+    for (limit, ok) in [(n + 1, true), (n, true), (n - 1, false)] {
+        let d = Dir::new("manifest-limit");
+        let r = install_zip_with(&d, &good_zip(), lim(limit, 0, 0, 0));
+        if ok {
+            assert_eq!(r, Ok(State::Installed));
+        } else {
+            let msg = refused(&d, r, "package: manifest");
+            assert!(msg.contains(&format!("states {n} bytes")), "{msg}");
+            assert!(msg.contains(&format!("limit of {limit} bytes")), "{msg}");
+        }
+    }
+}
+
+/// Sets the size that the first entry of a zip states, in its local header
+/// and in the central directory, to `size`.
+fn lie_about_first_size(zip: &mut [u8], size: u32) {
+    zip[22..26].copy_from_slice(&size.to_le_bytes());
+    let cd = zip
+        .windows(4)
+        .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+        .unwrap();
+    zip[cd + 24..cd + 28].copy_from_slice(&size.to_le_bytes());
+}
+
+#[test]
+fn install_refuses_a_manifest_larger_than_its_stated_size() {
+    // The zip reader refuses data past the stated size; the bounded read
+    // behind it is tested by `copy_bounded_stops_one_byte_past_the_limit`.
+    let d = Dir::new("manifest-lies");
+    let mut bytes = good_zip();
+    lie_about_first_size(&mut bytes, 10);
+    let msg = refused(
+        &d,
+        install_zip_with(&d, &bytes, lim(100, 0, 0, 0)),
+        "package: archive",
+    );
+    assert!(msg.contains("larger than its declared"), "{msg}");
+}
+
+fn install_tool_with(d: &Dir, bytes: &[u8], limits: Limits) -> Result<State, Error> {
+    d.put("gcc.archive", bytes);
+    let a = archive_of("gcc.archive", bytes, "");
+    tool_with(
+        &d.cache(),
+        ["gcc", "15.2.1-1.1", "linux-x64"],
+        &a,
+        &d.local(),
+        Pin::Index,
+        limits,
+    )
+}
+
+/// A small tool archive whose one file expands to 100,000 zero bytes, with
+/// a 2-byte file beside it.
+const BIG: usize = 100_000;
+
+fn big_tool_zip() -> Vec<u8> {
+    let zeros = vec![0u8; BIG];
+    tool_zip(&[("bin/", b""), ("bin/gcc", b"#!"), ("bin/zeros", &zeros)])
+}
+
+#[test]
+fn install_refuses_a_zip_tool_over_its_byte_limit() {
+    let bytes = big_tool_zip();
+    assert!(bytes.len() < BIG / 10, "the archive is not small");
+    let n = (BIG + 2) as u64;
+    for (limit, ok) in [(n + 1, true), (n, true), (n - 1, false)] {
+        let d = Dir::new("zip-bytes");
+        let r = install_tool_with(&d, &bytes, lim(0, limit, 10, 1 << 20));
+        if ok {
+            assert_eq!(r, Ok(State::Installed));
+        } else {
+            let msg = tool_refused(&d, r, "tool: archive");
+            assert!(msg.contains(&format!("more than {limit} bytes")), "{msg}");
+        }
+    }
+}
+
+#[test]
+fn install_refuses_a_zip_tool_over_its_entry_limit() {
+    let bytes = big_tool_zip();
+    for (limit, ok) in [(4, true), (3, true), (2, false)] {
+        let d = Dir::new("zip-entries");
+        let r = install_tool_with(&d, &bytes, lim(0, 1 << 30, limit, 1 << 20));
+        if ok {
+            assert_eq!(r, Ok(State::Installed));
+        } else {
+            let msg = tool_refused(&d, r, "tool: archive");
+            assert!(msg.contains("more than 2 entries"), "{msg}");
+        }
+    }
+}
+
+#[test]
+fn install_refuses_a_zip_link_target_over_its_limit() {
+    let target = "gcc";
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    z.add_directory("bin/", opts()).unwrap();
+    z.start_file("bin/gcc", opts()).unwrap();
+    z.write_all(b"#!").unwrap();
+    z.add_symlink("bin/cc", target, opts()).unwrap();
+    let bytes = z.finish().unwrap().into_inner();
+    let n = target.len() as u64;
+    for (limit, ok) in [(n + 1, true), (n, true), (n - 1, false)] {
+        let d = Dir::new("zip-link");
+        let r = install_tool_with(&d, &bytes, lim(0, 1 << 30, 10, limit));
+        if ok {
+            assert_eq!(r, Ok(State::Installed));
+        } else {
+            let msg = tool_refused(&d, r, "tool: archive");
+            assert!(msg.contains(&format!("longer than {limit} bytes")), "{msg}");
+        }
+    }
+}
+
+/// The length of the tar stream inside a tar.gz.
+fn ungzipped_len(tgz: &[u8]) -> u64 {
+    let mut n = Vec::new();
+    io::Read::read_to_end(&mut flate2::read::GzDecoder::new(tgz), &mut n).unwrap();
+    n.len() as u64
+}
+
+fn big_tool_tgz() -> Vec<u8> {
+    let zeros = vec![0u8; BIG];
+    tool_tgz(&[
+        T::Dir("bin/"),
+        T::File("bin/gcc", b"#!"),
+        T::File("bin/zeros", &zeros),
+    ])
+}
+
+#[test]
+fn install_refuses_a_tgz_tool_over_its_byte_limit() {
+    let bytes = big_tool_tgz();
+    assert!(bytes.len() < BIG / 10, "the archive is not small");
+    let n = ungzipped_len(&bytes);
+    for (limit, ok) in [(n + 1, true), (n, true), (n - 1, false), (50_000, false)] {
+        let d = Dir::new("tgz-bytes");
+        let r = install_tool_with(&d, &bytes, lim(0, limit, 10, 1 << 20));
+        if ok {
+            assert_eq!(r, Ok(State::Installed));
+        } else {
+            let msg = tool_refused(&d, r, "tool: archive");
+            assert!(msg.contains(&format!("more than {limit} bytes")), "{msg}");
+        }
+    }
+}
+
+#[test]
+fn install_refuses_a_tgz_tool_over_its_entry_limit() {
+    let bytes = big_tool_tgz();
+    for (limit, ok) in [(4, true), (3, true), (2, false)] {
+        let d = Dir::new("tgz-entries");
+        let r = install_tool_with(&d, &bytes, lim(0, 1 << 30, limit, 1 << 20));
+        if ok {
+            assert_eq!(r, Ok(State::Installed));
+        } else {
+            let msg = tool_refused(&d, r, "tool: archive");
+            assert!(msg.contains("more than 2 entries"), "{msg}");
+        }
+    }
+}
+
+#[test]
+fn install_refuses_tar_records_over_their_limit() {
+    // A name of 3,001 bytes takes a GNU long name record: a header and
+    // the name padded to 512, then the header of the entry itself. Its
+    // `.` components keep the path on disk short.
+    let long = format!("bin/{}x", "./".repeat(1498));
+    let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut b = tar::Builder::new(gz);
+    let mut h = tar::Header::new_gnu();
+    h.set_entry_type(tar::EntryType::Directory);
+    h.set_mode(0o755);
+    h.set_size(0);
+    b.append_data(&mut h, "bin/", &b""[..]).unwrap();
+    // The long name record, written raw: the builder would drop the `.`
+    // components and need none.
+    let mut name = long.into_bytes();
+    name.push(0);
+    let mut h = tar::Header::new_gnu();
+    h.set_entry_type(tar::EntryType::GNULongName);
+    h.as_old_mut().name[..13].copy_from_slice(b"././@LongLink");
+    h.set_size(name.len() as u64);
+    h.set_cksum();
+    b.append(&h, &name[..]).unwrap();
+    let mut h = tar::Header::new_gnu();
+    h.set_entry_type(tar::EntryType::Regular);
+    h.set_mode(0o755);
+    h.as_old_mut().name[..5].copy_from_slice(b"bin/x");
+    h.set_size(1);
+    h.set_cksum();
+    b.append(&h, &b"x"[..]).unwrap();
+    let bytes = b.into_inner().unwrap().finish().unwrap();
+    // The records between the two entries: 512 + 3,072 + 512 bytes.
+    let n = 512 + 3072 + 512;
+    for (limit, ok) in [(n + 1, true), (n, true), (n - 1, false)] {
+        let d = Dir::new("tgz-meta");
+        let r = install_tool_with(&d, &bytes, lim(0, 1 << 30, 10, limit));
+        if ok {
+            assert_eq!(r, Ok(State::Installed), "limit {limit}");
+        } else {
+            let msg = tool_refused(&d, r, "tool: archive");
+            assert!(msg.contains(&format!("more than {limit} bytes")), "{msg}");
+        }
+    }
 }

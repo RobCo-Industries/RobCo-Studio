@@ -55,6 +55,40 @@ pub const TEMP: &str = "tmp";
 /// The name of the manifest at the root of a package archive.
 const MANIFEST: &str = "sdk.json";
 
+// The bounds below are this file's own: the spec does not state them yet.
+// Each read of compressed data stops one byte past its bound.
+
+/// The most bytes of `sdk.json`. The spec does not state this limit yet.
+const MAX_MANIFEST: u64 = 4 << 20;
+/// The most bytes a tool archive may write, all entries together, and the
+/// most bytes of the tar stream of a tar.gz once ungzipped. The spec does
+/// not state this limit yet. The pinned compiler unpacks to about 1 GiB.
+const MAX_TOOL_BYTES: u64 = 8 << 30;
+/// The most entries of a tool archive. The spec does not state this limit
+/// yet.
+const MAX_TOOL_ENTRIES: u64 = 400_000;
+/// The most bytes of a zip link target, and of the tar records between
+/// the data of two entries: headers, long names, long link targets and pax
+/// records. The spec does not state this limit yet.
+const MAX_META: u64 = 1 << 20;
+
+/// The bounds of one install, as parameters so that tests can use small
+/// ones.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    manifest: u64,
+    tool_bytes: u64,
+    tool_entries: u64,
+    meta: u64,
+}
+
+const LIMITS: Limits = Limits {
+    manifest: MAX_MANIFEST,
+    tool_bytes: MAX_TOOL_BYTES,
+    tool_entries: MAX_TOOL_ENTRIES,
+    meta: MAX_META,
+};
+
 /// Fetches the bytes of an archive. The caller passes one in, so tests read
 /// local files and never touch the network.
 pub trait Transport {
@@ -310,6 +344,17 @@ pub fn package(
     transport: &dyn Transport,
     pin: Pin,
 ) -> Result<State, Error> {
+    package_with(cache, entry, transport, pin, LIMITS)
+}
+
+/// [`package`] with the bounds it is given.
+fn package_with(
+    cache: &Path,
+    entry: &IndexPackage,
+    transport: &dyn Transport,
+    pin: Pin,
+    limits: Limits,
+) -> Result<State, Error> {
     let version = entry.version.to_string();
     // The cache folder names come from the entry: each must be one plain
     // folder name. A version prints as digits, letters, `-`, `+` and `.`.
@@ -333,7 +378,7 @@ pub fn package(
         sha256: &entry.sha256,
     };
     install(cache, &item, transport, pin, &|archive, out| {
-        extract_package(archive, out, entry)?;
+        extract_package(archive, out, entry, limits)?;
         Ok(out.to_path_buf())
     })
 }
@@ -353,6 +398,27 @@ pub fn tool(
     transport: &dyn Transport,
     pin: Pin,
 ) -> Result<State, Error> {
+    tool_with(
+        cache,
+        [name, version, host],
+        archive,
+        transport,
+        pin,
+        LIMITS,
+    )
+}
+
+/// [`tool`] with the bounds it is given. `id` is the name, the version and
+/// the host.
+fn tool_with(
+    cache: &Path,
+    id: [&str; 3],
+    archive: &Archive,
+    transport: &dyn Transport,
+    pin: Pin,
+    limits: Limits,
+) -> Result<State, Error> {
+    let [name, version, host] = id;
     // A tool version may hold `/`, and `.` or `..` is a version too: each
     // name must be one plain folder name before it names a cache folder.
     if !is_host_name(name)
@@ -378,7 +444,7 @@ pub fn tool(
         sha256: &archive.sha256,
     };
     install(cache, &item, transport, pin, &|file, out| {
-        extract_tool(file, out, &archive.root)
+        extract_tool(file, out, &archive.root, limits)
     })
 }
 
@@ -697,7 +763,12 @@ fn is_folder_name(s: &str) -> bool {
 /// Checks a package archive by "The archive", reads `sdk.json` and checks
 /// it, then extracts every listed file into `out` and checks its size and
 /// hash. Nothing is extracted before every entry and `sdk.json` passed.
-fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(), Error> {
+fn extract_package(
+    archive: &Path,
+    out: &Path,
+    entry: &IndexPackage,
+    limits: Limits,
+) -> Result<(), Error> {
     let bad = |d: String| Error::PackageArchive(d);
     let file = File::open(archive).map_err(|e| read_err(archive, &e))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| bad(format!("not a zip archive: {e}")))?;
@@ -776,10 +847,29 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
     let Some(manifest) = files.iter().find(|f| f.name == MANIFEST) else {
         return Err(bad(format!("no {MANIFEST} at the archive root")));
     };
-    let mut bytes = Vec::new();
-    zip.by_index(manifest.index)
-        .and_then(|mut f| f.read_to_end(&mut bytes).map_err(Into::into))
+    let too_big = |d: String| Error::Manifest(resolve::Error::PackageManifest(d));
+    let mut mf = zip
+        .by_index(manifest.index)
         .map_err(|e| bad(format!("{MANIFEST} cannot be read: {e}")))?;
+    // The size the entry states comes first, and the read is bounded too,
+    // because the stated size can lie.
+    if mf.size() > limits.manifest {
+        return Err(too_big(format!(
+            "{MANIFEST} states {} bytes, over the limit of {} bytes",
+            mf.size(),
+            limits.manifest
+        )));
+    }
+    let mut bytes = Vec::new();
+    let n = copy_bounded(&mut mf, &mut bytes, limits.manifest)
+        .map_err(|e| bad(format!("{MANIFEST} cannot be read: {}", e.inner())))?;
+    if n > limits.manifest {
+        return Err(too_big(format!(
+            "{MANIFEST} holds more than the limit of {} bytes",
+            limits.manifest
+        )));
+    }
+    drop(mf);
     let sdk = sdk_json::parse(&bytes).map_err(Error::Manifest)?;
     sdk.check_against(entry).map_err(Error::Manifest)?;
 
@@ -824,36 +914,101 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
             .create_new(true)
             .open(&p)
             .map_err(|e| write_err(&p, &e))?;
-        let expected = listed.get(f.name.as_str()).copied();
-        let limit = expected.map_or(u64::MAX, |e| e.size.saturating_add(1));
-        let mut hasher = Sha256::new();
-        let mut count = 0u64;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = zf
-                .read(&mut buf)
-                .map_err(|e| bad(format!("{}: the data cannot be read: {e}", f.name)))?;
-            if n == 0 {
-                break;
+        let failed = |e: CopyFail| match e {
+            CopyFail::Read(e) => bad(format!("{}: the data cannot be read: {e}", f.name)),
+            CopyFail::Write(e) => write_err(&p, &e),
+        };
+        let Some(expected) = listed.get(f.name.as_str()).copied() else {
+            // `sdk.json` itself, already read within its limit.
+            let n = copy_bounded(&mut zf, &mut target, limits.manifest).map_err(failed)?;
+            if n != bytes.len() as u64 {
+                return Err(bad(format!("{}: reads differently twice", f.name)));
             }
-            target.write_all(&buf[..n]).map_err(|e| write_err(&p, &e))?;
-            hasher.update(&buf[..n]);
-            count += n as u64;
-            if count >= limit {
-                break;
-            }
-        }
-        if let Some(e) = expected {
-            let got = hex(&hasher.finalize());
-            if count != e.size || got != e.sha256 {
-                return Err(Error::PackageHash(format!(
-                    "{}: does not match its entry in {MANIFEST} files",
-                    f.name
-                )));
-            }
+            continue;
+        };
+        let (count, got) = copy_listed(&mut zf, &mut target, expected.size).map_err(failed)?;
+        if count != expected.size || got != expected.sha256 {
+            return Err(Error::PackageHash(format!(
+                "{}: does not match its entry in {MANIFEST} files",
+                f.name
+            )));
         }
     }
     Ok(())
+}
+
+/// Why a bounded copy stopped.
+#[derive(Debug)]
+enum CopyFail {
+    /// The source failed: the archive's fault.
+    Read(io::Error),
+    /// The destination failed: the cache's fault.
+    Write(io::Error),
+}
+
+impl CopyFail {
+    fn inner(&self) -> &io::Error {
+        match self {
+            Self::Read(e) | Self::Write(e) => e,
+        }
+    }
+}
+
+/// Copies `from` into `to` until the end of `from` or `limit + 1` bytes,
+/// whichever comes first, and returns the count. A count over `limit`
+/// means `from` holds more than `limit`: nothing past that one byte is read
+/// or written.
+fn copy_bounded(from: &mut dyn Read, to: &mut dyn Write, limit: u64) -> Result<u64, CopyFail> {
+    let mut buf = [0u8; 64 * 1024];
+    let mut count = 0u64;
+    loop {
+        let room = limit.saturating_add(1) - count;
+        if room == 0 {
+            return Ok(count);
+        }
+        let want = usize::try_from(room).map_or(buf.len(), |r| r.min(buf.len()));
+        let n = match from.read(&mut buf[..want]) {
+            Ok(0) => return Ok(count),
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(CopyFail::Read(e)),
+        };
+        to.write_all(&buf[..n]).map_err(CopyFail::Write)?;
+        count += n as u64;
+    }
+}
+
+/// A writer that hashes what it passes on.
+struct HashTo<'a> {
+    to: &'a mut dyn Write,
+    hasher: Sha256,
+}
+
+impl Write for HashTo<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.to.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.to.flush()
+    }
+}
+
+/// Copies one package file whose `files` entry gives `size`: at most
+/// `size + 1` bytes are read and written. Returns the count and the
+/// SHA-256 of what was written.
+fn copy_listed(
+    from: &mut dyn Read,
+    to: &mut dyn Write,
+    size: u64,
+) -> Result<(u64, String), CopyFail> {
+    let mut h = HashTo {
+        to,
+        hasher: Sha256::new(),
+    };
+    let n = copy_bounded(from, &mut h, size)?;
+    Ok((n, hex(&h.hasher.finalize())))
 }
 
 /// Joins a checked relative `/` path to `base`, by [`join_parts`]. An
@@ -904,16 +1059,16 @@ enum Entry {
 
 /// Extracts a tool archive into `out` by "Tool archives" and returns the
 /// folder that `root` names, once it holds `bin/` and no record.
-fn extract_tool(archive: &Path, out: &Path, root: &str) -> Result<PathBuf, Error> {
+fn extract_tool(archive: &Path, out: &Path, root: &str, limits: Limits) -> Result<PathBuf, Error> {
     let bad = |d: String| Error::ToolArchive(d);
     let mut file = File::open(archive).map_err(|e| read_err(archive, &e))?;
     let mut magic = [0u8; 4];
     let n = file.read(&mut magic).map_err(|e| read_err(archive, &e))?;
     drop(file);
     if n >= 4 && magic == [0x50, 0x4B, 0x03, 0x04] {
-        extract_tool_zip(archive, out)?;
+        extract_tool_zip(archive, out, limits)?;
     } else if n >= 2 && magic[..2] == [0x1F, 0x8B] {
-        extract_tool_tar(archive, out)?;
+        extract_tool_tar(archive, out, limits)?;
     } else {
         return Err(bad(
             "neither a zip archive nor a gzip tar archive".to_owned()
@@ -1036,6 +1191,7 @@ fn put(
     entry: Entry,
     data: &mut dyn Read,
     listed: &mut Vec<(String, Entry)>,
+    budget: &mut Budget,
 ) -> Result<(), Error> {
     let Some(path) = tool_path(out, name)? else {
         return Ok(());
@@ -1081,7 +1237,7 @@ fn put(
                 .create_new(true)
                 .open(&path)
                 .map_err(|e| taken(&e))?;
-            copy_entry(name, &path, data, &mut f)?;
+            copy_entry(name, &path, data, &mut f, budget)?;
             set_mode(&path, mode)
         }
         Entry::Link(_) => Ok(()),
@@ -1211,28 +1367,42 @@ fn make_links(out: &Path, listed: &[(String, Entry)]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Copies the data of one entry. A failure to read is the archive's,
-/// `tool: archive`; a failure to write is the destination's, `io: write`.
+/// The bytes a tool archive may still write.
+struct Budget {
+    written: u64,
+    limit: u64,
+}
+
+impl Budget {
+    fn over(&self) -> Error {
+        Error::ToolArchive(format!(
+            "the archive unpacks to more than {} bytes, the limit",
+            self.limit
+        ))
+    }
+}
+
+/// Copies the data of one entry, within what `budget` leaves: one byte
+/// past it, the copy stops and the archive is refused. A failure to read
+/// is the archive's, `tool: archive`; a failure to write is the
+/// destination's, `io: write`.
 fn copy_entry(
     name: &str,
     path: &Path,
     data: &mut dyn Read,
     to: &mut dyn Write,
+    budget: &mut Budget,
 ) -> Result<(), Error> {
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = match data.read(&mut buf) {
-            Ok(0) => return Ok(()),
-            Ok(n) => n,
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-            Err(e) => {
-                return Err(Error::ToolArchive(format!(
-                    "{name}: the data cannot be read: {e}"
-                )));
-            }
-        };
-        to.write_all(&buf[..n]).map_err(|e| write_err(path, &e))?;
+    let room = budget.limit.saturating_sub(budget.written);
+    let n = copy_bounded(data, to, room).map_err(|e| match e {
+        CopyFail::Read(e) => Error::ToolArchive(format!("{name}: the data cannot be read: {e}")),
+        CopyFail::Write(e) => write_err(path, &e),
+    })?;
+    budget.written += n;
+    if budget.written > budget.limit {
+        return Err(budget.over());
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1300,11 +1470,25 @@ fn check_links(folder: &Path, what: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn extract_tool_zip(archive: &Path, out: &Path) -> Result<(), Error> {
+fn too_many(limits: Limits) -> Error {
+    Error::ToolArchive(format!(
+        "the archive holds more than {} entries, the limit",
+        limits.tool_entries
+    ))
+}
+
+fn extract_tool_zip(archive: &Path, out: &Path, limits: Limits) -> Result<(), Error> {
     let mut listed = Vec::new();
     let bad = |d: String| Error::ToolArchive(d);
     let file = File::open(archive).map_err(|e| read_err(archive, &e))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| bad(format!("not a zip archive: {e}")))?;
+    if zip.len() as u64 > limits.tool_entries {
+        return Err(too_many(limits));
+    }
+    let mut budget = Budget {
+        written: 0,
+        limit: limits.tool_bytes,
+    };
     for i in 0..zip.len() {
         let mut f = zip
             .by_index(i)
@@ -1316,9 +1500,18 @@ fn extract_tool_zip(archive: &Path, out: &Path) -> Result<(), Error> {
         let mode = f.unix_mode();
         let kind = mode.map_or(0, |m| m & 0o170_000);
         let entry = if f.is_symlink() {
-            let mut target = String::new();
-            f.read_to_string(&mut target)
-                .map_err(|e| bad(format!("{name}: the link cannot be read: {e}")))?;
+            let mut target = Vec::new();
+            let n = copy_bounded(&mut f, &mut target, limits.meta)
+                .map_err(|e| bad(format!("{name}: the link cannot be read: {}", e.inner())))?;
+            if n > limits.meta {
+                return Err(bad(format!(
+                    "{name}: the link target is longer than {} bytes, the limit",
+                    limits.meta
+                )));
+            }
+            let Ok(target) = String::from_utf8(target) else {
+                return Err(bad(format!("{name}: the link target is not UTF-8")));
+            };
             Entry::Link(target)
         } else if f.is_dir() {
             Entry::Dir
@@ -1327,23 +1520,103 @@ fn extract_tool_zip(archive: &Path, out: &Path) -> Result<(), Error> {
         } else {
             return Err(bad(format!("{name}: not a file, a folder or a link")));
         };
-        put(out, &name, entry, &mut f, &mut listed)?;
+        put(out, &name, entry, &mut f, &mut listed, &mut budget)?;
     }
     make_links(out, &listed)
 }
 
-fn extract_tool_tar(archive: &Path, out: &Path) -> Result<(), Error> {
+/// Where a [`Meter`] is in the ungzipped tar stream, and how far it may go.
+#[derive(Debug, Clone, Copy)]
+struct Mark {
+    read: u64,
+    limit: u64,
+}
+
+/// Counts the bytes of the ungzipped tar stream as they come and fails a
+/// read one byte past the limit that the caller moves along.
+struct Meter<R> {
+    inner: R,
+    mark: std::rc::Rc<std::cell::Cell<Mark>>,
+}
+
+impl<R: Read> Read for Meter<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let m = self.mark.get();
+        let over = || io::Error::other("the tar stream is longer than its limit");
+        if m.read > m.limit {
+            return Err(over());
+        }
+        let room = m.limit - m.read + 1;
+        let want = usize::try_from(room).map_or(buf.len(), |r| r.min(buf.len()));
+        let n = self.inner.read(&mut buf[..want])?;
+        let read = m.read + n as u64;
+        self.mark.set(Mark { read, ..m });
+        if read > m.limit {
+            return Err(over());
+        }
+        Ok(n)
+    }
+}
+
+/// Reads a tar.gz through a [`Meter`]. The stream may hold at most
+/// `tool_bytes` in all, and between the data of two entries at most
+/// `meta`: so the long names and pax records that the tar reader holds in
+/// memory are bounded too.
+fn extract_tool_tar(archive: &Path, out: &Path, limits: Limits) -> Result<(), Error> {
     let bad = |d: String| Error::ToolArchive(d);
     let file = File::open(archive).map_err(|e| read_err(archive, &e))?;
-    let mut gz = flate2::read::GzDecoder::new(io::BufReader::new(file));
+    let mark = std::rc::Rc::new(std::cell::Cell::new(Mark {
+        read: 0,
+        limit: limits.meta.min(limits.tool_bytes),
+    }));
+    let mut gz = Meter {
+        inner: flate2::read::GzDecoder::new(io::BufReader::new(file)),
+        mark: mark.clone(),
+    };
+    // A failure past a limit is reported as that limit.
+    let why = |e: String| {
+        let m = mark.get();
+        if m.read > limits.tool_bytes {
+            Error::ToolArchive(format!(
+                "the archive unpacks to more than {} bytes, the limit",
+                limits.tool_bytes
+            ))
+        } else if m.read > m.limit {
+            Error::ToolArchive(format!(
+                "the tar records between two entries take more than {} bytes, the limit",
+                limits.meta
+            ))
+        } else {
+            bad(e)
+        }
+    };
+    let mut budget = Budget {
+        written: 0,
+        limit: limits.tool_bytes,
+    };
     let mut listed = Vec::new();
     {
         let mut tar = tar::Archive::new(&mut gz);
         let entries = tar
             .entries()
-            .map_err(|e| bad(format!("the tar data cannot be read: {e}")))?;
+            .map_err(|e| why(format!("the tar data cannot be read: {e}")))?;
+        let mut count = 0u64;
         for e in entries {
-            let mut e = e.map_err(|e| bad(format!("the tar data cannot be read: {e}")))?;
+            let mut e = e.map_err(|e| why(format!("the tar data cannot be read: {e}")))?;
+            count += 1;
+            if count > limits.tool_entries {
+                return Err(too_many(limits));
+            }
+            // The data of this entry, padded to 512 bytes, then at most
+            // `meta` up to the data of the next one.
+            let m = mark.get();
+            let data = e.size().div_ceil(512).saturating_mul(512);
+            let limit = m
+                .read
+                .saturating_add(data)
+                .saturating_add(limits.meta)
+                .min(limits.tool_bytes);
+            mark.set(Mark { limit, ..m });
             let path = e.path_bytes().into_owned();
             let Ok(name) = String::from_utf8(path) else {
                 return Err(bad("an entry name is not UTF-8".to_owned()));
@@ -1365,11 +1638,14 @@ fn extract_tool_tar(archive: &Path, out: &Path) -> Result<(), Error> {
             } else {
                 return Err(bad(format!("{name}: not a file, a folder or a link")));
             };
-            put(out, &name, entry, &mut e, &mut listed)?;
+            match put(out, &name, entry, &mut e, &mut listed, &mut budget) {
+                Err(Error::ToolArchive(d)) => return Err(why(d)),
+                r => r?,
+            }
         }
     }
     io::copy(&mut gz, &mut io::sink())
-        .map_err(|e| bad(format!("the gzip data cannot be read to the end: {e}")))?;
+        .map_err(|e| why(format!("the gzip data cannot be read to the end: {e}")))?;
     make_links(out, &listed)
 }
 
