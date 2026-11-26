@@ -87,15 +87,16 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     let pkg = newest_package(cache)?;
 
     // 3. Its sdk.json.
-    let sdk = read_regular(&pkg.join("sdk.json"), MAX_LIST)?.ok_or_else(|| {
-        Failure::new(
-            "package: manifest",
-            format!(
-                "sdk.json is missing from the installed package {}",
-                pkg.display()
-            ),
-        )
-    })?;
+    let sdk =
+        read_regular(&pkg.join("sdk.json"), MAX_LIST, PACKAGE_MANIFEST)?.ok_or_else(|| {
+            Failure::new(
+                "package: manifest",
+                format!(
+                    "sdk.json is missing from the installed package {}",
+                    pkg.display()
+                ),
+            )
+        })?;
     let sdk = sdk_json::parse(&sdk).map_err(|e| Failure::of(&e))?;
     if sdk.name != TEMPLATES {
         return Err(Failure::new(
@@ -109,12 +110,13 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     }
 
     // 4. templates.json, and the files each template lists.
-    let list = read_regular(&pkg.join("templates.json"), MAX_LIST)?.ok_or_else(|| {
-        Failure::new(
-            "templates: manifest",
-            format!("templates.json is missing from {}", pkg.display()),
-        )
-    })?;
+    let list = read_regular(&pkg.join("templates.json"), MAX_LIST, TEMPLATES_MANIFEST)?
+        .ok_or_else(|| {
+            Failure::new(
+                "templates: manifest",
+                format!("templates.json is missing from {}", pkg.display()),
+            )
+        })?;
     let templates = parse_templates(&list)?;
     for t in &templates {
         check_folder(&pkg, t)?;
@@ -138,7 +140,7 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     let mut files = Vec::with_capacity(t.files.len());
     for f in &t.files {
         let path = file_path(&pkg, &t.id, &f.path);
-        let bytes = read_regular(&path, MAX_FILE)?.ok_or_else(|| {
+        let bytes = read_regular(&path, MAX_FILE, TEMPLATES_MANIFEST)?.ok_or_else(|| {
             Failure::new(
                 "templates: manifest",
                 format!("{}/{}: gone while the command read it", t.id, f.path),
@@ -230,13 +232,19 @@ fn newest_package(cache: &Path) -> Result<PathBuf, Failure> {
         .ok_or_else(|| Failure::new("internal", "a cached version has no folder name"))
 }
 
+/// The code of a bad `sdk.json`, by "Reading sdk.json".
+const PACKAGE_MANIFEST: &str = "package: manifest";
+
+/// The code of a bad `templates.json` or template file, by "templates.json".
+const TEMPLATES_MANIFEST: &str = "templates: manifest";
+
 /// Reads a regular file of the package, up to `limit` bytes, without
 /// following a link. `None` when nothing is there. Something that is not a
 /// regular file, a link included, or a file over the limit fails the
-/// package: `templates: manifest`, naming the path. A host that refuses is
-/// `io: read`.
-fn read_regular(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, Failure> {
-    let bad = |why: &str| Failure::new("templates: manifest", format!("{}: {why}", path.display()));
+/// package with `code`, the code of that file, naming the path. A host that
+/// refuses is `io: read`, whatever the file.
+fn read_regular(path: &Path, limit: u64, code: &'static str) -> Result<Option<Vec<u8>>, Failure> {
+    let bad = |why: &str| Failure::new(code, format!("{}: {why}", path.display()));
     match fs::symlink_metadata(path) {
         Ok(md) if md.file_type().is_file() => {}
         Ok(_) => return Err(bad("not a regular file")),

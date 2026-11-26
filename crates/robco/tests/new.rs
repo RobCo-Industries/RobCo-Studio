@@ -486,6 +486,42 @@ fn new_a_bad_sdk_json_is_a_package_error() {
     refused(&f, "holotape-c", "PIPES", "package: manifest", 4);
 }
 
+/// `sdk.json` and `templates.json` that are a folder, too large or, on
+/// Unix, a link: each file fails under its own code.
+#[test]
+fn new_a_package_list_that_is_not_a_regular_file_fails_under_its_own_code() {
+    for (file, code) in [
+        ("sdk.json", "package: manifest"),
+        ("templates.json", "templates: manifest"),
+    ] {
+        // A folder.
+        let f = Fixture::new("list-dir");
+        f.good();
+        let p = f.pkg().join(file);
+        fs::remove_file(&p).unwrap();
+        fs::create_dir(&p).unwrap();
+        refused(&f, "holotape-c", "PIPES", code, 4);
+        // Over the limit of 1 MiB.
+        let f = Fixture::new("list-big");
+        f.good();
+        let p = f.pkg().join(file);
+        fs::write(&p, vec![b' '; 1024 * 1024 + 1]).unwrap();
+        refused(&f, "holotape-c", "PIPES", code, 4);
+        // A link to a good copy.
+        #[cfg(unix)]
+        {
+            let f = Fixture::new("list-link");
+            f.good();
+            let p = f.pkg().join(file);
+            let copy = f.dir.join("outside").join(file);
+            fs::create_dir_all(copy.parent().unwrap()).unwrap();
+            fs::rename(&p, &copy).unwrap();
+            std::os::unix::fs::symlink(&copy, &p).unwrap();
+            refused(&f, "holotape-c", "PIPES", code, 4);
+        }
+    }
+}
+
 #[test]
 fn new_each_bad_templates_json_is_refused() {
     let bad_paths = [
