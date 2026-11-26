@@ -851,6 +851,8 @@ impl Settings {
     /// Write the file to `dir`, through a temporary file and a rename.
     pub fn write(&self, dir: &Path) -> std::io::Result<()> {
         let text = self.text().map_err(std::io::Error::other)?;
+        #[cfg(test)]
+        writes::record(&text)?;
         write_file(dir, SETTINGS, text.as_bytes())
     }
 
@@ -974,6 +976,37 @@ fn no_settings(why: &str) -> Note {
     warn(format!(
         "%STUDIO-W-NOSETTINGS, could not read {SETTINGS}: {why}. Studio starts with its defaults and writes no settings in this run. Fix the file or delete it."
     ))
+}
+
+/// The settings writes of the running test thread, in tests only: each
+/// write's text, and a switch that makes the next writes fail.
+#[cfg(test)]
+pub(crate) mod writes {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static FAIL: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Note a write of `text`, or fail it when the switch is on.
+    pub fn record(text: &str) -> std::io::Result<()> {
+        if FAIL.with(Cell::get) {
+            return Err(std::io::Error::other("a test failed the write"));
+        }
+        LOG.with(|l| l.borrow_mut().push(text.to_owned()));
+        Ok(())
+    }
+
+    /// The writes since the last call, oldest first.
+    pub fn take() -> Vec<String> {
+        LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+    }
+
+    /// Make the next writes fail, or work again.
+    pub fn fail(on: bool) {
+        FAIL.with(|f| f.set(on));
+    }
 }
 
 #[cfg(test)]

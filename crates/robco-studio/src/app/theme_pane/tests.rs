@@ -458,6 +458,8 @@ fn the_front_table_holds_for_the_theme_questions() {
         );
         assert_eq!(s.unavailable(it).as_deref(), Some(ASKING));
     }
+    // A fresh folder: the pick above wrote the change into the first.
+    let d = TempDir::new("table-naming");
     let mut s = on_ember(&d);
     s.theme_editor.open = true;
     s.start_naming(false);

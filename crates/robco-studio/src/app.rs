@@ -203,6 +203,9 @@ pub struct Studio {
     said: Vec<String>,
     /// A setting changed: write the settings when no button is held.
     settings_due: bool,
+    /// How many acts of the person are running, one inside another. The
+    /// outermost one writes the settings when it ends: see `Studio::act`.
+    in_act: u32,
     /// The page shown.
     pub page: Page,
     /// The open folder.
@@ -416,6 +419,7 @@ impl Studio {
             store: None,
             said: Vec::new(),
             settings_due: false,
+            in_act: 0,
             page: Page::Project,
             project: None,
             editor: Editor::default(),
@@ -712,6 +716,14 @@ impl Studio {
         self.refresh_theme();
     }
 
+    /// The frame's one write of the settings: an edit, a slider or a
+    /// switch marked them due, and no pointer button is `held`.
+    pub(crate) fn frame_settings(&mut self, held: bool) {
+        if self.settings_due && !held {
+            self.save_settings();
+        }
+    }
+
     /// Pick the theme at place `i` of the list, from the menu or the
     /// editor's dropdown. While a changed theme is not saved, this asks
     /// first, through [`Studio::leave_for`].
@@ -721,7 +733,7 @@ impl Studio {
         }
         let to = Leaving::Theme(self.key(i));
         // A pick of a listed theme cannot fail.
-        let _ = self.leave_for(to);
+        let _ = self.act(|s| s.leave_for(to));
     }
 
     /// Take the theme at place `i` of the list. A changed theme goes. Only
@@ -730,13 +742,15 @@ impl Studio {
         if i >= self.themes.len() {
             return;
         }
-        self.current = i;
-        self.changed = None;
-        self.adrift = None;
-        self.settle_change();
-        self.chose();
-        self.refresh_theme();
-        self.save_settings();
+        self.act(|s| {
+            s.current = i;
+            s.changed = None;
+            s.adrift = None;
+            s.settle_change();
+            s.chose();
+            s.refresh_theme();
+            s.settings_due = true;
+        });
         let name = self.spec().name.to_string();
         self.say(Level::Info, crate::theme::news(&name, None));
     }
@@ -1121,9 +1135,7 @@ impl Studio {
         self.keys(&ctx);
         // A setting changed: write it once no button is held, so a slider
         // being dragged does not write.
-        if self.settings_due && !ctx.input(|i| i.pointer.any_down()) {
-            self.save_settings();
-        }
+        self.frame_settings(ctx.input(|i| i.pointer.any_down()));
         // Whatever is in front, the window behind is inert, to the pointer
         // and to the keyboard alike: it is drawn disabled, so none of its
         // widgets takes a click or joins the Tab order, and the widget

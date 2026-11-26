@@ -374,6 +374,21 @@ impl Studio {
         self.settle_change();
     }
 
+    /// Run `f`, one act of the person, and write the settings once at its
+    /// end when it marked them due. An act inside another act writes
+    /// nothing: the outermost one writes, after memory holds its final
+    /// state. Inner steps such as `keep` only mark the settings due, so no
+    /// write shows a state the person never had.
+    pub(super) fn act<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.in_act += 1;
+        let r = f(self);
+        self.in_act -= 1;
+        if self.in_act == 0 && self.settings_due {
+            self.save_settings();
+        }
+        r
+    }
+
     /// Write `settings.toml` now, when Studio has a settings folder and
     /// may write it. A failure says why on the status line.
     pub fn save_settings(&mut self) {
@@ -547,7 +562,9 @@ impl Studio {
         self.settle_change();
         self.chose();
         self.refresh_theme();
-        self.save_settings();
+        // The theme file is written: the act that called this writes the
+        // settings after it, so they never name a file not there yet.
+        self.settings_due = true;
         Ok(store::saved_news(&spec.name, file))
     }
 
@@ -556,6 +573,10 @@ impl Studio {
     /// is written over; without it, that name is [`ThemeFault::Exists`].
     /// The window then takes the saved theme.
     pub fn save_theme_as(&mut self, name: &str, replace: bool) -> Result<String, ThemeFault> {
+        self.act(|s| s.save_as_now(name, replace))
+    }
+
+    fn save_as_now(&mut self, name: &str, replace: bool) -> Result<String, ThemeFault> {
         let (name, taken) = self.name_check(name, None)?;
         let dir = self.folder_or_fault()?;
         let file = match taken {
@@ -577,6 +598,10 @@ impl Studio {
     /// A change whose file is gone has none either: Save saves it as new,
     /// under the name [`Studio::save_as_name`] gives.
     pub fn save_theme(&mut self) -> Result<String, ThemeFault> {
+        self.act(Self::save_now)
+    }
+
+    fn save_now(&mut self) -> Result<String, ThemeFault> {
         let used = self.in_use();
         if used.adrift() {
             return self.save_theme_as(&self.save_as_name(), false);
@@ -598,6 +623,10 @@ impl Studio {
     /// The name inside its file changes, the file keeps its file name, and
     /// a change not saved stays not saved.
     pub fn rename_theme(&mut self, name: &str) -> Result<String, ThemeFault> {
+        self.act(|s| s.rename_now(name))
+    }
+
+    fn rename_now(&mut self, name: &str) -> Result<String, ThemeFault> {
         let used = self.in_use();
         let (Some(file), Some(row)) = (used.file, used.row) else {
             return Err(self.no_file());
@@ -616,7 +645,8 @@ impl Studio {
         });
         self.settle_change();
         self.refresh_theme();
-        self.save_settings();
+        // `keep` marked the settings due when it wrote the file. The act
+        // writes them once, now that the change is back.
         kept?;
         let line = crate::theme::news(&name, None);
         self.say(Level::Info, line.clone());
@@ -626,6 +656,10 @@ impl Studio {
     /// Delete the file of the theme in use, one of the person's own. The
     /// window goes back to Green.
     pub fn delete_theme(&mut self) -> Result<String, ThemeFault> {
+        self.act(Self::delete_now)
+    }
+
+    fn delete_now(&mut self) -> Result<String, ThemeFault> {
         let used = self.in_use();
         let Some(file) = used.file else {
             return Err(self.no_file());
@@ -664,7 +698,7 @@ impl Studio {
         self.chose();
         self.reload_themes();
         self.refresh_theme();
-        self.save_settings();
+        self.settings_due = true;
         let line = format!(
             "Theme {name} deleted. {}",
             crate::theme::news(&SHIPPED[0].name, None)
@@ -701,11 +735,13 @@ impl Studio {
     /// question of a pick and gives `None`; the file is added after Save or
     /// Do not save. Otherwise it gives the line for the status line.
     pub fn add_theme_file(&mut self, path: &Path) -> Result<Option<String>, ThemeFault> {
-        self.folder_or_fault()?;
-        let spec = self.read_theme_file(path)?;
-        self.leave_for(super::Leaving::File {
-            path: path.to_owned(),
-            name: spec.name.into_owned(),
+        self.act(|s| {
+            s.folder_or_fault()?;
+            let spec = s.read_theme_file(path)?;
+            s.leave_for(super::Leaving::File {
+                path: path.to_owned(),
+                name: spec.name.into_owned(),
+            })
         })
     }
 
@@ -729,3 +765,11 @@ impl Studio {
     reason = "a test; a failed unwrap is a failed test"
 )]
 mod tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test; a failed unwrap is a failed test"
+)]
+mod one_write;

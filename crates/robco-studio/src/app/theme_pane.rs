@@ -911,6 +911,10 @@ impl Studio {
     /// Let `to` take the place of the theme in use, after [`Studio::gate`].
     /// Gives the line said, or `None` when a question is open.
     pub fn leave_for(&mut self, to: Leaving) -> Result<Option<String>, ThemeFault> {
+        self.act(|s| s.leave_now(to))
+    }
+
+    fn leave_now(&mut self, to: Leaving) -> Result<Option<String>, ThemeFault> {
         match self.gate(&to) {
             Gate::Go => self.go(&to).map(Some),
             Gate::Ask(q) => {
@@ -971,6 +975,10 @@ impl Studio {
     /// when it worked. A name that exists is replaced on Save as, since the
     /// button read Replace.
     pub fn finish_naming(&mut self) {
+        self.act(Self::naming_now);
+    }
+
+    fn naming_now(&mut self) {
         let Some(n) = self.theme_editor.naming.clone() else {
             return;
         };
@@ -1008,6 +1016,10 @@ impl Studio {
     ///
     /// Gives what the answer did: `None` when nothing was done.
     pub fn answer_theme(&mut self, a: Answer) -> Option<Result<String, ThemeFault>> {
+        self.act(|s| s.answer_now(a))
+    }
+
+    fn answer_now(&mut self, a: Answer) -> Option<Result<String, ThemeFault>> {
         let q = self.theme_editor.question.clone()?;
         if a == Answer::Cancel {
             self.theme_editor.question = None;
