@@ -17,13 +17,44 @@
 //!   character Windows refuses in a name, no name Windows keeps for a
 //!   device such as `CON` or `NUL`, and no component that ends with a dot
 //!   or a space, which Windows drops.
-//! - The package is read without following a link: `templates.json`,
-//!   `sdk.json` and each template file must be regular files, read up to a
-//!   size limit, and a link under the template folder fails the package.
+//! - The package is read without following a link at the last component
+//!   of a path: `templates.json`, `sdk.json` and each template file must
+//!   be regular files, read up to a size limit, and a link under the
+//!   template folder fails the package. Each file is opened with
+//!   `O_NOFOLLOW` on Unix and `FILE_FLAG_OPEN_REPARSE_POINT` on Windows,
+//!   and its type, size and bytes come from the open handle only.
 //! - The project is written into a new folder that starts with a dot,
 //!   beside the target, made by this run, so no link is in it. Each folder
 //!   and file in it is created new. The folder is renamed to `NAME` at the
 //!   end, and removed on any failure, so a failure leaves nothing.
+//!
+//! ## Limits
+//!
+//! Each check of a path and the act that follows are two steps, and
+//! another process can change the path in between. What holds:
+//!
+//! - A package file swapped for a link after the check is not read: the
+//!   open refuses a link at the last component.
+//! - A folder of the package swapped for a link is still followed, by the
+//!   open of a file under it and by the walk of the template folder. So a
+//!   process that writes in the cache can make the command copy bytes from
+//!   outside the package. Closing this needs each folder opened in turn
+//!   from the package folder, each without following a link, as `openat`
+//!   does on Unix. The cache belongs to the person who runs the command,
+//!   and only a process that can already write there can do this; such a
+//!   process can also change the package files themselves.
+//! - The target is checked, then later removed if it was an empty folder
+//!   and replaced by a rename. Removing a folder fails on a link and on a
+//!   folder that is not empty, and a rename replaces a link itself, never
+//!   what it points to. So a change in between makes the command fail or
+//!   replace an empty folder or a link, and touches nothing outside.
+//! - The temporary folder is made new, so it is never an older folder. A
+//!   process that can write in the current folder can swap it or a folder
+//!   in it for a link while files are written: a file is then created new
+//!   outside the project, never over an existing file. Removing the
+//!   temporary folder after a failure does not follow a link. Only a
+//!   process that can already write in the person's own folder can do
+//!   this, and closing it needs the same folder by folder opening.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -239,10 +270,15 @@ const PACKAGE_MANIFEST: &str = "package: manifest";
 const TEMPLATES_MANIFEST: &str = "templates: manifest";
 
 /// Reads a regular file of the package, up to `limit` bytes, without
-/// following a link. `None` when nothing is there. Something that is not a
-/// regular file, a link included, or a file over the limit fails the
-/// package with `code`, the code of that file, naming the path. A host that
-/// refuses is `io: read`, whatever the file.
+/// following a link at its last component. `None` when nothing is there.
+/// Something that is not a regular file, a link included, or a file over
+/// the limit fails the package with `code`, the code of that file, naming
+/// the path. A host that refuses is `io: read`, whatever the file.
+///
+/// The look at the path first only picks the error a person sees. What is
+/// read is decided on the handle [`open_no_follow`] returns: its type, its
+/// size and its bytes, so a file swapped for a link after the look is not
+/// read through the link.
 fn read_regular(path: &Path, limit: u64, code: &'static str) -> Result<Option<Vec<u8>>, Failure> {
     let bad = |why: &str| Failure::new(code, format!("{}: {why}", path.display()));
     match fs::symlink_metadata(path) {
@@ -251,9 +287,16 @@ fn read_regular(path: &Path, limit: u64, code: &'static str) -> Result<Option<Ve
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(read_failure(path, &e)),
     }
-    let file = File::open(path).map_err(|e| read_failure(path, &e))?;
+    let file = match open_no_follow(path) {
+        Ok(f) => f,
+        Err(e) if is_link_refused(&e) => return Err(bad("a link, not followed")),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(bad("gone while the command read it"));
+        }
+        Err(e) => return Err(read_failure(path, &e)),
+    };
     let md = file.metadata().map_err(|e| read_failure(path, &e))?;
-    if !md.is_file() {
+    if !md.is_file() || md.file_type().is_symlink() {
         return Err(bad("not a regular file"));
     }
     if md.len() > limit {
@@ -267,6 +310,49 @@ fn read_regular(path: &Path, limit: u64, code: &'static str) -> Result<Option<Ve
         return Err(bad(&format!("larger than {limit} bytes")));
     }
     Ok(Some(bytes))
+}
+
+/// Opens `path` to read, without following a link at its last component.
+///
+/// On Unix it passes `O_NOFOLLOW`, so a link fails the open with `ELOOP`,
+/// and `O_NONBLOCK`, so a named pipe opens at once instead of waiting for a
+/// writer. The caller then refuses the pipe by its type.
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// Opens `path` to read, without following a link at its last component.
+///
+/// On Windows it passes `FILE_FLAG_OPEN_REPARSE_POINT`, so a symbolic link
+/// or a junction opens as itself, not as its target. The caller then
+/// refuses it by its type, read from the handle.
+#[cfg(windows)]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// `FILE_FLAG_OPEN_REPARSE_POINT` of the Windows API.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// Whether the open failed because the last component is a link.
+#[cfg(unix)]
+fn is_link_refused(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ELOOP)
+}
+
+/// Whether the open failed because the last component is a link. On
+/// Windows a link opens as itself and is refused by its type.
+#[cfg(windows)]
+fn is_link_refused(_: &std::io::Error) -> bool {
+    false
 }
 
 /// The path of a template file in the package, from its checked `/` path.
@@ -820,6 +906,54 @@ mod tests {
         write_project(&cwd, "EMPTY", &[("a/b", b"2".to_vec())], true).unwrap();
         assert_eq!(fs::read(cwd.join("EMPTY/a/b")).unwrap(), b"2");
         let _ = fs::remove_dir_all(&cwd);
+    }
+
+    /// A fresh test folder under the system's temporary folder.
+    #[cfg(unix)]
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("robco-unit-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_opener_refuses_a_link_that_a_plain_open_follows() {
+        let d = scratch("open-link");
+        fs::write(d.join("real"), b"outside").unwrap();
+        std::os::unix::fs::symlink(d.join("real"), d.join("link")).unwrap();
+        assert!(File::open(d.join("link")).is_ok());
+        let e = open_no_follow(&d.join("link")).unwrap_err();
+        assert!(is_link_refused(&e), "{e}");
+        assert!(open_no_follow(&d.join("real")).is_ok());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_opener_returns_at_once_on_a_named_pipe() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let d = scratch("open-fifo");
+        let fifo = d.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let at = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_no_follow(&at).map(|f| f.metadata().unwrap().is_file()));
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10));
+        // Unblock a thread still in the open, so the test process can end.
+        let _ = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo);
+        assert!(matches!(got, Ok(Ok(false))), "{got:?}");
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
