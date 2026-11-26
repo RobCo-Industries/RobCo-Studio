@@ -14,6 +14,7 @@ All notable changes to this project are listed here. The format follows [Keep a 
 - `studio-core::resolve`, which reads the SDK index and a package's `sdk.json`, picks package versions and tools for a target, and reads, checks and writes `robco.lock`. It refuses an `sdk.json` whose fields differ from its index entry, and a lock that is stale for the target or the host. It writes the lock through a temporary file, so a failure leaves the old lock as it was. It downloads and installs nothing.
 - `studio-core::install`, which downloads, checks and installs packages and tools into the cache. It hashes a download while it streams to a temporary file, checks a package archive and its `sdk.json` before it extracts anything, checks each file, refuses links that leave a tool archive, and moves the folder into the cache with its `.robco-archive` record in one rename. The caller passes the transport. Only a local one exists.
 - `studio-core::codes`, the table of the spec's error codes and the exit code of each. Every error of `manifest`, `resolve`, `install` and `boot` names its code.
+- `studio-sys` compiles RobCo-Core's `src/lib/rimg_seal.c` and wraps `rimg_seal` and `rimg_pack`. A test runs every vector of RobCo-Core's `tests/vectors/rimg/vectors.ini` through them.
 - Seven spikes, K1 to K7, with a result page each, and an index in `docs/SPIKES.md`.
 
 ### Changed
@@ -22,4 +23,5 @@ All notable changes to this project are listed here. The format follows [Keep a 
 - A missing or bad `format` in `boot.json` fails with `package: format`.
 - `robco.toml` unknown keys are reported in file order, and a `build.backend` other than `robco` counts as one.
 - `external/robco-core` moves from `c6b6482` to `e004c73`, which holds the final specs in `docs/spec/`. No file that `studio-sys` compiles or includes changed.
+- `external/robco-core` moves from `e004c73` to `ef5079f`, which holds the C sealer and packer and keeps the vector files' bytes on a Windows checkout. Of the files `studio-sys` compiles or includes, only `include/robco/rimg.h` changed: it gains the seal and pack declarations. The card image bytes did not change.
 - Spike K1 pins RobCo-Core `c6b6482`, where the racy canary case is fixed, and no longer retries any case.

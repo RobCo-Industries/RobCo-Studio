@@ -151,6 +151,16 @@ pub fn ini_parse(text: &str) -> Result<Vec<IniEntry>, IniError> {
     Ok(entries)
 }
 
+/// A zeroed buffer of `n` bytes. A failed allocation is an error with code
+/// -1, never an abort.
+fn zeroed(what: &str, n: usize) -> Result<Vec<u8>, Error> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n)
+        .map_err(|_| Error::new(what, -1, format!("cannot allocate {n} bytes")))?;
+    v.resize(n, 0);
+    Ok(v)
+}
+
 fn c_string(what: &str, s: &str) -> Result<CString, Error> {
     CString::new(s).map_err(|_| Error::new(what, -1, "the text holds a NUL byte"))
 }
@@ -193,13 +203,9 @@ pub struct Expect {
     pub file_size: u32,
 }
 
-fn rimg_error(rc: c_int) -> Error {
+fn rimg_error(what: &str, rc: c_int) -> Error {
     // SAFETY: rimg_strerror takes any code and returns a static string.
-    Error::new(
-        "rimg_validate",
-        rc,
-        static_text(unsafe { ffi::rimg_strerror(rc) }),
-    )
+    Error::new(what, rc, static_text(unsafe { ffi::rimg_strerror(rc) }))
 }
 
 /// Checks a sealed image with `rimg_validate` and returns a copy of its
@@ -220,7 +226,7 @@ pub fn rimg_validate(image: &[u8], expect: &Expect) -> Result<RimgHeader, Error>
     // length of `image`.
     let rc = unsafe { ffi::rimg_validate(image.as_ptr().cast(), image.len(), &c, &mut hdr) };
     if rc != ffi::RIMG_OK {
-        return Err(rimg_error(rc));
+        return Err(rimg_error("rimg_validate", rc));
     }
     if hdr.is_null() {
         return Err(Error::new("rimg_validate", rc, "no header"));
@@ -228,6 +234,192 @@ pub fn rimg_validate(image: &[u8], expect: &Expect) -> Result<RimgHeader, Error>
     // SAFETY: on RIMG_OK `hdr` points at the 64-byte header inside `image`,
     // which is alive. The header is packed, so read it unaligned.
     Ok(unsafe { std::ptr::read_unaligned(hdr) })
+}
+
+/// How `rimg_seal` and `rimg_pack` decode an icon file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconFormat {
+    /// 128 bytes is raw, any other length is PBM.
+    #[default]
+    Auto,
+    /// Exactly 128 bytes in the META layout.
+    Raw,
+    /// A 32 by 32 PBM, P1 or P4.
+    Pbm,
+}
+
+/// An icon file and its format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Icon<'a> {
+    /// The icon file's bytes, undecoded. The C decodes them.
+    pub bytes: &'a [u8],
+    /// How to decode them.
+    pub format: IconFormat,
+}
+
+/// The inputs of [`rimg_seal`]. `None` is an input that is not given,
+/// which is not the same as an empty text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SealOpts<'a> {
+    /// The name.
+    pub name: Option<&'a str>,
+    /// The image version, `(X << 16) | (Y << 8) | Z`.
+    pub image_version: Option<u32>,
+    /// The title.
+    pub title: Option<&'a str>,
+    /// The icon.
+    pub icon: Option<Icon<'a>>,
+}
+
+/// The inputs of [`rimg_pack`]. The numbers are signed and 64 bits wide,
+/// so the C sees a value out of range and returns its code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PackOpts<'a> {
+    /// Name, image version, title and icon. Pack writes the image version
+    /// into the header, 0 when absent, and seals with the rest.
+    pub seal: SealOpts<'a>,
+    /// The magic: `BOOT`, `ROM1` or `ROBCO78`.
+    pub magic: &'a str,
+    /// The subtype.
+    pub subtype: i64,
+    /// The load address.
+    pub load_addr: i64,
+    /// The bytes in memory, or `None` for the C's default.
+    pub mem_size: Option<i64>,
+    /// The ABI, `(MAJOR << 16) | MINOR`, or `None` for the magic's major.
+    pub abi_version: Option<u32>,
+    /// A META block: `None` follows the magic.
+    pub meta: Option<bool>,
+    /// The entry offset.
+    pub entry: i64,
+}
+
+/// The C strings a [`SealOpts`] points at, kept alive for one call.
+struct SealTexts {
+    name: Option<CString>,
+    title: Option<CString>,
+}
+
+impl SealTexts {
+    fn new(what: &str, o: &SealOpts<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            name: o.name.map(|s| c_string(what, s)).transpose()?,
+            title: o.title.map(|s| c_string(what, s)).transpose()?,
+        })
+    }
+
+    /// The C struct. It borrows `self` and `o`, which must outlive its use.
+    fn c_opts(&self, o: &SealOpts<'_>) -> ffi::RimgSealOpts {
+        let ptr = |s: &Option<CString>| s.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+        let (icon, icon_len, icon_format) = match o.icon {
+            None => (std::ptr::null(), 0, ffi::RIMG_ICON_AUTO),
+            Some(i) => (
+                i.bytes.as_ptr(),
+                i.bytes.len(),
+                match i.format {
+                    IconFormat::Auto => ffi::RIMG_ICON_AUTO,
+                    IconFormat::Raw => ffi::RIMG_ICON_RAW,
+                    IconFormat::Pbm => ffi::RIMG_ICON_PBM,
+                },
+            ),
+        };
+        ffi::RimgSealOpts {
+            name: ptr(&self.name),
+            has_image_version: c_int::from(o.image_version.is_some()),
+            image_version: o.image_version.unwrap_or(0),
+            title: ptr(&self.title),
+            icon,
+            icon_len,
+            icon_format,
+        }
+    }
+}
+
+/// Seals an image with `rimg_seal`: the C runs every step and writes the
+/// result. Returns the sealed image, as long as `image`. On a failure no
+/// bytes come back. Every check of the image is the C's, and its
+/// `RIMG_E_*` code comes back unchanged. The wrapper's own errors have code
+/// -1: a name or title holding a NUL byte, and an output buffer it cannot
+/// allocate. Neither aborts the process.
+pub fn rimg_seal(image: &[u8], opts: &SealOpts<'_>) -> Result<Vec<u8>, Error> {
+    let texts = SealTexts::new("rimg_seal", opts)?;
+    let c = texts.c_opts(opts);
+    let mut out = zeroed("rimg_seal", image.len())?;
+    // SAFETY: the image pointer and length come from one slice, and `out`
+    // is a buffer of as many bytes, as the C needs; they do not overlap. `c` points into `texts` and `opts`, which
+    // outlive the call, and its strings end with NUL.
+    let rc = unsafe {
+        ffi::rimg_seal(
+            image.as_ptr().cast(),
+            image.len(),
+            &c,
+            out.as_mut_ptr().cast(),
+        )
+    };
+    if rc != ffi::RIMG_OK {
+        return Err(rimg_error("rimg_seal", rc));
+    }
+    Ok(out)
+}
+
+/// Packs a payload into a sealed image with `rimg_pack`: the C runs every
+/// step and writes the result. On a failure no bytes come back. The wrapper
+/// allocates the payload length plus the largest header, then calls the C
+/// once; every check of the payload and options is the C's, and its
+/// `RIMG_E_*` code comes back unchanged, a payload too long for the format
+/// included. The wrapper's own errors have code -1: a text holding a NUL
+/// byte, a capacity past `usize`, and a buffer it cannot allocate. So a
+/// payload too long gives either the C's size error or, on a machine that
+/// cannot allocate that much, the allocation error. Neither aborts the
+/// process.
+pub fn rimg_pack(payload: &[u8], opts: &PackOpts<'_>) -> Result<Vec<u8>, Error> {
+    let texts = SealTexts::new("rimg_pack", &opts.seal)?;
+    let magic = c_string("rimg_pack", opts.magic)?;
+    let c = ffi::RimgPackOpts {
+        seal: texts.c_opts(&opts.seal),
+        magic: magic.as_ptr(),
+        subtype: opts.subtype,
+        load_addr: opts.load_addr,
+        has_mem_size: c_int::from(opts.mem_size.is_some()),
+        mem_size: opts.mem_size.unwrap_or(0),
+        has_abi_version: c_int::from(opts.abi_version.is_some()),
+        abi_version: opts.abi_version.unwrap_or(0),
+        meta: opts.meta.map_or(-1, c_int::from),
+        entry: opts.entry,
+    };
+    // The largest image the C makes: the payload, the header and META.
+    let cap = payload
+        .len()
+        .checked_add(ffi::RIMG_PACK_MAX_EXTRA)
+        .ok_or_else(|| Error::new("rimg_pack", -1, "the payload is too long to pack"))?;
+    let mut out = zeroed("rimg_pack", cap)?;
+    let mut len = 0usize;
+    // SAFETY: the payload pointer and length come from one slice, the
+    // output pointer and capacity from one buffer; they do not overlap. `c` points
+    // into `texts`, `magic` and `opts`, which outlive the call, and its
+    // strings end with NUL. `len` outlives the call.
+    let rc = unsafe {
+        ffi::rimg_pack(
+            payload.as_ptr().cast(),
+            payload.len(),
+            &c,
+            out.as_mut_ptr().cast(),
+            out.len(),
+            &mut len,
+        )
+    };
+    if rc != ffi::RIMG_OK {
+        return Err(rimg_error("rimg_pack", rc));
+    }
+    if len > out.len() {
+        return Err(Error::new(
+            "rimg_pack",
+            ffi::RIMG_E_IO,
+            "length past the buffer",
+        ));
+    }
+    out.truncate(len);
+    Ok(out)
 }
 
 /// The CRC `rimg_validate` expects in the header of `image`, over its
@@ -401,7 +593,7 @@ pub fn build_card(mib: usize, entries: &[Entry<'_>]) -> Result<Vec<u8>, Error> {
         .map_err(|_| Error::new("build_card", -1, "card size out of range"))?;
     let part_sectors = u32::try_from(sectors - PART_LBA)
         .map_err(|_| Error::new("build_card", -1, "card size out of range"))?;
-    let mut img = vec![0u8; bytes];
+    let mut img = zeroed("build_card", bytes)?;
     let mbr = &mut img[0x1BE..0x1CE];
     mbr[0] = 0x00;
     mbr[1..4].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
@@ -508,7 +700,7 @@ pub fn read_back(img: &mut [u8], path: &str) -> Result<Vec<u8>, Error> {
         fs_check(path, unsafe { ffi::fs_stat(p.as_ptr(), &mut st) })?;
         let size = usize::try_from(st.size)
             .map_err(|_| Error::new(path, -1, "file too large for this system"))?;
-        let mut buf = vec![0u8; size];
+        let mut buf = zeroed(path, size)?;
         let mut n = 0usize;
         // One call is enough: `fs_read_file` loops on `fs_read` itself until
         // `max` bytes, a 0 count or an error. It returns FS_ERR_TOOBIG when
@@ -567,6 +759,14 @@ mod tests {
     fn write_loop_refuses_an_overcount_and_skips_empty_data() {
         assert!(write_loop("t", b"ab", |_| 5).is_err());
         write_loop("t", b"", |_| panic!("no call for empty data")).unwrap();
+    }
+
+    #[test]
+    fn a_failed_allocation_is_an_error() {
+        let e = zeroed("x", usize::MAX).unwrap_err();
+        assert_eq!(e.code, -1);
+        assert_eq!(e.text, format!("cannot allocate {} bytes", usize::MAX));
+        assert_eq!(zeroed("x", 3).unwrap(), vec![0u8; 3]);
     }
 
     fn ffi_nospc() -> c_int {

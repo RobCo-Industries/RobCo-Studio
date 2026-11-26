@@ -9,7 +9,7 @@ use studio_sys::c_layout;
 use studio_sys::ffi::*;
 
 /// The number of entries in `csrc/layout.c`.
-const ENTRIES: usize = 65;
+const ENTRIES: usize = 88;
 
 macro_rules! rust_layout {
     ($v:ident; $t:ident as $c:literal { $($f:ident as $cf:literal),* $(,)? }) => {{
@@ -42,6 +42,14 @@ fn rust_view() -> Vec<(String, usize)> {
         name as "name", reserved as "reserved" });
     rust_layout!(r; RimgExpect as "rimg_expect_t" { magic as "magic", slot_base as "slot_base",
         slot_size as "slot_size", abi_major as "abi_major", file_size as "file_size" });
+    rust_layout!(r; RimgIconFormat as "rimg_icon_format_t" {});
+    rust_layout!(r; RimgSealOpts as "rimg_seal_opts_t" { name as "name",
+        has_image_version as "has_image_version", image_version as "image_version",
+        title as "title", icon as "icon", icon_len as "icon_len", icon_format as "icon_format" });
+    rust_layout!(r; RimgPackOpts as "rimg_pack_opts_t" { seal as "seal", magic as "magic",
+        subtype as "subtype", load_addr as "load_addr", has_mem_size as "has_mem_size",
+        mem_size as "mem_size", has_abi_version as "has_abi_version",
+        abi_version as "abi_version", meta as "meta", entry as "entry" });
     r
 }
 
