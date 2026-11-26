@@ -483,7 +483,7 @@ fn tabs_past_the_header_scroll_into_view() {
         "{r:?} outside {editor:?}"
     );
     // The wheel over the strip scrolls it back towards the first tab.
-    let y = f64::from(r.y0 + r.y1) / 2.0;
+    let y = (r.y0 + r.y1) / 2.0;
     h.input_mut()
         .events
         .push(Event::PointerMoved(egui::pos2(editor.center().x, y as f32)));
