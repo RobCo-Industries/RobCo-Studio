@@ -166,7 +166,7 @@ impl Editor {
         if self.question.is_some() {
             return;
         }
-        let mut last = None;
+        let mut last = Some(Ok("Nothing to save.".to_owned()));
         for i in 0..self.docs.len() {
             let d = &mut self.docs[i];
             if !d.is_dirty() {
@@ -183,8 +183,12 @@ impl Editor {
                 break;
             }
         }
-        if let Some(r) = last {
-            self.report(r);
+        match last {
+            Some(Ok(s)) if s == "Nothing to save." => {
+                self.news = Some((crate::kit::Level::Info, s));
+            }
+            Some(r) => self.report(r),
+            None => {}
         }
     }
 
@@ -1004,6 +1008,14 @@ mod replace_tests {
                 .as_ref()
                 .is_some_and(|(_, s)| s.contains("Nothing to save"))
         );
+        e.news = None;
+        e.save_all();
+        assert!(
+            e.news
+                .as_ref()
+                .is_some_and(|(_, s)| s == "Nothing to save.")
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"theirs\n");
     }
 
     /// Save of an edited document whose file changed on disk asks first;
