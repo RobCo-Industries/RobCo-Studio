@@ -151,39 +151,210 @@ pub fn parse_flags(bytes: &[u8]) -> Result<Flags, FlagsError> {
     .and_then(check_paths)
 }
 
-/// Checks each package-relative path, in the order of the spec's table.
-/// Options whose value is a path, alone or joined to it. SDK_PACKAGE.md:
-/// "No flag in `cflags` or `ldflags` holds a path."
-const PATH_OPTIONS: &[&str] = &[
-    "-o",
-    "-T",
-    "-I",
-    "-L",
-    "-B",
-    "-include",
-    "-imacros",
-    "-isystem",
-    "-iquote",
-    "-idirafter",
-    "-iprefix",
-    "-iwithprefix",
-    "-isysroot",
-    "-MF",
-    "-specs=",
-    "--sysroot",
+/// Tells whether a whole flag has one shape.
+type Shape = fn(&str) -> bool;
+
+/// Where a flag shape is allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// In `cflags` and in `ldflags`.
+    Both,
+    /// In `ldflags` only.
+    Ldflags,
+}
+
+/// The shapes a flag of `cflags` or `ldflags` may take, each matched
+/// against the whole flag. Any other flag is refused.
+///
+/// SDK_PACKAGE.md says only "No flag in `cflags` or `ldflags` holds a
+/// path". This list is stricter on purpose: a package comes from an
+/// index, and a flag such as `-fplugin=` or `-B` runs code on the
+/// person's machine, so a list of refused flags would always miss one.
+/// The spec takes this table at its next update.
+const FLAG_SHAPES: &[(&str, Scope, Shape)] = &[
+    ("machine", Scope::Both, shape_machine),
+    ("feature", Scope::Both, shape_feature),
+    ("std", Scope::Both, shape_std),
+    ("optimize", Scope::Both, shape_optimize),
+    ("debug", Scope::Both, shape_debug),
+    ("warning", Scope::Both, shape_warning),
+    ("word", Scope::Both, shape_word),
+    ("define", Scope::Both, shape_define),
+    ("undefine", Scope::Both, shape_undefine),
+    ("linker", Scope::Ldflags, shape_linker),
 ];
 
-/// Refuses a flag that holds a path: an option of [`PATH_OPTIONS`], alone
-/// or with its value joined, or a response file `@file`.
+/// Feature names that read or write files, or are path maps, which Studio
+/// adds itself.
+const FEATURE_REFUSED: &[&str] = &[
+    "plugin",
+    "dump",
+    "profile",
+    "auto-profile",
+    "test-coverage",
+    "stack-usage",
+    "callgraph",
+    "save-",
+    "branch-probabilities",
+    "file-prefix-map",
+    "debug-prefix-map",
+    "macro-prefix-map",
+    "canon-prefix-map",
+    "diagnostics-",
+];
+
+fn lower_digit(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit()
+}
+
+/// A first char that passes `first`, then chars that pass `rest`.
+fn word(s: &str, first: fn(char) -> bool, rest: fn(char) -> bool) -> bool {
+    let mut c = s.chars();
+    c.next().is_some_and(first) && c.all(rest)
+}
+
+/// `-m`, a lower-case letter or digit, then `[a-z0-9=+._-]*`.
+fn shape_machine(f: &str) -> bool {
+    f.strip_prefix("-m")
+        .is_some_and(|s| word(s, lower_digit, |c| lower_digit(c) || "=+._-".contains(c)))
+}
+
+/// `-f`, a name `[a-z][a-z0-9-]*`, optionally `=` and `[a-z0-9-]+`. A name
+/// of [`FEATURE_REFUSED`] is refused.
+fn shape_feature(f: &str) -> bool {
+    let Some(s) = f.strip_prefix("-f") else {
+        return false;
+    };
+    let name_ok = |n: &str| {
+        word(
+            n,
+            |c| c.is_ascii_lowercase(),
+            |c| lower_digit(c) || c == '-',
+        )
+    };
+    let (name, ok) = match s.split_once('=') {
+        None => (s, name_ok(s)),
+        Some((n, v)) => (
+            n,
+            name_ok(n)
+                && word(
+                    v,
+                    |c| lower_digit(c) || c == '-',
+                    |c| lower_digit(c) || c == '-',
+                ),
+        ),
+    };
+    ok && !FEATURE_REFUSED.iter().any(|p| name.starts_with(p))
+}
+
+/// `-std=` then `[a-z0-9+:]+`.
+fn shape_std(f: &str) -> bool {
+    f.strip_prefix("-std=").is_some_and(|s| {
+        word(
+            s,
+            |c| lower_digit(c) || "+:".contains(c),
+            |c| lower_digit(c) || "+:".contains(c),
+        )
+    })
+}
+
+/// `-O`, alone or with `0`, `1`, `2`, `3`, `s`, `g`, `z` or `fast`.
+fn shape_optimize(f: &str) -> bool {
+    matches!(
+        f,
+        "-O" | "-O0" | "-O1" | "-O2" | "-O3" | "-Os" | "-Og" | "-Oz" | "-Ofast"
+    )
+}
+
+/// `-g` or `-ggdb`, alone or with a digit 0 to 3; `-gdwarf-` with 2 to 5.
+fn shape_debug(f: &str) -> bool {
+    let level = |s: &str, lo: char, hi: char| {
+        s.is_empty() || (s.len() == 1 && s.chars().all(|c| (lo..=hi).contains(&c)))
+    };
+    if let Some(s) = f.strip_prefix("-gdwarf-") {
+        return s.len() == 1 && s.chars().all(|c| ('2'..='5').contains(&c));
+    }
+    if let Some(s) = f.strip_prefix("-ggdb") {
+        return level(s, '0', '3');
+    }
+    f.strip_prefix("-g").is_some_and(|s| level(s, '0', '3'))
+}
+
+/// `-W`, a lower-case letter or digit, then `[a-z0-9=+-]*`; or `-w`,
+/// `-pedantic`, `-pedantic-errors`. No comma, so no `-Wl,` here.
+fn shape_warning(f: &str) -> bool {
+    matches!(f, "-w" | "-pedantic" | "-pedantic-errors")
+        || f.strip_prefix("-W")
+            .is_some_and(|s| word(s, lower_digit, |c| lower_digit(c) || "=+-".contains(c)))
+}
+
+/// Exact words.
+fn shape_word(f: &str) -> bool {
+    matches!(
+        f,
+        "-nostdlib" | "-nostartfiles" | "-nodefaultlibs" | "-nostdinc" | "-nolibc" | "-static"
+    )
+}
+
+fn c_name(s: &str) -> bool {
+    word(
+        s,
+        |c| c.is_ascii_alphabetic() || c == '_',
+        |c| c.is_ascii_alphanumeric() || c == '_',
+    )
+}
+
+/// `-D` then a C name, optionally `=` and `[A-Za-z0-9_.+-]*`.
+fn shape_define(f: &str) -> bool {
+    f.strip_prefix("-D")
+        .is_some_and(|s| match s.split_once('=') {
+            None => c_name(s),
+            Some((n, v)) => {
+                c_name(n)
+                    && v.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "_.+-".contains(c))
+            }
+        })
+}
+
+/// `-U` then a C name.
+fn shape_undefine(f: &str) -> bool {
+    f.strip_prefix("-U").is_some_and(c_name)
+}
+
+/// `-Wl,` then parts joined by commas, each `--[a-z][a-z0-9-]*`.
+fn shape_linker(f: &str) -> bool {
+    f.strip_prefix("-Wl,").is_some_and(|s| {
+        s.split(',').all(|p| {
+            p.strip_prefix("--").is_some_and(|n| {
+                word(
+                    n,
+                    |c| c.is_ascii_lowercase(),
+                    |c| lower_digit(c) || c == '-',
+                )
+            })
+        })
+    })
+}
+
+/// Refuses a flag that matches no shape of [`FLAG_SHAPES`] allowed in
+/// `key`.
 fn check_flags(key: &str, list: &[String]) -> Result<(), FlagsError> {
+    let ld = key == "ldflags";
     for f in list {
-        if f.starts_with('@') || PATH_OPTIONS.iter().any(|o| f.starts_with(o)) {
-            return Err(FlagsError::Manifest(format!("{key}: {f:?}: holds a path")));
+        let ok = FLAG_SHAPES
+            .iter()
+            .any(|(_, scope, m)| (ld || *scope == Scope::Both) && m(f));
+        if !ok {
+            return Err(FlagsError::Manifest(format!(
+                "{key}: {f:?}: not in the allowed flag shapes"
+            )));
         }
     }
     Ok(())
 }
 
+/// Checks each package-relative path, in the order of the spec's table.
 fn check_paths(flags: Flags) -> Result<Flags, FlagsError> {
     check_flags("cflags", &flags.cflags)?;
     check_flags("ldflags", &flags.ldflags)?;

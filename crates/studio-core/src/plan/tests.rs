@@ -610,25 +610,200 @@ fn plan_flags_paths_in_field_order_after_types() {
     assert!(flags_err(&text).detail().starts_with("include_dirs:"));
 }
 
-#[test]
-fn plan_flags_refuse_a_flag_that_holds_a_path() {
-    for (from, key) in [("\"-O2\"", "cflags"), ("\"-Wl,--gc-sections\"", "ldflags")] {
-        for flag in [
-            "-o",
-            "-oout.o",
-            "-T",
-            "-Tx.ld",
-            "-Iinc",
-            "-L/lib",
-            "-include",
-            "-MFdeps",
-            "-specs=nano.specs",
-            "--sysroot=/x",
-            "@args",
-        ] {
-            let e = path_err(from, &format!("\"{flag}\""));
-            assert_eq!(e.code(), "manifest", "{key} {flag}");
-            assert_eq!(e.detail(), format!("{key}: {flag:?}: holds a path"));
+fn shape_ok(key: &str, flag: &str) -> Result<(), FlagsError> {
+    check_flags(key, &[flag.to_string()])
+}
+
+fn assert_passes(key: &str, flags: &[&str]) {
+    for f in flags {
+        if let Err(e) = shape_ok(key, f) {
+            panic!("{key} {f:?}: {e}");
         }
+    }
+}
+
+#[test]
+fn plan_flag_shape_machine() {
+    assert_passes(
+        "cflags",
+        &["-marm", "-mcpu=arm1176jzf-s", "-mfpu=vfp+x.y_z"],
+    );
+}
+
+#[test]
+fn plan_flag_shape_feature() {
+    assert_passes(
+        "cflags",
+        &["-ffreestanding", "-fno-builtin", "-fvisibility=hidden"],
+    );
+}
+
+#[test]
+fn plan_flag_shape_std() {
+    assert_passes("cflags", &["-std=gnu11", "-std=c++17"]);
+}
+
+#[test]
+fn plan_flag_shape_optimize() {
+    assert_passes(
+        "cflags",
+        &["-O", "-O0", "-O2", "-Os", "-Og", "-Oz", "-Ofast"],
+    );
+}
+
+#[test]
+fn plan_flag_shape_debug() {
+    assert_passes("cflags", &["-g", "-g3", "-ggdb", "-ggdb2", "-gdwarf-4"]);
+}
+
+#[test]
+fn plan_flag_shape_warning() {
+    assert_passes(
+        "cflags",
+        &[
+            "-Wall",
+            "-Wno-unused-parameter",
+            "-Wformat=2",
+            "-w",
+            "-pedantic",
+            "-pedantic-errors",
+        ],
+    );
+}
+
+#[test]
+fn plan_flag_shape_word() {
+    assert_passes(
+        "cflags",
+        &[
+            "-nostdlib",
+            "-nostartfiles",
+            "-nodefaultlibs",
+            "-nostdinc",
+            "-nolibc",
+            "-static",
+        ],
+    );
+}
+
+#[test]
+fn plan_flag_shape_define() {
+    assert_passes("cflags", &["-DNDEBUG", "-D_X=1", "-DV=1.2+rc-1"]);
+}
+
+#[test]
+fn plan_flag_shape_undefine() {
+    assert_passes("cflags", &["-UNDEBUG", "-U_X"]);
+}
+
+#[test]
+fn plan_flag_shape_linker() {
+    assert_passes(
+        "ldflags",
+        &[
+            "-Wl,--gc-sections",
+            "-Wl,--gc-sections,--no-warn-rwx-segments",
+        ],
+    );
+}
+
+/// The flags Pip-OS ships, from `sdk/pipos-app.mk`: PIP_CODEFLAGS as
+/// `cflags`, PIP_LDFLAGS with PIP_LD_RWX as `ldflags`.
+#[test]
+fn plan_flags_of_pipos_pass() {
+    let arch = [
+        "-mcpu=arm1176jzf-s",
+        "-marm",
+        "-mfloat-abi=soft",
+        "-mgeneral-regs-only",
+        "-mno-unaligned-access",
+    ];
+    let mut cflags = arch.to_vec();
+    cflags.extend([
+        "-std=gnu11",
+        "-ffreestanding",
+        "-nostdlib",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-fno-tree-loop-distribute-patterns",
+        "-O2",
+        "-g",
+        "-Wall",
+        "-Wextra",
+    ]);
+    let mut ldflags = arch.to_vec();
+    ldflags.extend([
+        "-nostdlib",
+        "-Wl,--gc-sections",
+        "-Wl,--no-warn-rwx-segments",
+    ]);
+    assert_passes("cflags", &cflags);
+    assert_passes("ldflags", &ldflags);
+}
+
+#[test]
+fn plan_flags_refused_outside_the_shapes() {
+    let bad = [
+        "-Wl,-Map=/tmp/x.map",
+        "-Wl,-Map,x.map",
+        "-Wl,--build-id=none",
+        "-Wl,-T,x.ld",
+        "-Wa,-ahl=x",
+        "-Wp,-MD,x",
+        "-Xlinker",
+        "-fplugin=x",
+        "-fdump-rtl-all",
+        "-ffile-prefix-map=a=b",
+        "-wrapper",
+        "-B",
+        "-Bdir",
+        "-o",
+        "-ox",
+        "-c",
+        "-S",
+        "-E",
+        "-x",
+        "-include",
+        "-I.",
+        "-L.",
+        "-lfoo",
+        "-T",
+        "@file",
+        "-specs=x",
+        "--sysroot=x",
+        "-save-temps",
+        "-pipe",
+        "",
+        "-O2 -g",
+        "-O2\n",
+        "-mcpu=../x",
+        "-DNAME=/etc/passwd",
+    ];
+    for key in ["cflags", "ldflags"] {
+        for f in bad {
+            match shape_ok(key, f) {
+                Ok(()) => panic!("{key} {f:?} passed"),
+                Err(e) => {
+                    assert_eq!(e.code(), "manifest");
+                    assert_eq!(
+                        e.detail(),
+                        format!("{key}: {f:?}: not in the allowed flag shapes")
+                    );
+                }
+            }
+        }
+    }
+    assert!(shape_ok("cflags", "-Wl,--gc-sections").is_err());
+}
+
+#[test]
+fn plan_flags_refuse_a_flag_through_parse() {
+    for (from, key) in [("\"-O2\"", "cflags"), ("\"-Wl,--gc-sections\"", "ldflags")] {
+        let e = path_err(from, "\"-Wl,-Map=/tmp/tape.map\"");
+        assert_eq!(e.code(), "manifest");
+        assert_eq!(
+            e.detail(),
+            format!("{key}: \"-Wl,-Map=/tmp/tape.map\": not in the allowed flag shapes")
+        );
     }
 }
