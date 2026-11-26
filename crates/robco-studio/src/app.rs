@@ -18,6 +18,9 @@ use eframe::egui::{
 use egui::text_edit::TextEditState;
 use std::path::{Path, PathBuf};
 
+mod themes;
+pub use themes::ThemeFault;
+
 /// The window's pages, chosen in the toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -155,6 +158,19 @@ pub struct Studio {
     pub current: usize,
     /// The theme in use, changed and not saved, or None.
     pub changed: Option<Spec>,
+    /// For each theme of `themes`, its file in the themes folder, or None
+    /// for a theme that ships.
+    pub theme_files: Vec<Option<String>>,
+    /// Each file of the themes folder that is not a theme, with the line
+    /// that says why.
+    pub refused: Vec<(String, String)>,
+    /// The settings folder and the settings read there. None: Studio
+    /// reads and writes no file of its own, as in the tests.
+    store: Option<themes::Store>,
+    /// The lines about files said this session, each said once.
+    said: Vec<String>,
+    /// A setting changed: write the settings when no button is held.
+    settings_due: bool,
     /// The page shown.
     pub page: Page,
     /// The open folder.
@@ -358,6 +374,11 @@ impl Studio {
             themes: crate::theme::SHIPPED.to_vec(),
             current: 0,
             changed: None,
+            theme_files: vec![None; crate::theme::SHIPPED.len()],
+            refused: Vec::new(),
+            store: None,
+            said: Vec::new(),
+            settings_due: false,
             page: Page::Project,
             project: None,
             editor: Editor::default(),
@@ -588,6 +609,7 @@ impl Studio {
             self.say(Level::Info, crate::theme::changed_news(&spec.name));
         }
         self.changed = Some(spec);
+        self.settings_due = true;
         self.refresh_theme();
     }
 
@@ -599,13 +621,14 @@ impl Studio {
         self.current = i;
         self.changed = None;
         self.refresh_theme();
+        self.save_settings();
         let name = self.spec().name.to_string();
         self.say(Level::Info, crate::theme::news(&name, None));
     }
 
     /// Work out what draws from the theme in use, the machine and high
     /// legibility. The frame takes it at its start.
-    fn refresh_theme(&mut self) {
+    pub(crate) fn refresh_theme(&mut self) {
         let shown = self.shown();
         self.theme.set_base(self.spec().base);
         self.theme.screen = shown.screen;
@@ -822,7 +845,10 @@ impl Studio {
             Command::ToggleFiles => self.layout.files = !self.layout.files,
             Command::ToggleBottom => self.layout.bottom = !self.layout.bottom,
             Command::ResetLayout => self.layout = Layout::default(),
-            Command::CompactHeader => self.compact_header = !self.compact_header,
+            Command::CompactHeader => {
+                self.compact_header = !self.compact_header;
+                self.settings_due = true;
+            }
             Command::SimZoom(z) => match zoom_unavailable(z, self.sim_room) {
                 Some(why) => self.say(Level::Info, why),
                 None => self.sim_zoom = z.clamp(1, 3),
@@ -833,6 +859,7 @@ impl Studio {
             Command::ThemeEdit => self.screen.adjusting = true,
             Command::HighLegibility => {
                 self.theme.high_legibility = !self.theme.high_legibility;
+                self.settings_due = true;
                 self.refresh_theme();
             }
             c => {
@@ -968,6 +995,11 @@ impl Studio {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.keys(&ctx);
+        // A setting changed: write it once no button is held, so a slider
+        // being dragged does not write.
+        if self.settings_due && !ctx.input(|i| i.pointer.any_down()) {
+            self.save_settings();
+        }
         // Whatever is in front, the window behind is inert, to the pointer
         // and to the keyboard alike: it is drawn disabled, so none of its
         // widgets takes a click or joins the Tab order, and the widget
