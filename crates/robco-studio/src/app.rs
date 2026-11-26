@@ -473,6 +473,11 @@ impl Studio {
     /// follow the simulator pane's room, as its Larger button does. The
     /// screen levels follow the adapter and high legibility.
     pub fn unavailable(&self, it: &menus::Item) -> Option<String> {
+        match (self.front(), it.command) {
+            (Front::Question, Command::ScreenAdjust) => return Some(ASKING.to_owned()),
+            (Front::Adjust, c) if !acts_over_adjust(c) => return Some(ADJUSTING.to_owned()),
+            _ => {}
+        }
         match it.command {
             Command::SimZoom(z) => zoom_unavailable(z, self.sim_room),
             Command::Screen(l) => {
@@ -534,6 +539,31 @@ impl Studio {
     fn set_screen(&mut self, level: Screen) {
         self.theme.screen = level;
         self.screen.strengths = level.strengths();
+    }
+
+    /// What is in front now. The one place that decides it: the dialogs,
+    /// the scrim, the keys and the menus' availability all ask here. The
+    /// window shows at most one dialog of its own, and a question beats
+    /// Adjust: Adjust waits, unchanged, behind it and comes back after the
+    /// last answer.
+    pub fn front(&self) -> Front {
+        if self.choosing() {
+            Front::Chooser
+        } else {
+            self.dialog_shown()
+        }
+    }
+
+    /// The window's own dialog that is drawn: the question, else Adjust.
+    /// Under the chooser it is drawn too, held with the rest.
+    fn dialog_shown(&self) -> Front {
+        if self.editor.question.is_some() {
+            Front::Question
+        } else if self.screen.adjusting {
+            Front::Adjust
+        } else {
+            Front::Nothing
+        }
     }
 
     /// The folder chooser is open or about to open.
@@ -613,8 +643,11 @@ impl Studio {
     /// strengths, the page. So every command asks for the next frame, which
     /// draws its effect even when nothing moves and no input comes.
     pub fn run(&mut self, ctx: &egui::Context, c: Command) {
-        if self.choosing() {
-            return;
+        match self.front() {
+            Front::Chooser => return,
+            // Adjust is modal: only quitting and opening a folder act.
+            Front::Adjust if !acts_over_adjust(c) => return,
+            _ => {}
         }
         ctx.request_repaint();
         // The editor keeps one sentence: pass on the last command's before
@@ -676,7 +709,9 @@ impl Studio {
                 }
             }
             Command::ScreenAdjust => {
-                if self.theme.screen().pass() {
+                if self.editor.question.is_some() {
+                    self.say(Level::Info, ASKING.to_owned());
+                } else if self.theme.screen().pass() {
                     self.screen.adjusting = true;
                 } else {
                     self.say(Level::Info, ADJUST_NOT.to_owned());
@@ -736,7 +771,7 @@ impl Studio {
         for c in cmds {
             self.run(ctx, c);
         }
-        if self.page == Page::Project && !self.choosing() {
+        if self.page == Page::Project && matches!(self.front(), Front::Nothing | Front::Question) {
             self.editor.keys(ctx);
         }
     }
@@ -846,11 +881,22 @@ impl Studio {
             other => self.later_page(&kit, &mut page_ui, page, other),
         }
         self.status_bar(&kit, ui, status);
-        if choosing {
+        // One dialog at most, the one in front, under one scrim. It is
+        // taken once, so an Escape that answers a question does not also
+        // close Adjust waiting behind it.
+        let front = self.front();
+        if front != Front::Nothing {
             scrim(&kit, &ctx, full);
         }
-        self.dialog(&kit, &ctx, full);
-        self.adjust(&kit, &ctx, full);
+        match self.dialog_shown() {
+            Front::Question => self.dialog(&kit, &ctx, full),
+            Front::Adjust => self.adjust(&kit, &ctx),
+            Front::Chooser | Front::Nothing => {}
+        }
+        if front == Front::Question && self.front() == Front::Adjust {
+            // Adjust comes back on the next frame: ask for it.
+            ctx.request_repaint();
+        }
         self.finish_switch();
         if art.halos() {
             art.scanlines(
@@ -1923,7 +1969,6 @@ impl Studio {
             return;
         };
         let p = kit.p();
-        scrim(kit, ctx, full);
         let w = size::DIALOG_W;
         let h = size::DIALOG_H;
         let rect = Rect::from_center_size(full.center(), egui::vec2(w, h));
@@ -2011,16 +2056,12 @@ impl Studio {
 
     /// The Adjust dialog of View, Screen: a slider for each strength, the
     /// frame rate, and Reset back to the level's own numbers.
-    fn adjust(&mut self, kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
-        if !self.screen.adjusting {
-            return;
-        }
+    fn adjust(&mut self, kit: &Kit<'_>, ctx: &egui::Context) {
         if !self.theme.screen().pass() {
             self.screen.adjusting = false;
             return;
         }
         let p = kit.p();
-        scrim(kit, ctx, full);
         let level = self.theme.screen();
         let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
         let mut reset = false;
@@ -2154,6 +2195,34 @@ fn rank(l: Level) -> u8 {
         Level::Error => 2,
     }
 }
+
+/// What is in front of the window: see [`Studio::front`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Front {
+    /// The folder chooser is open or due. It beats everything.
+    Chooser,
+    /// A question about unsaved edits. It beats Adjust.
+    Question,
+    /// The Adjust dialog, modal: the window behind it is inert.
+    Adjust,
+    /// No dialog: the window acts.
+    Nothing,
+}
+
+/// The commands that act while Adjust is in front: quitting and opening
+/// a folder, which may raise a question or the chooser in front of it,
+/// and Adjust itself, which is open.
+fn acts_over_adjust(c: Command) -> bool {
+    matches!(
+        c,
+        Command::Quit | Command::OpenFolder | Command::ScreenAdjust
+    )
+}
+
+/// Why a command waits while a question is open.
+pub const ASKING: &str = "Answer the open question first.";
+/// Why a command waits while Adjust is open.
+pub const ADJUSTING: &str = "Close Adjust first.";
 
 /// The status line while the folder chooser is open.
 pub const CHOOSING: &str = "A folder dialog is open.";

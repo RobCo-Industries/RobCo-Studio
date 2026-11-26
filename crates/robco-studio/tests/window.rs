@@ -6,7 +6,7 @@ use eframe::egui::{self, Event, Key, Modifiers, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use robco_studio::Studio;
-use robco_studio::app::{Page, Place};
+use robco_studio::app::{Front, Page, Place};
 use std::path::{Path, PathBuf};
 
 const MAIN_C: &str = "#include <pipos/pip.h>\n\nint pip_main(void)\n{\n\treturn 0;\n}\n";
@@ -2321,4 +2321,148 @@ fn a_plain_message_replaces_an_error_once_it_was_read() {
     h.state_mut().say(Level::Info, "Plain.".to_owned());
     assert_eq!(h.state().status, (Level::Info, "Plain.".to_owned()));
     assert!(h.state().held().is_none());
+}
+
+/// A window on a sample project at Live, where Adjust works, with
+/// main.c open and edited, and Adjust open.
+fn adjusting(tag: &str) -> Option<(Sample, Harness<'static, Studio>)> {
+    let d = sample(tag).ok()?;
+    let mut s = Studio::new(Some(&*d));
+    s.choose_screen(
+        robco_studio::screen::Adapter::Hardware,
+        Some(false),
+        Some(robco_studio::theme::Screen::Live),
+    );
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.run_steps(3);
+    open_main(&mut h);
+    h.state_mut().editor.docs[0].text.insert(0, 'x');
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::ScreenAdjust);
+    h.run_steps(3);
+    (h.state().front() == Front::Adjust).then_some((d, h))
+}
+
+fn shown(h: &Harness<'static, Studio>, label: &str) -> bool {
+    h.query_all_by_label(label).next().is_some()
+}
+
+const ASK_CLOSE: &str = "Save src/main.c before closing?";
+const ASK_QUIT: &str = ASK_CLOSE;
+
+fn adjust_item() -> Option<robco_studio::menus::Item> {
+    robco_studio::menus::screen_items()
+        .into_iter()
+        .find(|i| i.command == robco_studio::menus::Command::ScreenAdjust)
+}
+
+/// Adjust is modal: closing a tab behind it does nothing at all.
+#[test]
+fn adjust_is_modal_and_close_tab_waits() {
+    let (_d, mut h) = adjusting("adjust-modal").unwrap();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    h.run_steps(3);
+    assert!(!shown(&h, ASK_CLOSE), "no question behind Adjust");
+    assert_eq!(h.state().editor.docs.len(), 1, "the tab stays");
+    assert_eq!(h.state().front(), Front::Adjust);
+    assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
+    // The native menu bar says why.
+    let close = robco_studio::menus::menus()
+        .into_iter()
+        .flat_map(|m| m.items)
+        .find(|i| i.command == robco_studio::menus::Command::CloseTab)
+        .unwrap();
+    assert_eq!(
+        h.state().unavailable(&close).as_deref(),
+        Some(robco_studio::app::ADJUSTING)
+    );
+}
+
+/// A question raised while Adjust is open, by quitting, comes in front.
+/// Adjust is put aside, then comes back as it was. Escape cancels the
+/// question only; a click on Cancel does the same.
+#[test]
+fn a_question_beats_adjust_and_adjust_comes_back() {
+    let (_d, mut h) = adjusting("adjust-question").unwrap();
+    let strengths = h.state().screen.strengths;
+    for answer_by_click in [false, true] {
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Q);
+        h.run_steps(2);
+        assert_eq!(h.state().front(), Front::Question);
+        assert!(shown(&h, ASK_QUIT));
+        assert!(
+            !shown(&h, robco_studio::app::ADJUST_TITLE),
+            "Adjust is put aside"
+        );
+        // No Adjust command while a question is open, in any menu.
+        assert_eq!(
+            h.state().unavailable(&adjust_item().unwrap()).as_deref(),
+            Some(robco_studio::app::ASKING)
+        );
+        if answer_by_click {
+            h.get_by_label("Cancel").click();
+        } else {
+            h.key_press(Key::Escape);
+        }
+        h.run_steps(3);
+        assert!(!shown(&h, ASK_QUIT));
+        assert_eq!(h.state().front(), Front::Adjust, "Escape left Adjust");
+        assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
+        assert_eq!(h.state().screen.strengths, strengths);
+        assert_eq!(h.state().editor.docs.len(), 1);
+    }
+    // Escape then closes Adjust, the one in front.
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().front(), Front::Nothing);
+}
+
+/// While a question is open, the Adjust command does not open Adjust.
+#[test]
+fn a_question_refuses_the_adjust_command() {
+    let (_d, mut h) = adjusting("adjust-refused").unwrap();
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().front(), Front::Nothing);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    h.run_steps(2);
+    assert_eq!(h.state().front(), Front::Question);
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::ScreenAdjust);
+    h.run_steps(3);
+    assert!(!h.state().screen.adjusting);
+    assert!(!shown(&h, robco_studio::app::ADJUST_TITLE));
+    assert!(shown(&h, ASK_CLOSE));
+    assert_eq!(h.state().status.1, robco_studio::app::ASKING);
+}
+
+/// The folder chooser's hold beats a question and Adjust both: the
+/// question is drawn, held, and Adjust waits behind it.
+#[test]
+fn the_chooser_beats_a_question_and_adjust() {
+    let a = pipes("chooser-front").unwrap();
+    let (mut h, fake) = with_fake(Some(&*a), None);
+    open_main(&mut h);
+    h.state_mut().editor.docs[0].text.insert(0, 'x');
+    press_open(&mut h);
+    assert!(h.state().choosing());
+    h.state_mut().screen.adjusting = true;
+    assert!(!h.state_mut().editor.request_quit());
+    h.run_steps(3);
+    assert_eq!(h.state().front(), Front::Chooser);
+    assert!(!shown(&h, robco_studio::app::ADJUST_TITLE));
+    assert!(shown(&h, ASK_QUIT));
+    // Escape goes to the chooser, held: the question stays.
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().editor.question.is_some());
+    fake.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .answer = Some(Choice::Cancelled);
+    h.run_steps(3);
+    assert_eq!(h.state().front(), Front::Question);
 }

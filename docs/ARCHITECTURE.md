@@ -194,7 +194,9 @@ View, Screen picks how the screen looks. The items are radio items, then a separ
 | Live | Still, with persistence 0.50, noise 0.10, flicker 0.20, a rolling band 0.30, and drifting scanlines | Yes |
 | Arcade | Everything strong, with a shadow mask 0.30 and chromatic aberration 0.20 | Yes |
 
-Adjust opens a dialog with one slider for each of the ten strengths, the frame rate, 15, 30 or 60 a second, and Reset back to the level's own numbers. A moved slider makes the level read "Custom". The choice lasts for the session.
+Adjust opens a dialog with one slider for each of the ten strengths, the frame rate, 15, 30 or 60 a second, and Reset back to the level's own numbers. A moved slider makes the level read "Custom". The choice lasts for the session. Adjust is modal, under the scrim: the window behind it stays in view and takes no click, and only Quit and Open folder act. Every other command, from a shortcut or the macOS menu bar, waits, and the menu bar says "Close Adjust first."
+
+The window shows at most one dialog of its own. One function, `Studio::front`, says what is in front: the folder chooser, a question, Adjust or nothing. The dialogs, the scrim, the keys and the menus' availability all ask it. The chooser beats everything. A question beats Adjust: when Quit or Open folder raises one while Adjust is open, Adjust is put aside, neither drawn nor taking input, and comes back as it was after the last answer. After a quit that ends there is no window; after a switch Adjust comes back, since the screen belongs to the window and not to the project. While a question is open, Adjust is not available, and the menus say "Answer the open question first." Escape acts on the dialog in front only.
 
 `robco-studio --screen LEVEL` starts at a level, for pictures or a slow machine. A pass level on a machine without a real adapter still gives Soft.
 
