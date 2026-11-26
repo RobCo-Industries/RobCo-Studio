@@ -161,7 +161,7 @@ The window is cut into strips, top to bottom:
 flowchart TB
     H["Header: wordmark, atom, caps line, skyline. 60 high, 36 compact"]
     M["Menu row: caps menu names. Absent on macOS, where the system bar has the menus"]
-    T["Toolbar: pages control, PROJECT and TARGET dropdowns, Build, Run, Debug, Write card"]
+    T["Toolbar: pages control, TARGET dropdown, Build, Run, Debug, Write card"]
     P["Page, from margin to margin"]
     F["Footer: Industries mark, division, status line, SDK, Sim, Link, Position, Settings, Help"]
     H --> M --> T --> P --> F
@@ -171,7 +171,8 @@ flowchart TB
 - Panes are rounded, with a title row and a rule. Tabs stand on the rule; the active tab, the chosen part of a segmented control and the current page are filled in `bright` with a halo.
 - The simulator pane shows the device at 62 percent with the empty state in its screen opening while no machine runs, then the honest line and Stop, Reset, Fit and the zoom group. The Simulator menu's scale items set the same step. A step that does not fit the pane is not available.
 - The pages control is the toolbar's first control: PROJECT, CARD, DEVICE and SDK in one outline. A screen reader gets a tab list named "Pages" with one tab per page, the current one selected. It is one stop in the Tab order, and the left and right arrows move between pages. The page shortcuts and the View menu move its selection.
-- The four actions fit their icon and label, no narrower than a set minimum. At 1280 points the whole toolbar fits with room to spare.
+- The toolbar holds no project control. A divider stands after the pages control and another before the four actions, which share one width. At 1280 points the whole toolbar fits with room to spare.
+- The open project is the current document. The window title gives its name, then the application's, as in "PIPES - RobCo Studio", and only "RobCo Studio" with no project. File, Open folder opens another one. The Files tree has the project as its root row, open at first; closing it hides the tree. A folder without a valid `robco.toml` goes by its folder's name.
 - The bottom pane puts the log's filters in its tab row while the Log tab is on.
 - A long status line in the footer hides the division first, then Position, then ends in an ellipsis. Settings and Help hold the right end and never give way.
 
