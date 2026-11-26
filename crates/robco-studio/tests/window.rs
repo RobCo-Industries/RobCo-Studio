@@ -1910,3 +1910,64 @@ fn persistence_alone_asks_for_frames_after_a_change_then_stops() {
         }
     }
 }
+
+/// With curvature, each button's reported rectangle holds the point of the
+/// glass where a click lands on that button's centre: at the centre, near
+/// the toolbar and near a corner, at Live's and Arcade's curvature.
+#[test]
+fn the_tree_follows_the_curve() {
+    use robco_studio::screen::{Adapter, drawn_at, map_pointer};
+    use robco_studio::theme::Screen;
+    let d = sample("curve").unwrap();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+    for level in [Screen::Live, Screen::Arcade] {
+        let at = |curvature: f32| {
+            let mut h = harness(Some(&*d));
+            let s = h.state_mut();
+            s.choose_screen(Adapter::Hardware, Some(false), Some(level));
+            s.screen.strengths.curvature = curvature;
+            h.run_steps(3);
+            h
+        };
+        let curvature = level.strengths().curvature;
+        assert!(curvature > 0.0);
+        let flat = at(0.0);
+        let curved = at(curvature);
+        let mut seen = [false; 3];
+        for b in flat.query_all_by_role(Role::Button) {
+            let id = b.accesskit_node().id();
+            let Some(c) = curved
+                .query_all_by_role(Role::Button)
+                .find(|n| n.accesskit_node().id() == id)
+            else {
+                continue;
+            };
+            let laid = b.rect();
+            // The glass point a click goes to so it lands at the centre.
+            let glass = drawn_at(laid.center(), screen, curvature);
+            assert!((map_pointer(glass, screen, curvature) - laid.center()).length() < 0.05);
+            let reported = c.rect();
+            assert!(
+                reported.expand(0.01).contains(glass),
+                "{level:?} {:?}: {reported:?} lacks {glass:?}, laid out at {laid:?}",
+                b.accesskit_node().label()
+            );
+            let p = laid.center();
+            let off = (glass - p).length();
+            if (p - screen.center()).length() < 300.0 {
+                seen[0] = true;
+            }
+            if p.y < 120.0 && off > 2.0 {
+                seen[1] = true;
+            }
+            let corner = [screen.left_top(), screen.right_top(), screen.left_bottom(), screen.right_bottom()]
+                .iter()
+                .map(|k| (p - *k).length())
+                .fold(f32::MAX, f32::min);
+            if corner < 120.0 && off > 5.0 {
+                seen[2] = true;
+            }
+        }
+        assert_eq!(seen, [true; 3], "{level:?}: centre, toolbar, corner");
+    }
+}

@@ -9,6 +9,8 @@
 //!
 //! - The input hook maps the pointer back through the screen's curve, so a
 //!   click lands on what is drawn under it.
+//! - The output hook moves each rectangle of the accessibility tree to where
+//!   the curve draws it, so a screen reader outlines what is on the glass.
 //! - The output hook keeps a copy of each texture change for the pass's own
 //!   renderer. At a pass level it then tessellates the shapes, in the order
 //!   egui gave them, and puts one paint callback in their place.
@@ -17,7 +19,7 @@
 //!   and the passes of `screen.wgsl` run on it. The callback's `paint`
 //!   draws the result into eframe's pass with one triangle.
 
-use crate::screen::{Frame, map_input};
+use crate::screen::{Frame, map_input, map_tree};
 use crate::theme::crt;
 use eframe::egui::{
     self, TexturesDelta,
@@ -80,7 +82,15 @@ impl egui::Plugin for Plugin {
     }
 
     fn output_hook(&mut self, ctx: &egui::Context, output: &mut egui::FullOutput) {
-        let frame = lock(&self.link).frame.take();
+        let (frame, curvature) = {
+            let mut link = lock(&self.link);
+            (link.frame.take(), link.curvature)
+        };
+        // The pointer is mapped back through the curve whether or not the
+        // pass draws, so the tree's rectangles follow it the same way.
+        if let Some(update) = &mut output.platform_output.accesskit_update {
+            map_tree(update, ctx.content_rect(), curvature);
+        }
         let Some(pending) = &self.pending else {
             return;
         };
@@ -492,6 +502,42 @@ fn uniforms(sd: &ScreenDescriptor, f: &Frame) -> [f32; UNIFORM_FLOATS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One frame of a few buttons, with or without the plugin at
+    /// `curvature`, and its accessibility tree update.
+    fn tree(curvature: Option<f32>) -> Option<egui::accesskit::TreeUpdate> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        if let Some(c) = curvature {
+            let link = Shared::default();
+            lock(&link).curvature = c;
+            plug(&ctx, link, None);
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 720.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.button("Top left");
+            ui.add_space(500.0);
+            ui.button("Lower");
+        });
+        out.textures_delta.clear();
+        out.platform_output.accesskit_update
+    }
+
+    /// With no curvature the tree is the tree without the pass, field for
+    /// field. With curvature it differs.
+    #[test]
+    fn the_tree_is_untouched_without_curvature() {
+        let plain = tree(None);
+        assert!(plain.is_some());
+        assert_eq!(tree(Some(0.0)), plain);
+        assert_ne!(tree(Some(0.4)), plain);
+    }
 
     /// The shader parses and validates with naga, the front end wgpu uses.
     /// No GPU.

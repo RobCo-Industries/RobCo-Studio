@@ -222,6 +222,41 @@ pub fn map_input(raw: &mut egui::RawInput, screen: Rect, curvature: f32) {
     }
 }
 
+/// Move every rectangle of an accessibility tree update to where it is
+/// drawn through the curve, so a screen reader outlines what is on the
+/// glass. egui gives each node's bounds in points of the window: only the
+/// root carries a transform, the scale to physical pixels. A node with a
+/// transform of its own is left as it is. Each bounds becomes the box
+/// around its four corners sent forward through the curve. With no
+/// curvature the update is not touched.
+pub fn map_tree(update: &mut egui::accesskit::TreeUpdate, screen: Rect, curvature: f32) {
+    if curvature <= 0.0 {
+        return;
+    }
+    for (_, node) in &mut update.nodes {
+        if node.transform().is_some() {
+            continue;
+        }
+        let Some(b) = node.bounds() else {
+            continue;
+        };
+        let r = Rect::from_min_max(
+            Pos2::new(b.x0 as f32, b.y0 as f32),
+            Pos2::new(b.x1 as f32, b.y1 as f32),
+        );
+        let mut out = Rect::NOTHING;
+        for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
+            out.extend_with(drawn_at(c, screen, curvature));
+        }
+        node.set_bounds(egui::accesskit::Rect {
+            x0: out.min.x.into(),
+            y0: out.min.y.into(),
+            x1: out.max.x.into(),
+            y1: out.max.y.into(),
+        });
+    }
+}
+
 /// What the system says about reduced motion, or None when Studio cannot
 /// read it. On macOS this is the Reduce motion switch of the Accessibility
 /// settings. Studio does not read it on Windows or Linux yet.
