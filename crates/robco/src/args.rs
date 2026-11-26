@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Reads the command line, by "Options" of RobCo-Core
-//! `docs/spec/STUDIO_CLI.md`. Two commands with two options need no parser
-//! crate. Every wrong form gives `usage`.
+//! `docs/spec/STUDIO_CLI.md`. A few commands with two options need no parser
+//! crate. Every wrong form gives `usage`. The spec says nothing of `--`;
+//! here it ends the options, as in most tools, so a positional argument
+//! may start with `-`.
+//!
+//! Here the tool is stricter than the spec. The spec says `--json` counts
+//! wherever it stands, but it was written before `--` existed. Here `--json`
+//! counts only before the first `--`; after it, `--json` is a plain argument.
+//! [`options_end`] finds that boundary, and both [`parse`] and [`wants_json`]
+//! use it, so they cannot differ.
 
 use studio_core::resolve::{Abi, InstallPick, Version};
 
@@ -20,6 +28,13 @@ pub enum Command {
     Build {
         /// The location of the index, when given.
         index: Option<String>,
+    },
+    /// `robco new TEMPLATE NAME`.
+    New {
+        /// The template's id.
+        template: String,
+        /// The project name, as given.
+        name: String,
     },
     /// `robco sdk install PACKAGE[@VERSION] [--index LOCATION]`.
     SdkInstall {
@@ -43,30 +58,44 @@ pub struct Usage {
     pub detail: String,
 }
 
-/// Whether the tool writes JSON lines: one argument is exactly `--json`,
-/// wherever it stands.
+/// Where the options end: the index of the first `--`, or the length of
+/// the list when there is none. Every argument from there on is positional.
+pub fn options_end(args: &[String]) -> usize {
+    args.iter().position(|a| a == "--").unwrap_or(args.len())
+}
+
+/// Whether the tool writes JSON lines: one argument before the first `--`
+/// is exactly `--json`.
 pub fn wants_json(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--json")
+    args[..options_end(args)].iter().any(|a| a == "--json")
 }
 
 /// Reads the arguments after the program name.
 pub fn parse(args: &[String]) -> Result<Command, Usage> {
-    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let end = options_end(args);
+    let words: Vec<&str> = args[..end].iter().map(String::as_str).collect();
+    let after: Vec<&str> = args
+        .get(end + 1..)
+        .unwrap_or_default()
+        .iter()
+        .map(String::as_str)
+        .collect();
     let (command, rest) = match words.as_slice() {
         ["--version"] | ["-V"] | ["version"] => return Ok(Command::Version),
         ["sdk", "list", rest @ ..] => ("sdk list", rest),
         ["sdk", "install", rest @ ..] => ("sdk install", rest),
         ["build", rest @ ..] => ("build", rest),
+        ["new", rest @ ..] => ("new", rest),
         [] => {
             return Err(usage(
                 "",
-                "no command: robco build, sdk list or sdk install",
+                "no command: robco build, new, sdk list or sdk install",
             ));
         }
         _ => {
             return Err(usage(
                 "",
-                "unknown command: robco build, sdk list or sdk install",
+                "unknown command: robco build, new, sdk list or sdk install",
             ));
         }
     };
@@ -100,16 +129,32 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             }
             index = Some(value.to_owned());
         } else if a.len() > 1 && a.starts_with('-') {
-            return Err(usage(command, &format!("unknown option {a}")));
+            return Err(usage(
+                command,
+                &format!("unknown option {a}; put -- before an argument that starts with -"),
+            ));
         } else {
             positional.push(a);
         }
     }
+    // `--` ends the options: every later argument is positional, whatever
+    // it starts with. So a name such as `-P` can be given.
+    positional.extend(after.iter().copied());
 
     match command {
         "sdk list" => match positional.as_slice() {
             [] => Ok(Command::SdkList { index }),
             [extra, ..] => Err(usage(command, &format!("extra argument {extra}"))),
+        },
+        // `robco new` shows no `--index`: it reads no index.
+        "new" if index.is_some() => Err(usage(command, "unknown option --index")),
+        "new" => match positional.as_slice() {
+            [] | [_] => Err(usage(command, "missing argument: robco new TEMPLATE NAME")),
+            [template, name] => Ok(Command::New {
+                template: (*template).to_owned(),
+                name: (*name).to_owned(),
+            }),
+            [_, _, extra, ..] => Err(usage(command, &format!("extra argument {extra}"))),
         },
         "build" => match positional.as_slice() {
             [] => Ok(Command::Build { index }),
@@ -210,6 +255,55 @@ mod tests {
     }
 
     #[test]
+    fn new_takes_a_template_and_a_name_in_any_place() {
+        let want = Command::New {
+            template: "holotape-c".to_owned(),
+            name: "PIPES".to_owned(),
+        };
+        assert_eq!(p(&["new", "holotape-c", "PIPES"]).unwrap(), want);
+        assert_eq!(p(&["new", "--json", "holotape-c", "PIPES"]).unwrap(), want);
+    }
+
+    #[test]
+    fn double_dash_ends_the_options() {
+        let new = |name: &str| Command::New {
+            template: "holotape-c".to_owned(),
+            name: name.to_owned(),
+        };
+        assert_eq!(p(&["new", "holotape-c", "--", "-P"]).unwrap(), new("-P"));
+        assert_eq!(p(&["new", "--", "holotape-c", "-P"]).unwrap(), new("-P"));
+        assert_eq!(
+            p(&["new", "--json", "--", "holotape-c", "--"]).unwrap(),
+            new("--")
+        );
+        // After `--`, an option's spelling is a positional argument.
+        assert_eq!(
+            p(&["new", "holotape-c", "--", "--index"]).unwrap(),
+            new("--index")
+        );
+        // `--` alone, with nothing after it, adds nothing.
+        assert_eq!(p(&["sdk", "list", "--"]).unwrap(), list(None));
+        assert_eq!(p(&["build", "--"]).unwrap(), Command::Build { index: None });
+        assert_eq!(
+            p(&["sdk", "install", "--index", "i.json", "--", "-x"]).unwrap(),
+            Command::SdkInstall {
+                argument: "-x".to_owned(),
+                name: "-x".to_owned(),
+                pick: InstallPick::Newest,
+                index: Some("i.json".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_leading_dash_without_double_dash_stays_an_option() {
+        let e = p(&["new", "holotape-c", "-P"]).unwrap_err();
+        assert_eq!(e.command, "new");
+        assert!(e.detail.contains("unknown option -P"), "{}", e.detail);
+        assert!(e.detail.contains("put -- before"), "{}", e.detail);
+    }
+
+    #[test]
     fn the_three_install_forms() {
         let pick = |a: &str| match p(&["sdk", "install", a]).unwrap() {
             Command::SdkInstall { pick, name, .. } => (name, pick),
@@ -238,6 +332,20 @@ mod tests {
             (&["build", "--index"], "build"),
             (&["build", "--bogus"], "build"),
             (&["build", "--json", "--json"], "build"),
+            (&["new"], "new"),
+            (&["new", "holotape-c"], "new"),
+            (&["new", "holotape-c", "PIPES", "extra"], "new"),
+            (&["new", "holotape-c", "PIPES", "--index", "i.json"], "new"),
+            (&["new", "holotape-c", "-P"], "new"),
+            (&["new", "holotape-c", "--", "-P", "--json"], "new"),
+            (&["new", "holotape-c", "--", "--", "-P"], "new"),
+            (&["new", "--", "holotape-c"], "new"),
+            (&["--", "new", "holotape-c", "-P"], ""),
+            (
+                &["sdk", "install", "--", "--index", "i.json"],
+                "sdk install",
+            ),
+            (&["sdk", "list", "--", "--json"], "sdk list"),
             (&["sdk"], ""),
             (&["sdk", "remove", "pipos"], ""),
             (&["sdk", "doctor"], ""),
@@ -271,5 +379,43 @@ mod tests {
         let a = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert!(wants_json(&a(&["bogus", "--json"])));
         assert!(!wants_json(&a(&["sdk", "list", "--json=1"])));
+        assert!(wants_json(&a(&["new", "--json", "x", "--", "y"])));
+        assert!(!wants_json(&a(&["new", "holotape-c", "--", "--json"])));
+    }
+
+    #[test]
+    fn parse_and_wants_json_share_the_boundary() {
+        let cases: &[&[&str]] = &[
+            &["new", "a", "b"],
+            &["new", "--json", "a", "b"],
+            &["new", "a", "--", "--json"],
+            &["new", "--json", "--", "a", "--json"],
+            &["new", "--", "a", "--json"],
+            &["sdk", "list", "--", "--json"],
+            &["sdk", "list", "--json", "--"],
+            &["build", "--", "--json"],
+        ];
+        for args in cases {
+            let v: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
+            let end = options_end(&v);
+            // The parser sees `--json` as an option exactly when wants_json
+            // says yes: drop every `--json` before the boundary and the
+            // command does not change; drop one after it and it does, or
+            // fails, as a positional argument went away.
+            let json_before = v[..end].iter().any(|a| a == "--json");
+            assert_eq!(wants_json(&v), json_before, "{args:?}");
+            let stripped: Vec<String> = v
+                .iter()
+                .enumerate()
+                .filter(|(i, a)| !(*i < end && *a == "--json"))
+                .map(|(_, a)| a.clone())
+                .collect();
+            assert_eq!(parse(&v), parse(&stripped), "{args:?}");
+            if let Some(i) = v.iter().skip(end).position(|a| a == "--json") {
+                let mut cut = v.clone();
+                cut.remove(end + i);
+                assert_ne!(parse(&v), parse(&cut), "{args:?}");
+            }
+        }
     }
 }
