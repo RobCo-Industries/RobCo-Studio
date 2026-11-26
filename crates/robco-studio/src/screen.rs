@@ -125,7 +125,7 @@ pub fn animated(level: Screen, s: &Strengths) -> bool {
 
 /// The afterglow stops when what is left of the old picture is below this
 /// share of it: less than one step of an 8-bit channel.
-pub const AFTERGLOW_END: f32 = 1.0 / 256.0;
+pub const AFTERGLOW_END: f32 = crt::AFTERGLOW_END;
 
 /// When the strengths make the screen ask for frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,7 +245,12 @@ pub fn map_tree(update: &mut egui::accesskit::TreeUpdate, screen: Rect, curvatur
             Pos2::new(b.x1 as f32, b.y1 as f32),
         );
         let mut out = Rect::NOTHING;
-        for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
+        for c in [
+            r.left_top(),
+            r.right_top(),
+            r.left_bottom(),
+            r.right_bottom(),
+        ] {
             out.extend_with(drawn_at(c, screen, curvature));
         }
         node.set_bounds(egui::accesskit::Rect {
@@ -397,7 +402,11 @@ impl Clock {
                 self.glow = 0.0;
             }
             // With nothing left to fade, the still form, drawn the same.
-            let keep = if changed || self.glow > 0.0 { fade } else { 0.0 };
+            let keep = if changed || self.glow > 0.0 {
+                fade
+            } else {
+                0.0
+            };
             let persistence = if keep > 0.0 { s.persistence } else { 0.0 };
             return Frame {
                 strengths: Strengths {
@@ -499,7 +508,10 @@ mod tests {
             Some(Duration::from_secs(1) / 15)
         );
         assert_eq!(next_frame(true, false, false, 30), None);
-        assert_eq!(next_frame(false, true, false, 30), Some(Duration::from_secs(1) / 30));
+        assert_eq!(
+            next_frame(false, true, false, 30),
+            Some(Duration::from_secs(1) / 30)
+        );
         assert_eq!(next_frame(false, false, true, 60), None);
         for level in Screen::ALL {
             let a = animated(level, &level.strengths());
@@ -618,7 +630,12 @@ mod tests {
             ("vignette", |s| s.vignette = 1.0, Never, Never),
             ("scanlines", |s| s.scanlines = 1.0, Never, Always),
             ("curvature", |s| s.curvature = 1.0, Never, Never),
-            ("persistence", |s| s.persistence = 1.0, AfterChange, AfterChange),
+            (
+                "persistence",
+                |s| s.persistence = 1.0,
+                AfterChange,
+                AfterChange,
+            ),
             ("noise", |s| s.noise = 1.0, Always, Always),
             ("flicker", |s| s.flicker = 1.0, Always, Always),
             ("band", |s| s.band = 1.0, Always, Always),

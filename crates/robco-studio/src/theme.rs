@@ -248,6 +248,9 @@ pub mod crt {
     /// The frame rate at which [`PERSIST_KEEP`] holds. At other rates the
     /// fade is scaled by the time between frames.
     pub const PERSIST_RATE: f32 = 30.0;
+    /// The afterglow ends below this share of the old picture: less than
+    /// one step of an 8-bit channel.
+    pub const AFTERGLOW_END: f32 = 1.0 / 256.0;
     /// The time between frames that persistence assumes at most and at
     /// least, in seconds.
     pub const PERSIST_DT: [f32; 2] = [1.0 / 240.0, 0.25];
