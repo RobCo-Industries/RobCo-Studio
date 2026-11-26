@@ -2,7 +2,7 @@
 
 Studio is a core library with a command line, and a window that calls the same library. The core has no window dependency. Every feature lands in the core with a command and a test before the window shows it.
 
-Today every crate is a shell. This page shows where code will go.
+This page shows where the code is and where it will go.
 
 ## Crates
 
@@ -55,6 +55,16 @@ A caller must write the lock with `lock::write` only for a `Resolution::New`, an
 
 `install` puts packages and tools into the cache, by "The archive", "What the cache records", "Tool archives" and "Hashes" of [SDK_PACKAGE.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/SDK_PACKAGE.md). A command calls `install::package` and `install::tool` between resolving and `lock::write`, and writes the lock only when every call passed.
 
+`install::package_watched` and `install::tool_watched` take a `Progress` too, and tell it each step of "step" in [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md) as it begins and ends. `package` and `tool` pass `Quiet`, which ignores them.
+
+| Phase | Covers | Fails here |
+|---|---|---|
+| `Download` | The fetch | A transport that fails, more bytes than the index says, a write to the cache |
+| `Verify` | Size and SHA-256 of the archive | A short download, a wrong hash |
+| `Install` | The archive rules, `sdk.json`, the `pipos` layout, the extraction, each file's hash, the record and the rename | `package: archive`, `package: manifest`, a file whose hash differs, `tool: archive`, a failed rename |
+
+The calls come in the order `start`, `done` per phase. A failure leaves its phase started and not done. An item the cache holds with the expected record gets one `skip`. A record that differs gets no call.
+
 The caller passes a `Transport` that fetches the bytes of a `url`. `LocalFiles` reads a local index's relative paths and fetches nothing from `https://`. No `https` transport exists yet.
 
 ```mermaid
@@ -72,7 +82,7 @@ flowchart LR
 How it keeps the cache whole:
 
 - A download streams into a temporary file under `<cache>/tmp/` while it is hashed and counted. It is renamed to the archive only on a match. A download that stops short or cannot be fetched is a mismatch. Nothing is retried from another place.
-- A package archive is checked whole before anything is extracted: names, case, entry kinds, compression, `sdk.json` and its index entry, and unlisted files. Each extracted file is then checked against its size and hash.
+- A package archive is checked whole before anything is extracted: names, case, entry kinds, compression, `sdk.json` and its index entry, unlisted files, and for `pipos` every file of "Layout of pipos". Each extracted file is then checked against its size and hash.
 - A tool archive is extracted with no write through a link. Each link must resolve inside the extraction folder. A link that resolves to nothing is refused.
 - `.robco-archive` is written last in the temporary folder, and one rename moves the folder into the cache. A cache folder without a valid record is moved aside and removed by the next install.
 - When two installs of one item race, the second rename fails, and that install compares the first one's record.
@@ -84,7 +94,26 @@ How it keeps the cache whole:
 
 ### robco
 
-The command. It will parse arguments and print JSON events, and leave all work to the core. Today it answers `robco --version` and `robco version`. `unsafe` is forbidden.
+The command. It reads the command line, writes the two output streams and leaves all work to the core. It answers `robco --version`, `robco version`, `robco sdk list` and `robco sdk install`, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). `unsafe` is forbidden.
+
+Each part is a module of its own:
+
+- `args` reads the command line by hand. Every wrong form gives `usage`.
+- `cache` finds the cache folder, with `ROBCO_CACHE` first.
+- `index` sorts a `--index` location and reads a local index. An `https://` index fails with `index: read`, since no `https` transport exists yet.
+- `list` and `install` are the two commands.
+- `lines` writes JSON lines with `--json`, and text and the one error line without it.
+
+`robco sdk install` passes a `Progress` that writes one `step` line per transition, so each line is written when its step begins or ends. A failure leaves its step open, and the error line follows. An item the cache already holds is never fetched and writes one `install` line with `skip`.
+
+```mermaid
+flowchart LR
+    A["args"] --> C["cache"]
+    C --> I["index"]
+    I --> R["resolve"]
+    R --> P["install each package, then gcc, then qemu"]
+    P --> L["lines"]
+```
 
 ### robco-studio
 
