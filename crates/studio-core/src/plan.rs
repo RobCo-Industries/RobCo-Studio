@@ -285,9 +285,16 @@ const FLAG_SHAPES: &[(&str, Scope, Shape)] = &[
     ("library", Scope::SystemLibs, shape_library),
 ];
 
-/// Feature names that read or write files, or are path maps, which Studio
-/// adds itself.
+/// Feature names that read or write files, are path maps, which Studio
+/// adds itself, or stop the compiler from writing its output.
+///
+/// `syntax-only`: GCC 15 "Options to Request or Suppress Warnings",
+/// <https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Warning-Options.html>,
+/// "Check the code for syntax errors, but don't do anything beyond that."
+/// The build also checks that each command wrote its output, so a flag
+/// this list misses still fails the build.
 const FEATURE_REFUSED: &[&str] = &[
+    "syntax-only",
     "plugin",
     "dump",
     "profile",

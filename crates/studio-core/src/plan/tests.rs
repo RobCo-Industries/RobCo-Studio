@@ -918,6 +918,7 @@ fn plan_flags_refused_outside_the_shapes() {
         "-Xlinker",
         "-fplugin=x",
         "-fdump-rtl-all",
+        "-fsyntax-only",
         "-ffile-prefix-map=a=b",
         "-wrapper",
         "-B",

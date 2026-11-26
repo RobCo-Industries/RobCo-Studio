@@ -597,11 +597,18 @@ fn build(
                 format!("{o}: a planned output is not inside build/"),
             ));
         }
-        drop_link(&root.join(o))?;
+        remove_output(&root.join(o))?;
+    }
+    // One output per command, in the same order.
+    if bp.outputs.len() != bp.commands.len() {
+        return Err(Failure::new(
+            "internal",
+            "the plan does not name one output per command",
+        ));
     }
 
     // 3 to 5.
-    for c in &bp.commands {
+    for (c, o) in bp.commands.iter().zip(&bp.outputs) {
         let (step, item, code, program) = match &c.step {
             Step::CompileCrt0 => ("compile", "crt0".to_owned(), "build: compile", "gcc"),
             Step::Compile(s) => ("compile", s.clone(), "build: compile", "gcc"),
@@ -633,6 +640,17 @@ fn build(
                 item.clone()
             };
             return Err(Failure::new(code, detail));
+        }
+        // Each output was removed above, so a file there now is one this
+        // run wrote. A program that ends well and writes nothing, as with
+        // `-fsyntax-only`, fails its own step.
+        if !wrote_file(&root.join(o)) {
+            let what = if item.is_empty() {
+                program.to_owned()
+            } else {
+                format!("{item}: {program}")
+            };
+            return Err(Failure::new(code, format!("{what} wrote no output {o}")));
         }
         out.step(step, &item, "done");
     }
@@ -709,8 +727,6 @@ fn out_dir(root: &Path, rel: &str) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Removes a link at a path a compiler or `objcopy` writes, so the program
-/// writes a new file there and not the link's target.
 /// True when `rel` is a relative path, inside `build/` by its components,
 /// split on `/`, with no empty, `.`, `..`, root or prefix component.
 fn in_build(rel: &str) -> bool {
@@ -726,15 +742,23 @@ fn in_build(rel: &str) -> bool {
         })
 }
 
-fn drop_link(path: &Path) -> Result<(), Failure> {
+/// Removes whatever file is at a path a compiler or `objcopy` writes, a
+/// link or a regular file from an earlier build, before any command runs.
+/// A link is removed as a link, so its target is kept. So the program
+/// writes a new file there, and a file there after the command is one
+/// this run wrote. A folder there is refused.
+fn remove_output(path: &Path) -> Result<(), Failure> {
     match fs::symlink_metadata(path) {
-        Ok(md) if md.file_type().is_symlink() => {
-            fs::remove_file(path).map_err(|e| write_failure(path, &e))
-        }
-        Ok(_) => Ok(()),
+        Ok(md) if md.is_dir() => Err(link_failure(path)),
+        Ok(_) => fs::remove_file(path).map_err(|e| write_failure(path, &e)),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
         Err(e) => Err(write_failure(path, &e)),
     }
+}
+
+/// True when a regular file, not a link, is at `path`.
+fn wrote_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|md| md.file_type().is_file())
 }
 
 /// Writes `build/NAME.HTP` through `build/NAME.HTP.tmp`, renamed over it.
@@ -1051,7 +1075,7 @@ mod tests {
         fs::create_dir(d.0.join("build")).unwrap();
         let elf = d.0.join("build/TINY.elf");
         std::os::unix::fs::symlink(o.join("keep"), &elf).unwrap();
-        drop_link(&elf).unwrap();
+        remove_output(&elf).unwrap();
         let (gone, kept) = (fs::symlink_metadata(&elf).is_err(), o.join("keep").exists());
         fs::remove_dir_all(&o).unwrap();
         assert!(gone && kept);

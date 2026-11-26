@@ -828,3 +828,54 @@ fn a_failed_objcopy_leaves_no_tape_and_keeps_lock_and_cache() {
     assert_eq!(fs::read(f.proj().join("robco.lock")).unwrap(), lock);
     assert_eq!(fs::read(&sdk).unwrap(), before);
 }
+
+/// Replaces the `gcc` stand-in of a warm cache with this shell body.
+#[cfg(unix)]
+fn gcc_stand_in(f: &Fixture, body: &str) {
+    let p = f.dir.join(format!(
+        "cache/tools/gcc/15.2.1-1.1/{}/bin/arm-none-eabi-gcc",
+        host()
+    ));
+    fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_compiler_that_writes_nothing_fails_and_leaves_no_tape() {
+    // A first build leaves its objects. The second compiler ends well and
+    // writes nothing, as `-fsyntax-only` does: the old objects must not
+    // reach the link.
+    let f = Fixture::new("no-output");
+    warm_cache(&f, "");
+    let o = f.robco(&["build", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(f.proj().join("build/obj/crt0.o").is_file());
+    gcc_stand_in(&f, "exit 0");
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("build: compile".to_owned(), 5));
+    assert!(!f.tape().exists());
+    assert!(!f.proj().join("build/obj/crt0.o").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stale_object_is_gone_before_the_compile_runs() {
+    let f = Fixture::new("stale-object");
+    warm_cache(&f, "");
+    f.put("proj/build/obj/src/main.c.o", b"old");
+    // The first command, the crt0 compile, notes a stale object it sees.
+    let seen = f.dir.join("seen");
+    gcc_stand_in(
+        &f,
+        &format!(
+            "prev=\nfor a; do [ \"$prev\" = -o ] && out=$a; prev=$a; done\n\
+             [ \"$out\" = build/obj/crt0.o ] && [ -e build/obj/src/main.c.o ] && : > '{}'\n\
+             prev=\nfor a; do [ \"$prev\" = -o ] && : > \"$a\"; prev=$a; done",
+            seen.display()
+        ),
+    );
+    let o = f.robco(&["build", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(!seen.exists(), "a compile saw the stale object");
+    assert_eq!(fs::read(f.proj().join("build/obj/src/main.c.o")).unwrap(), b"");
+}
