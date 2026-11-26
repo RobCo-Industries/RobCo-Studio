@@ -52,7 +52,7 @@ fn frame(
     };
     let mut button = Rect::NOTHING;
     let overlay = &mut s.overlay;
-    let out = s.ctx.run_ui(raw, |ui| {
+    let mut out = s.ctx.run_ui(raw, |ui| {
         if let Some(text) = label {
             ui.painter().rect_filled(ui.max_rect(), 0.0, GROUND);
             ui.vertical_centered(|ui| {
@@ -133,6 +133,7 @@ fn frame(
     for id in &out.textures_delta.free {
         s.crt.renderer.free_texture(id);
     }
+    out.textures_delta.clear();
     (img, button)
 }
 
@@ -206,7 +207,7 @@ fn time_frames(
         )),
         ..Default::default()
     };
-    let out = s.ctx.run_ui(raw, |ui| {
+    let mut out = s.ctx.run_ui(raw, |ui| {
         stand_in(ui, 0.0);
     });
     let prims = s.ctx.tessellate(out.shapes, out.pixels_per_point);
@@ -215,6 +216,7 @@ fn time_frames(
         pixels_per_point: ppp,
     };
     let deltas = flat(&out.textures_delta);
+    out.textures_delta.clear();
     let mut total = 0.0;
     for i in 0..n + 10 {
         let t0 = Instant::now();

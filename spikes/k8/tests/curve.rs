@@ -12,7 +12,10 @@ fn run(ctx: &egui::Context, events: Vec<Event>, curve: f32) -> k8_crt::Drawn {
     };
     map_input(&mut raw, curve);
     let mut d = None;
-    let _ = ctx.run_ui(raw, |ui| d = Some(stand_in(ui, 0.0)));
+    // No renderer here: the texture changes are dropped on purpose.
+    ctx.run_ui(raw, |ui| d = Some(stand_in(ui, 0.0)))
+        .textures_delta
+        .clear();
     d.expect("drawn")
 }
 
