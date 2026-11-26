@@ -1668,3 +1668,202 @@ fn an_eight_character_name_stays_inside_the_tape_label() {
     let label = h.get_by_label("LONGNAME.HTP");
     assert_eq!(label.accesskit_node().role(), Role::Image);
 }
+
+/// The window with a real adapter as far as the rules know, at `level`. No
+/// GPU here: the pass does not draw, but every rule around it holds.
+fn screen_at(level: robco_studio::theme::Screen) -> Harness<'static, Studio> {
+    let mut s = Studio::new(None);
+    s.choose_screen(
+        robco_studio::screen::Adapter::Hardware,
+        Some(false),
+        Some(level),
+    );
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.run_steps(3);
+    h
+}
+
+/// Open View, Screen and read each level's item: available, and checked.
+/// None when the menu or an item is missing.
+fn screen_items(h: &mut Harness<'static, Studio>) -> Option<Vec<(String, bool, bool)>> {
+    use egui::accesskit::Toggled;
+    h.query_all_by_label("View")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)?
+        .click();
+    h.run_steps(2);
+    let sub = h
+        .query_all_by_label("Screen")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)?
+        .rect();
+    h.hover_at(sub.center());
+    h.run_steps(3);
+    ["Off", "Soft", "Still", "Live", "Arcade"]
+        .iter()
+        .map(|l| {
+            let n = h
+                .query_all_by_label(l)
+                .find(|n| n.accesskit_node().role() == Role::MenuItemRadio)?;
+            let a = n.accesskit_node();
+            Some((
+                (*l).to_owned(),
+                !a.is_disabled(),
+                a.toggled() == Some(Toggled::True),
+            ))
+        })
+        .collect()
+}
+
+#[test]
+fn the_screen_menu_shows_the_levels_and_the_choice() {
+    use robco_studio::theme::Screen;
+    // No adapter: the pass levels say why they are not there.
+    let mut h = harness(None);
+    let items = screen_items(&mut h).unwrap();
+    let on: Vec<_> = items.iter().map(|(_, on, _)| *on).collect();
+    assert_eq!(on, [true, true, false, false, false]);
+    let checked: Vec<_> = items.iter().map(|(_, _, c)| *c).collect();
+    assert_eq!(checked, [false, true, false, false, false]);
+    let still = h
+        .query_all_by_label("Still")
+        .find(|n| n.accesskit_node().role() == Role::MenuItemRadio)
+        .unwrap();
+    assert_eq!(
+        still.accesskit_node().description().as_deref(),
+        Some(robco_studio::screen::NO_ADAPTER)
+    );
+    // Off from the menu.
+    h.query_all_by_label("Off")
+        .find(|n| n.accesskit_node().role() == Role::MenuItemRadio)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    assert_eq!(h.state().theme.screen, Screen::Off);
+    assert_eq!(h.state().status.1, "Screen: Off.");
+
+    // With an adapter, Live by default, and every level there.
+    let mut h = screen_at(Screen::Live);
+    let items = screen_items(&mut h).unwrap();
+    assert!(items.iter().all(|(_, on, _)| *on));
+    assert!(items[3].2, "{items:?}");
+}
+
+#[test]
+fn high_legibility_forces_the_screen_off() {
+    use robco_studio::theme::Screen;
+    let mut h = screen_at(Screen::Arcade);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
+    h.run_steps(2);
+    assert!(h.state().theme.high_legibility);
+    assert_eq!(h.state().theme.screen(), Screen::Off);
+    let items = screen_items(&mut h).unwrap();
+    let on: Vec<_> = items.iter().map(|(_, on, _)| *on).collect();
+    assert_eq!(on, [true, false, false, false, false]);
+    assert!(items[0].2, "Off is the choice: {items:?}");
+    // No curve while it is off.
+    assert!(h.state().theme.halo().is_none());
+}
+
+/// A click where the curved screen draws a tab lands on that tab. The
+/// same place on the flat screen misses it.
+#[test]
+fn a_click_on_the_curve_lands_where_it_is_drawn() {
+    use robco_studio::screen::drawn_at;
+    use robco_studio::theme::Screen;
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+    let click = |level: Screen| {
+        let mut h = screen_at(level);
+        // egui grows a hit area by 5 points, which hides a small miss.
+        h.ctx
+            .all_styles_mut(|s| s.interaction.interact_radius = 0.0);
+        h.run_steps(2);
+        let tab = h
+            .query_all_by_label("Card")
+            .find(|n| n.accesskit_node().role() == Role::Tab)
+            .unwrap()
+            .rect();
+        // The bottom edge of the tab, which the curve draws lower.
+        let target = egui::pos2(tab.center().x, tab.max.y - 1.5);
+        let glass = drawn_at(target, screen, Screen::Arcade.strengths().curvature);
+        assert!((glass - target).length() > 3.0, "the curve moved nothing");
+        h.hover_at(glass);
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos: glass,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(1);
+        h.state().page
+    };
+    assert_eq!(click(Screen::Arcade), Page::Card);
+    assert_eq!(click(Screen::Soft), Page::Project);
+}
+
+#[test]
+fn adjust_moves_a_strength_and_reset_brings_it_back() {
+    use robco_studio::theme::Screen;
+    let mut h = screen_at(Screen::Live);
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::ScreenAdjust);
+    h.run_steps(2);
+    assert!(h.state().screen.adjusting);
+    let bloom = h
+        .query_all_by_label("Bloom")
+        .find(|n| n.accesskit_node().role() == Role::Slider)
+        .unwrap();
+    bloom.set_value_accesskit(0.9);
+    h.run_steps(2);
+    assert!((h.state().screen.strengths.bloom - 0.9).abs() < 1e-6);
+    assert!(h.state().screen_custom());
+    assert_eq!(h.state().status.1, "Screen: Custom.");
+    // The simulator's Reset is not in this release: the dialog's is.
+    h.query_all_by_label("Reset")
+        .find(|n| !n.accesskit_node().is_disabled())
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    assert_eq!(h.state().screen.strengths, Screen::Live.strengths());
+    assert!(!h.state().screen_custom());
+    assert_eq!(h.state().status.1, "Screen: Live.");
+    // The frame rate choice.
+    h.get_by_label("60").click();
+    h.run_steps(2);
+    assert_eq!(h.state().screen.rate, 60);
+    h.get_by_label("Close").click();
+    h.run_steps(2);
+    assert!(!h.state().screen.adjusting);
+}
+
+/// The delay before the frame the window asks for, or None.
+fn repaint_asked(h: &Harness<'static, Studio>) -> Option<std::time::Duration> {
+    let d = h
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)?
+        .repaint_delay;
+    (d < std::time::Duration::from_secs(1000)).then_some(d)
+}
+
+#[test]
+fn only_a_focused_live_screen_asks_for_frames() {
+    use robco_studio::theme::Screen;
+    for level in [Screen::Off, Screen::Soft, Screen::Still] {
+        let mut h = screen_at(level);
+        h.run_steps(4);
+        assert_eq!(repaint_asked(&h), None, "{level:?}");
+    }
+    let mut h = screen_at(Screen::Live);
+    h.run_steps(4);
+    let d = repaint_asked(&h).unwrap();
+    assert!(d <= std::time::Duration::from_secs(1) / 30, "{d:?}");
+    h.input_mut().focused = false;
+    h.run_steps(4);
+    assert_eq!(repaint_asked(&h), None);
+}

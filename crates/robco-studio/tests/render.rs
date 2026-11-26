@@ -250,13 +250,13 @@ fn find_fields_show_their_text() {
 }
 
 /// Every drawing, every icon and the label styles on the green ground,
-/// tinted `bright`. The left column has effects on, the right one off.
+/// tinted `bright`. The left column is at Soft, the right one at Off.
 fn paint_sheet(ui: &mut egui::Ui, arts: &mut Option<[Art; 2]>) {
-    use robco_studio::theme::{Effects, Theme, effect, text};
+    use robco_studio::theme::{Screen, Theme, effect, text};
     let ctx = ui.ctx().clone();
     let soft = Theme::default();
     let off = Theme {
-        effects: Effects::Off,
+        screen: Screen::Off,
         ..soft
     };
     let [on_art, off_art] =
@@ -285,7 +285,7 @@ fn paint_sheet(ui: &mut egui::Ui, arts: &mut Option<[Art; 2]>) {
             );
         }
         y += 3.0 * 26.0 + 10.0;
-        let halo = (art.effects == Effects::Soft).then_some(effect::LABEL_HALO_SOFT);
+        let halo = art.halos.then_some(effect::LABEL_HALO_SOFT);
         art.label.paint(
             &painter,
             egui::pos2(x, y),
@@ -330,4 +330,140 @@ fn render_the_art_sheet() {
     h.run_steps(3);
     let img = h.render().unwrap();
     img.save(dir.join("sheet-green.png")).unwrap();
+}
+
+/// A window with the screen at `level`, its pass plugged in before the
+/// first frame on the same device as the harness's renderer, as eframe
+/// would give it.
+fn screen_harness(
+    folder: Option<&Path>,
+    ppp: f32,
+    level: robco_studio::theme::Screen,
+) -> Harness<'static, Studio> {
+    use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
+    use robco_studio::screen::Adapter;
+    let rs = create_render_state(default_wgpu_setup(), Default::default());
+    let adapter = Adapter::of(rs.adapter.get_info().device_type);
+    let mut studio = Studio::new(folder);
+    let link = studio.screen.link();
+    let gpu = rs.clone();
+    studio.choose_screen(adapter, Some(false), Some(level));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .with_pixels_per_point(ppp)
+        .with_context_setup(move |ctx| robco_studio::pass::plug(ctx, link, Some(&gpu)))
+        .renderer(WgpuTestRenderer::from_render_state(rs))
+        .build_ui_state(full_window, studio);
+    h.run_steps(3);
+    h
+}
+
+/// The Project page at each screen level, three Live frames half a second
+/// apart, an open menu, an open dropdown, a tooltip and a dialog at Live,
+/// and Live at display scale 2. Into `STUDIO_SHOTS`, as `screen-*.png`.
+#[test]
+#[ignore = "writes PNG files; needs a wgpu adapter"]
+fn render_the_screen_levels() {
+    use egui_kittest::kittest::NodeT;
+    use robco_studio::theme::Screen;
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = sample("screen").unwrap();
+    for level in Screen::ALL {
+        let mut h = screen_harness(Some(&d), 1.0, level);
+        assert_eq!(h.state().theme.screen, level, "no hardware adapter here");
+        open_main(&mut h);
+        let name = format!("screen-{}.png", level.name().to_lowercase());
+        shot(&mut h, &dir, &name).unwrap();
+    }
+    let mut h = screen_harness(Some(&d), 1.0, Screen::Live);
+    open_main(&mut h);
+    for i in 0..3 {
+        // Two steps of a quarter second each.
+        shot(&mut h, &dir, &format!("screen-live-{i}.png")).unwrap();
+        h.run_steps(2);
+    }
+    // An open menu, with its Screen submenu.
+    h.query_all_by_label("View")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    let sub = h
+        .query_all_by_label("Screen")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
+        .unwrap()
+        .rect();
+    h.hover_at(sub.center());
+    h.run_steps(3);
+    shot(&mut h, &dir, "screen-live-menu.png").unwrap();
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    // An open dropdown list.
+    h.query_all_by_label_contains("Target:")
+        .next()
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    shot(&mut h, &dir, "screen-live-dropdown.png").unwrap();
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    // A tooltip, over a button that is not in this release.
+    let settings = h.get_by_label("Settings").rect();
+    h.hover_at(settings.center());
+    h.run_steps(6);
+    shot(&mut h, &dir, "screen-live-tooltip.png").unwrap();
+    h.hover_at(egui::pos2(640.0, 400.0));
+    h.run_steps(2);
+    // A dialog over the scrim.
+    h.state_mut().screen.adjusting = true;
+    shot(&mut h, &dir, "screen-live-dialog.png").unwrap();
+    drop(h);
+    let mut h = screen_harness(Some(&d), 2.0, Screen::Live);
+    open_main(&mut h);
+    shot(&mut h, &dir, "screen-live-2x.png").unwrap();
+}
+
+/// With every strength at zero the pass draws what egui draws: the code
+/// text, the Spleen labels, the icons, the drawings and the device all
+/// reach the pass's renderer. With the curve, the corners outside it are
+/// black.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn the_pass_at_zero_draws_what_egui_draws() {
+    use robco_studio::theme::{Screen, Strengths};
+    let d = sample("zero").unwrap();
+    let mut off = screen_harness(Some(&d), 1.0, Screen::Off);
+    open_main(&mut off);
+    off.run_steps(4);
+    let flat = off.render().unwrap();
+    let mut pass = screen_harness(Some(&d), 1.0, Screen::Still);
+    if pass.state().theme.screen != Screen::Still {
+        return; // A software adapter: no pass to compare.
+    }
+    pass.state_mut().screen.strengths = Strengths::NONE;
+    open_main(&mut pass);
+    pass.run_steps(4);
+    let through = pass.render().unwrap();
+    let mut worst = 0;
+    let mut differ = 0;
+    for (a, b) in flat.pixels().zip(through.pixels()) {
+        let d = (0..3).map(|i| a.0[i].abs_diff(b.0[i])).max().unwrap_or(0);
+        worst = worst.max(d);
+        differ += usize::from(d > 2);
+    }
+    assert!(differ < 50, "{differ} pixels differ, by up to {worst}");
+    // Live: the corner is outside the curve, black.
+    pass.state_mut().screen.strengths = Screen::Live.strengths();
+    pass.state_mut().theme.screen = Screen::Live;
+    pass.run_steps(2);
+    let live = pass.render().unwrap();
+    for (x, y) in [(0, 0), (1279, 0), (0, 719), (1279, 719)] {
+        let p = live.get_pixel(x, y).0;
+        assert!(p[..3].iter().all(|c| *c < 4), "corner {x},{y}: {p:?}");
+    }
 }
