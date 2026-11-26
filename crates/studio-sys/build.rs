@@ -18,6 +18,7 @@ use std::process::{Command, ExitCode};
 /// The C files, relative to the RobCo-Core root.
 const FILES: &[&str] = &[
     "src/lib/rimg.c",
+    "src/lib/rimg_seal.c",
     "src/lib/crc32.c",
     "src/lib/ini.c",
     "src/lib/part.c",

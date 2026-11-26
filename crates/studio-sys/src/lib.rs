@@ -193,13 +193,9 @@ pub struct Expect {
     pub file_size: u32,
 }
 
-fn rimg_error(rc: c_int) -> Error {
+fn rimg_error(what: &str, rc: c_int) -> Error {
     // SAFETY: rimg_strerror takes any code and returns a static string.
-    Error::new(
-        "rimg_validate",
-        rc,
-        static_text(unsafe { ffi::rimg_strerror(rc) }),
-    )
+    Error::new(what, rc, static_text(unsafe { ffi::rimg_strerror(rc) }))
 }
 
 /// Checks a sealed image with `rimg_validate` and returns a copy of its
@@ -220,7 +216,7 @@ pub fn rimg_validate(image: &[u8], expect: &Expect) -> Result<RimgHeader, Error>
     // length of `image`.
     let rc = unsafe { ffi::rimg_validate(image.as_ptr().cast(), image.len(), &c, &mut hdr) };
     if rc != ffi::RIMG_OK {
-        return Err(rimg_error(rc));
+        return Err(rimg_error("rimg_validate", rc));
     }
     if hdr.is_null() {
         return Err(Error::new("rimg_validate", rc, "no header"));
@@ -228,6 +224,180 @@ pub fn rimg_validate(image: &[u8], expect: &Expect) -> Result<RimgHeader, Error>
     // SAFETY: on RIMG_OK `hdr` points at the 64-byte header inside `image`,
     // which is alive. The header is packed, so read it unaligned.
     Ok(unsafe { std::ptr::read_unaligned(hdr) })
+}
+
+/// How `rimg_seal` and `rimg_pack` decode an icon file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconFormat {
+    /// 128 bytes is raw, any other length is PBM.
+    #[default]
+    Auto,
+    /// Exactly 128 bytes in the META layout.
+    Raw,
+    /// A 32 by 32 PBM, P1 or P4.
+    Pbm,
+}
+
+/// An icon file and its format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Icon<'a> {
+    /// The icon file's bytes, undecoded. The C decodes them.
+    pub bytes: &'a [u8],
+    /// How to decode them.
+    pub format: IconFormat,
+}
+
+/// The inputs of [`rimg_seal`]. `None` is an input that is not given,
+/// which is not the same as an empty text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SealOpts<'a> {
+    /// The name.
+    pub name: Option<&'a str>,
+    /// The image version, `(X << 16) | (Y << 8) | Z`.
+    pub image_version: Option<u32>,
+    /// The title.
+    pub title: Option<&'a str>,
+    /// The icon.
+    pub icon: Option<Icon<'a>>,
+}
+
+/// The inputs of [`rimg_pack`]. The numbers are signed and 64 bits wide,
+/// so the C sees a value out of range and returns its code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PackOpts<'a> {
+    /// Name, image version, title and icon. Pack writes the image version
+    /// into the header, 0 when absent, and seals with the rest.
+    pub seal: SealOpts<'a>,
+    /// The magic: `BOOT`, `ROM1` or `ROBCO78`.
+    pub magic: &'a str,
+    /// The subtype.
+    pub subtype: i64,
+    /// The load address.
+    pub load_addr: i64,
+    /// The bytes in memory, or `None` for the C's default.
+    pub mem_size: Option<i64>,
+    /// The ABI, `(MAJOR << 16) | MINOR`, or `None` for the magic's major.
+    pub abi_version: Option<u32>,
+    /// A META block: `None` follows the magic.
+    pub meta: Option<bool>,
+    /// The entry offset.
+    pub entry: i64,
+}
+
+/// The C strings a [`SealOpts`] points at, kept alive for one call.
+struct SealTexts {
+    name: Option<CString>,
+    title: Option<CString>,
+}
+
+impl SealTexts {
+    fn new(what: &str, o: &SealOpts<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            name: o.name.map(|s| c_string(what, s)).transpose()?,
+            title: o.title.map(|s| c_string(what, s)).transpose()?,
+        })
+    }
+
+    /// The C struct. It borrows `self` and `o`, which must outlive its use.
+    fn c_opts(&self, o: &SealOpts<'_>) -> ffi::RimgSealOpts {
+        let ptr = |s: &Option<CString>| s.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+        let (icon, icon_len, icon_format) = match o.icon {
+            None => (std::ptr::null(), 0, ffi::RIMG_ICON_AUTO),
+            Some(i) => (
+                i.bytes.as_ptr(),
+                i.bytes.len(),
+                match i.format {
+                    IconFormat::Auto => ffi::RIMG_ICON_AUTO,
+                    IconFormat::Raw => ffi::RIMG_ICON_RAW,
+                    IconFormat::Pbm => ffi::RIMG_ICON_PBM,
+                },
+            ),
+        };
+        ffi::RimgSealOpts {
+            name: ptr(&self.name),
+            has_image_version: c_int::from(o.image_version.is_some()),
+            image_version: o.image_version.unwrap_or(0),
+            title: ptr(&self.title),
+            icon,
+            icon_len,
+            icon_format,
+        }
+    }
+}
+
+/// Seals an image with `rimg_seal`: the C runs every step and writes the
+/// result. Returns the sealed image, as long as `image`. On a failure the
+/// error's code is the `RIMG_E_*` code and no bytes come back. A name or
+/// title holding a NUL byte fails with code -1 before the C runs.
+pub fn rimg_seal(image: &[u8], opts: &SealOpts<'_>) -> Result<Vec<u8>, Error> {
+    let texts = SealTexts::new("rimg_seal", opts)?;
+    let c = texts.c_opts(opts);
+    let mut out = vec![0u8; image.len()];
+    // SAFETY: `image` holds `image.len()` bytes and `out` as many, as the C
+    // needs; they do not overlap. `c` points into `texts` and `opts`, which
+    // outlive the call, and its strings end with NUL.
+    let rc = unsafe {
+        ffi::rimg_seal(
+            image.as_ptr().cast(),
+            image.len(),
+            &c,
+            out.as_mut_ptr().cast(),
+        )
+    };
+    if rc != ffi::RIMG_OK {
+        return Err(rimg_error("rimg_seal", rc));
+    }
+    Ok(out)
+}
+
+/// Packs a payload into a sealed image with `rimg_pack`: the C runs every
+/// step and writes the result. On a failure the error's code is the
+/// `RIMG_E_*` code and no bytes come back. A text holding a NUL byte fails
+/// with code -1 before the C runs.
+pub fn rimg_pack(payload: &[u8], opts: &PackOpts<'_>) -> Result<Vec<u8>, Error> {
+    let texts = SealTexts::new("rimg_pack", &opts.seal)?;
+    let magic = c_string("rimg_pack", opts.magic)?;
+    let c = ffi::RimgPackOpts {
+        seal: texts.c_opts(&opts.seal),
+        magic: magic.as_ptr(),
+        subtype: opts.subtype,
+        load_addr: opts.load_addr,
+        has_mem_size: c_int::from(opts.mem_size.is_some()),
+        mem_size: opts.mem_size.unwrap_or(0),
+        has_abi_version: c_int::from(opts.abi_version.is_some()),
+        abi_version: opts.abi_version.unwrap_or(0),
+        meta: opts.meta.map_or(-1, c_int::from),
+        entry: opts.entry,
+    };
+    // The largest image the C makes: the payload, the header and META.
+    let mut out = vec![0u8; payload.len().saturating_add(ffi::RIMG_PACK_MAX_EXTRA)];
+    let mut len = 0usize;
+    // SAFETY: `payload` holds `payload.len()` bytes and `out` holds
+    // `out.len()`, passed as the capacity; they do not overlap. `c` points
+    // into `texts`, `magic` and `opts`, which outlive the call, and its
+    // strings end with NUL. `len` outlives the call.
+    let rc = unsafe {
+        ffi::rimg_pack(
+            payload.as_ptr().cast(),
+            payload.len(),
+            &c,
+            out.as_mut_ptr().cast(),
+            out.len(),
+            &mut len,
+        )
+    };
+    if rc != ffi::RIMG_OK {
+        return Err(rimg_error("rimg_pack", rc));
+    }
+    if len > out.len() {
+        return Err(Error::new(
+            "rimg_pack",
+            ffi::RIMG_E_IO,
+            "length past the buffer",
+        ));
+    }
+    out.truncate(len);
+    Ok(out)
 }
 
 /// The CRC `rimg_validate` expects in the header of `image`, over its
