@@ -11,10 +11,28 @@ use std::path::{Path, PathBuf};
 
 const MAIN_C: &str = "#include <pipos/pip.h>\n\nint pip_main(void)\n{\n\treturn 0;\n}\n";
 
+/// A sample project folder, removed when the test ends, pass or fail.
+struct Sample(PathBuf);
+
+impl std::ops::Deref for Sample {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Sample {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// A sample project in a fresh folder of its own.
-fn sample(tag: &str) -> std::io::Result<PathBuf> {
-    let d = std::env::temp_dir().join(format!("robco-studio-test-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn sample(tag: &str) -> std::io::Result<Sample> {
+    let d = Sample(
+        std::env::temp_dir().join(format!("robco-studio-test-{tag}-{}", std::process::id())),
+    );
+    let _ = std::fs::remove_dir_all(&*d);
     std::fs::create_dir_all(d.join("src"))?;
     std::fs::write(d.join("src/main.c"), MAIN_C)?;
     std::fs::write(d.join("notes.txt"), "plain\r\ntext\r\n")?;
@@ -39,7 +57,7 @@ fn open_main(h: &mut Harness<'static, Studio>) {
 #[test]
 fn every_region_has_its_name() {
     let d = sample("regions").unwrap();
-    let h = harness(Some(&d));
+    let h = harness(Some(&*d));
     for name in [
         "Menu bar",
         "Toolbar",
@@ -82,13 +100,12 @@ fn every_region_has_its_name() {
         );
     }
     h.get_by_label("RobCo Studio");
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn the_four_jobs_cannot_act() {
     let d = sample("jobs").unwrap();
-    let mut h = harness(Some(&d));
+    let mut h = harness(Some(&*d));
     for job in ["Build", "Run", "Debug", "Write card"] {
         let buttons: Vec<_> = h
             .query_all_by_label(job)
@@ -114,7 +131,6 @@ fn the_four_jobs_cannot_act() {
     }
     h.run_steps(2);
     assert_eq!(h.state().status, before, "a click changed nothing");
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
@@ -146,7 +162,7 @@ fn the_rail_switches_pages() {
 #[test]
 fn files_open_edit_and_save() {
     let d = sample("edit").unwrap();
-    let mut h = harness(Some(&d));
+    let mut h = harness(Some(&*d));
     h.get_by_label("notes.txt");
     assert!(h.query_by_label("main.c").is_none(), "folders start closed");
     open_main(&mut h);
@@ -170,13 +186,12 @@ fn files_open_edit_and_save() {
         format!("{MAIN_C}// end\n").into_bytes()
     );
     assert!(!h.state().editor.current().unwrap().is_dirty());
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn crlf_file_keeps_its_bytes() {
     let d = sample("crlf").unwrap();
-    let mut h = harness(Some(&d));
+    let mut h = harness(Some(&*d));
     h.get_by_label("notes.txt").click();
     h.run_steps(2);
     let doc = h.state().editor.current().unwrap();
@@ -187,13 +202,12 @@ fn crlf_file_keeps_its_bytes() {
         std::fs::read(d.join("notes.txt")).unwrap(),
         b"plain\r\ntext\r\n"
     );
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn an_unsaved_file_asks_before_it_is_closed() {
     let d = sample("ask").unwrap();
-    let mut h = harness(Some(&d));
+    let mut h = harness(Some(&*d));
     open_main(&mut h);
     h.state_mut().editor.docs[0].pending_sel = Some((0, 0));
     h.run_steps(3);
@@ -219,13 +233,12 @@ fn an_unsaved_file_asks_before_it_is_closed() {
         std::fs::read_to_string(d.join("src/main.c")).unwrap(),
         MAIN_C
     );
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn quitting_with_edits_asks_and_save_writes() {
     let d = sample("quit").unwrap();
-    let mut h = harness(Some(&d));
+    let mut h = harness(Some(&*d));
     open_main(&mut h);
     h.state_mut().editor.docs[0].pending_sel = Some((0, 0));
     h.run_steps(3);
@@ -249,13 +262,12 @@ fn quitting_with_edits_asks_and_save_writes() {
         std::fs::read_to_string(d.join("src/main.c")).unwrap(),
         format!("y{MAIN_C}")
     );
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn f6_moves_through_the_panes_in_reading_order() {
     let d = sample("f6").unwrap();
-    let mut h = harness(Some(&d));
+    let mut h = harness(Some(&*d));
     let mut seen = Vec::new();
     for _ in 0..9 {
         h.key_press(Key::F6);
@@ -270,13 +282,12 @@ fn f6_moves_through_the_panes_in_reading_order() {
     h.key_press_modifiers(Modifiers::SHIFT, Key::F6);
     h.run_steps(2);
     assert_eq!(h.state().focused_place(&h.ctx), Some(Status));
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn find_and_replace() {
     let d = sample("find").unwrap();
-    let mut h = harness(Some(&d));
+    let mut h = harness(Some(&*d));
     open_main(&mut h);
     h.key_press_modifiers(Modifiers::COMMAND, Key::F);
     h.run_steps(2);
@@ -299,13 +310,21 @@ fn find_and_replace() {
             .text
             .contains("\tgoto 0;")
     );
-    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]
 fn a_folder_without_manifest_says_so() {
     let d = sample("nomanifest").unwrap();
-    let h = harness(Some(&d));
+    let h = harness(Some(&*d));
     h.get_by_label("This folder has no robco.toml, so Studio cannot build it.");
-    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn the_sample_folder_goes_when_the_test_ends() {
+    let path = {
+        let d = sample("drop").unwrap();
+        assert!(d.exists());
+        d.to_path_buf()
+    };
+    assert!(!path.exists());
 }
