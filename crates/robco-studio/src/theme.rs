@@ -237,6 +237,11 @@ pub mod crt {
     };
     /// The frame rates the Adjust dialog offers, a second.
     pub const RATES: [u32; 3] = [15, 30, 60];
+    /// The longest step one frame adds to the screen's clock, in seconds:
+    /// one frame at the slowest rate. A late frame, or the first one after
+    /// the window was hidden, then moves the picture one frame on, not by
+    /// the whole time away.
+    pub const MAX_STEP: f32 = 1.0 / RATES[0] as f32;
     /// The frame rate of Live and Arcade unless changed.
     pub const RATE: u32 = 30;
     /// Curvature 1 moves a corner of the glass by this part of the half

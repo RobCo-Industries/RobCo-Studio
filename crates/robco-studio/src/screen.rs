@@ -383,6 +383,8 @@ pub struct Clock {
     last: Option<f64>,
     /// What is left of the picture before the last change, out of 1.
     glow: f32,
+    /// The last frame drawn moved: the next one goes on from it.
+    moved: bool,
 }
 
 impl Clock {
@@ -397,9 +399,19 @@ impl Clock {
         focused: bool,
         changed: bool,
     ) -> Frame {
-        let dt = self.last.map_or(0.0, |l| (now - l).max(0.0) as f32);
+        let dt = self
+            .last
+            .map_or(0.0, |l| (now - l).max(0.0) as f32)
+            .min(crt::MAX_STEP);
         self.last = Some(now);
         let moving = animated(level, s) && focused;
+        // Animation time is time spent drawing moving frames: the first
+        // frame after a pause goes on from the phase that was held.
+        let step = if std::mem::replace(&mut self.moved, moving) {
+            dt
+        } else {
+            0.0
+        };
         if !moving && level.pass() && s.persistence > 0.0 {
             // Only the afterglow moves: the clock holds, the old picture fades.
             let fade = persistence_keep(s.persistence, dt);
@@ -435,12 +447,12 @@ impl Clock {
                 keep: 0.0,
             };
         }
-        self.time += dt;
+        self.time += step;
         Frame {
             strengths: *s,
             time: self.time,
             scan_offset: self.scan_offset(level),
-            keep: persistence_keep(s.persistence, dt),
+            keep: persistence_keep(s.persistence, step),
         }
     }
 
@@ -602,8 +614,8 @@ mod tests {
         let mut c = Clock::default();
         let s = Screen::Live.strengths();
         c.frame(1.0, Screen::Live, &s, true, true);
-        let f = c.frame(1.5, Screen::Live, &s, true, true);
-        assert!((f.time - 0.5).abs() < 1e-6);
+        let f = c.frame(1.05, Screen::Live, &s, true, true);
+        assert!((f.time - 0.05).abs() < 1e-6);
         assert!(f.keep > 0.0 && f.strengths.noise > 0.0);
         let held = c.frame(9.0, Screen::Live, &s, false, false);
         assert_eq!(held.time, f.time);
@@ -612,6 +624,31 @@ mod tests {
         assert_eq!(held.scan_offset, f.scan_offset);
         let still = c.frame(10.0, Screen::Still, &Screen::Still.strengths(), true, true);
         assert_eq!(still.scan_offset, 0.0);
+    }
+
+    #[test]
+    fn the_clock_goes_on_from_the_held_phase() {
+        let s = Screen::Live.strengths();
+        for rate in [15.0, 30.0, 60.0] {
+            let mut c = Clock::default();
+            let mut t = 0.0;
+            let mut before = c.frame(t, Screen::Live, &s, true, true);
+            for i in 1..=(2.0 * rate) as u32 {
+                t = f64::from(i) / rate;
+                before = c.frame(t, Screen::Live, &s, true, true);
+            }
+            // The band's speed is the same at any rate.
+            assert!((before.time - 2.0).abs() < 0.02, "{rate}: {}", before.time);
+            // Ten seconds unfocused, then back.
+            c.frame(t + 0.01, Screen::Live, &s, false, false);
+            let back = c.frame(t + 10.0, Screen::Live, &s, true, true);
+            let step = 1.0 / rate as f32;
+            assert!(back.time - before.time <= step + 1e-4, "{rate}");
+            assert!(back.keep > 0.0, "the afterglow is not wiped");
+            // Ten seconds with no frame and focus kept: one step at most.
+            let late = c.frame(t + 20.0, Screen::Live, &s, true, true);
+            assert!(late.time - back.time <= crt::MAX_STEP + 1e-4, "{rate}");
+        }
     }
 
     #[test]

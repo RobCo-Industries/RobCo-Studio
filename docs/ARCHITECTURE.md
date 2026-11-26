@@ -219,6 +219,7 @@ flowchart TB
 Rules of the screen, each with a test:
 
 - Live and Arcade ask for a frame at the chosen rate only while the window has focus. Off, Soft and Still ask for none, so an idle window costs nothing. Without focus the pass holds the still form of its last frame.
+- The animation clock counts only time spent drawing moving frames. The first frame after a pause adds nothing and goes on from the phase that was held: after focus comes back, after a level without motion, or after the folder dialog. One frame adds at most 1/15 of a second, one frame at the slowest rate, so a late frame or a hidden window moves the band and the scanlines one frame on, not by the time away. Persistence fades by the same clamped step, so a long pause neither wipes nor freezes the afterglow in one step.
 - Each strength alone above zero, the rest at zero, asks for frames as this table says:
 
 | Strength | Frames |

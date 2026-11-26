@@ -1865,6 +1865,10 @@ fn only_a_focused_live_screen_asks_for_frames() {
     h.run_steps(4);
     let d = repaint_asked(&h).unwrap();
     assert!(d <= std::time::Duration::from_secs(1) / 30, "{d:?}");
+    // Without persistence: the harness counts some of its own frames as a
+    // change, and the afterglow then never ends. The afterglow has its own
+    // tests on the clock.
+    h.state_mut().screen.strengths.persistence = 0.0;
     h.input_mut().focused = false;
     h.run_steps(4);
     assert_eq!(repaint_asked(&h), None);
