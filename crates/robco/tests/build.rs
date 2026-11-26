@@ -978,3 +978,30 @@ fn a_project_folder_that_is_not_utf8_fails_before_anything_changes() {
     assert!(steps(&o).is_empty(), "{:?}", steps(&o));
     assert!(odd.join("build/TINY.HTP").is_file());
 }
+
+#[cfg(unix)]
+#[test]
+fn an_icon_that_is_a_folder_is_manifest_icon() {
+    let f = Fixture::new("icon-dir");
+    fs::create_dir_all(f.proj().join("art")).unwrap();
+    link(&f, "art", "proj/icon.lnk");
+    for icon in ["art", "icon.lnk"] {
+        with_icon(&f, icon);
+        fails_with(&f, "manifest: icon");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_that_is_a_folder_is_manifest_sources() {
+    let f = Fixture::new("src-dir");
+    fs::create_dir_all(f.proj().join("src/dir.c")).unwrap();
+    with_sources(&f, r#"["src/main.c", "src/dir.c"]"#);
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("manifest: sources".to_owned(), 3));
+    let s = String::from_utf8_lossy(&o.stdout);
+    assert!(s.contains("src/dir.c: not a regular file"), "{s}");
+    // A wildcard keeps only regular files: the folder is not a match.
+    with_sources(&f, r#"["src/*.c"]"#);
+    passes_step_2(&f);
+}

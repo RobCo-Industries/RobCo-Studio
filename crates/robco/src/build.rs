@@ -264,9 +264,14 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
     let icon = match &manifest.project.icon {
         None => None,
         Some(rel) => {
-            let data = match resolve(root, "project.icon", rel)? {
-                None => None,
-                Some(p) => match fs::read(&p) {
+            let data = match manifest_file(root, "project.icon", rel)? {
+                Found::Missing => None,
+                Found::NotFile => {
+                    return Err(manifest_failure(&ManifestError::Icon(format!(
+                        "{rel}: not a regular file"
+                    ))));
+                }
+                Found::File(p) => match fs::read(&p) {
                     Ok(d) => Some(d),
                     Err(e) if e.kind() == ErrorKind::NotFound => None,
                     Err(e) => return Err(read_failure(&p, &e)),
@@ -296,6 +301,37 @@ fn resolve(root: &Path, key: &str, rel: &str) -> Result<Option<PathBuf>, Failure
             format!("{}: {kind}", path.display()),
         )),
     }
+}
+
+/// What a manifest path resolves to, after the path rule.
+enum Found {
+    /// A regular file, a link to one included: the path to read.
+    File(PathBuf),
+    /// Something that is not a regular file, such as a folder.
+    NotFile,
+    /// Nothing, a dangling link included.
+    Missing,
+}
+
+/// A manifest path must resolve to a regular file. Runs [`resolve`], then
+/// looks at the type, so a folder is never read: reading one gives
+/// `IsADirectory` on Unix and `PermissionDenied` on Windows, and neither
+/// is the host refusing a file. The caller gives its key's error for
+/// [`Found::NotFile`].
+fn manifest_file(root: &Path, key: &str, rel: &str) -> Result<Found, Failure> {
+    let Some(p) = resolve(root, key, rel)? else {
+        return Ok(Found::Missing);
+    };
+    match fs::metadata(&p) {
+        Ok(md) if md.is_file() => Ok(Found::File(p)),
+        Ok(_) => Ok(Found::NotFile),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(Found::Missing),
+        Err(e) => Err(read_failure(&p, &e)),
+    }
+}
+
+fn not_a_file(src: &str) -> Failure {
+    Failure::new("manifest: sources", format!("{src}: not a regular file"))
 }
 
 fn manifest_failure(e: &ManifestError) -> Failure {
@@ -331,11 +367,15 @@ fn plan_sources(root: &Path, patterns: &[String]) -> Result<(Vec<String>, Vec<St
         }
         matched.sort();
         for src in &matched {
-            if resolve(root, "build.sources", src)?.is_none() {
-                return Err(Failure::new(
-                    "manifest: sources",
-                    format!("{src}: gone while the build read it"),
-                ));
+            match manifest_file(root, "build.sources", src)? {
+                Found::File(_) => {}
+                Found::NotFile => return Err(not_a_file(src)),
+                Found::Missing => {
+                    return Err(Failure::new(
+                        "manifest: sources",
+                        format!("{src}: gone while the build read it"),
+                    ));
+                }
             }
         }
         let refs: Vec<&str> = matched.iter().map(String::as_str).collect();
@@ -352,10 +392,11 @@ fn plan_sources(root: &Path, patterns: &[String]) -> Result<(Vec<String>, Vec<St
 
 /// The regular files of one folder, not of its subfolders, a link to a
 /// regular file included, that a source pattern matches. A dangling link
-/// is no file. Names are matched first, by the manifest's own matcher, and
+/// is no file, and a pattern without `*` that names a folder or another
+/// kind fails with `manifest: sources`. Names are matched first, by the manifest's own matcher, and
 /// only a matched entry is looked at, so an entry no pattern matches never
 /// fails the build. A matched entry goes through [`resolve`] before its
-/// type is read, so one rule decides for links out, loops, dangling links
+/// type is read, through [`manifest_file`], so one rule decides for links out, loops, dangling links
 /// and host refusals.
 fn list_dir(
     root: &Path,
@@ -382,16 +423,14 @@ fn list_dir(
         {
             continue;
         }
-        let Some(path) = resolve(root, "build.sources", &project_path)? else {
-            continue;
-        };
-        let file = match fs::metadata(&path) {
-            Ok(md) => md.is_file(),
-            Err(e) if e.kind() == ErrorKind::NotFound => false,
-            Err(e) => return Err(read_failure(&path, &e)),
-        };
-        if file {
-            out.push(project_path);
+        match manifest_file(root, "build.sources", &project_path)? {
+            Found::File(_) => out.push(project_path),
+            // A pattern without `*` names this one entry, so it must be a
+            // file; a wildcard keeps only regular files, as the spec says.
+            Found::NotFile if !patterns.iter().any(|p| p.contains('*')) => {
+                return Err(not_a_file(&project_path));
+            }
+            Found::NotFile | Found::Missing => {}
         }
     }
     Ok(())
