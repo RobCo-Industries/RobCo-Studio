@@ -5,6 +5,9 @@
 
 use std::path::Path;
 
+/// The modules that may hold colour and size literals: the tokens and the
+/// palette rule.
+const TOKEN_MODULES: [&str; 2] = ["theme.rs", "palette.rs"];
 /// Float literals a view may write: none, one, and two, for halves.
 const ALLOWED_FLOATS: [&str; 3] = ["0.0", "1.0", "2.0"];
 /// Colours that are not part of the look: nothing, and egui's own marker.
@@ -77,7 +80,7 @@ fn views_hold_no_literal_colour_or_size() {
     for e in std::fs::read_dir(&dir).unwrap() {
         let p = e.unwrap().path();
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        if name == "theme.rs" || p.extension().is_none_or(|x| x != "rs") {
+        if TOKEN_MODULES.contains(&name.as_str()) || p.extension().is_none_or(|x| x != "rs") {
             continue;
         }
         all.extend(offences(&name, &std::fs::read_to_string(&p).unwrap()));

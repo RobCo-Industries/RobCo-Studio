@@ -21,6 +21,7 @@ pub mod kit;
 pub mod menus;
 #[cfg(target_os = "macos")]
 pub mod native_menu;
+pub mod palette;
 pub mod pass;
 pub mod project;
 pub mod screen;
