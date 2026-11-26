@@ -357,6 +357,25 @@ fn install_refuses_names_that_differ_in_case() {
 }
 
 #[test]
+fn install_refuses_names_that_differ_only_in_unicode_case() {
+    for (i, (a, b)) in [("σ", "ς"), ("Å", "å"), ("straße", "STRASSE")]
+        .into_iter()
+        .enumerate()
+    {
+        let d = Dir::new(&format!("ucase{i}"));
+        let mut put = files();
+        put.push((a, b"x"));
+        put.push((b, b"y"));
+        let msg = refused(
+            &d,
+            install_zip(&d, &package_zip(&put, &put)),
+            "package: archive",
+        );
+        assert!(msg.contains("differs only in case"), "{a} {b}: {msg}");
+    }
+}
+
+#[test]
 fn install_refuses_an_unlisted_file() {
     let d = Dir::new("unlisted");
     let mut put = files();

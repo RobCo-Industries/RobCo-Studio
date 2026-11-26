@@ -41,7 +41,7 @@ use sha2::{Digest, Sha256};
 
 use crate::codes::ErrorCode;
 use crate::resolve::index::{Archive, IndexPackage, is_archive_path, is_root};
-use crate::resolve::sdk_json;
+use crate::resolve::{self, sdk_json};
 use crate::resolve::{is_host_name, is_package_name, is_tool_version};
 
 /// The file of "What the cache records", right under an installed folder.
@@ -686,8 +686,8 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
 
     let mut files: Vec<PackageFile> = Vec::new();
     let mut dirs: Vec<String> = Vec::new();
-    // Every name in lower case, with whether it is a file.
-    let mut folded: BTreeMap<String, bool> = BTreeMap::new();
+    // Every name, with whether it is a file.
+    let mut seen: Vec<(String, bool)> = Vec::new();
     for i in 0..zip.len() {
         let f = zip
             .by_index_raw(i)
@@ -719,17 +719,18 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
         if !ok || f.is_symlink() {
             return Err(bad(format!("{raw}: not a regular file or a folder")));
         }
-        let lower = name.to_lowercase();
-        if lower == RECORD {
+        if resolve::same_but_case(name, RECORD) {
             return Err(bad(format!(
                 "{raw}: the archive holds an entry named {RECORD}"
             )));
         }
-        if folded.insert(lower.clone(), !dir).is_some() {
+        // An archive has few entries, so each pair is compared.
+        if seen.iter().any(|(n, _)| resolve::same_but_case(n, name)) {
             return Err(bad(format!(
                 "{raw}: another entry has this name, or one that differs only in case"
             )));
         }
+        seen.push((name.to_owned(), !dir));
         if dir {
             dirs.push(name.to_owned());
         } else {
@@ -740,11 +741,14 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
         }
     }
     // A file cannot also be a folder of another entry.
-    for name in folded.keys() {
+    for (name, _) in &seen {
         let mut at = 0;
         while let Some(p) = name[at..].find('/') {
             let parent = &name[..at + p];
-            if folded.get(parent) == Some(&true) {
+            if seen
+                .iter()
+                .any(|(n, file)| *file && resolve::same_but_case(n, parent))
+            {
                 return Err(bad(format!("{name}: {parent} is a file of the archive")));
             }
             at += p + 1;
@@ -878,7 +882,7 @@ fn extract_tool(archive: &Path, out: &Path, root: &str) -> Result<PathBuf, Error
     let entries = fs::read_dir(&folder).map_err(|e| read_err(&folder, &e))?;
     for e in entries {
         let e = e.map_err(|e| read_err(&folder, &e))?;
-        if e.file_name().to_string_lossy().to_lowercase() == RECORD {
+        if resolve::same_but_case(&e.file_name().to_string_lossy(), RECORD) {
             return Err(bad(format!("root {root:?} holds an entry named {RECORD}")));
         }
     }
