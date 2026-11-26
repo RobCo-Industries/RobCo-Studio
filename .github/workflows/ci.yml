@@ -418,6 +418,10 @@ jobs:
         with:
           submodules: recursive
           path: studio
+      # Check 5 must be able to fail: one changed byte gives exit 2.
+      - name: Tests of the agreement script
+        working-directory: studio
+        run: tools/test_agreement.sh
       # The same commit the package was built from, so both builds read
       # one crt0.S and one set of headers.
       - uses: actions/checkout@v4
