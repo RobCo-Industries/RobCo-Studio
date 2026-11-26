@@ -53,6 +53,9 @@ pub enum ThemeFault {
     /// The themes folder holds the most files Studio reads, so a new file
     /// would not be listed.
     Full,
+    /// The theme's own file sorts past the first [`store::MAX_FILES`]
+    /// files, so Studio would not read it after the write: its name.
+    PastLimit(String),
     /// The file to add is not a theme: the line that says why.
     NotTheme(String),
     /// Studio could not write or delete the file: the line that says why.
@@ -79,6 +82,11 @@ impl ThemeFault {
             }
             ThemeFault::Full => format!(
                 "The themes folder holds {} files, the most Studio reads. Delete one first. The theme is not saved.",
+                store::MAX_FILES
+            ),
+            ThemeFault::PastLimit(f) => format!(
+                "Other files now sort before {} in the themes folder, and Studio reads only the first {}. Move or delete one of them first. The theme is not saved.",
+                store::shown(f),
                 store::MAX_FILES
             ),
             ThemeFault::NotTheme(t) | ThemeFault::Write(t) => t.clone(),
@@ -475,9 +483,10 @@ impl Studio {
     /// Write `spec` as `file`, read the folder again and take that theme.
     /// The result is the line for the status line.
     ///
-    /// A new file is refused when the folder holds [`store::MAX_FILES`]
-    /// already, since Studio would not list it. Success means the theme is
-    /// listed and in use. On failure the changed theme stays changed.
+    /// It writes only when [`store::room_for`] says Studio lists the file
+    /// afterwards, for a new file and for an existing one. Success means
+    /// the theme is listed and in use. On failure the changed theme stays
+    /// changed.
     fn keep(&mut self, dir: &Path, file: &str, spec: &Spec) -> Result<String, ThemeFault> {
         let files = match store::toml_files(dir) {
             store::Listing::Unreadable(why) => return Err(unlisted(file, &why)),
@@ -485,8 +494,10 @@ impl Studio {
             l => l.files().to_vec(),
         };
         let new = !files.iter().any(|f| f == file);
-        if new && files.len() >= store::MAX_FILES {
-            return Err(ThemeFault::Full);
+        match store::room_for(&files, file) {
+            store::Room::Listed => {}
+            store::Room::Full => return Err(ThemeFault::Full),
+            store::Room::PastLimit => return Err(ThemeFault::PastLimit(file.to_owned())),
         }
         store::write_theme(dir, file, spec).map_err(|n| ThemeFault::Write(n.text))?;
         self.reload_themes();
@@ -500,7 +511,11 @@ impl Studio {
                 self.reload_themes();
             }
             self.refresh_theme();
-            return Err(ThemeFault::Full);
+            return Err(if new {
+                ThemeFault::Full
+            } else {
+                ThemeFault::PastLimit(file.to_owned())
+            });
         };
         self.current = i;
         self.changed = None;

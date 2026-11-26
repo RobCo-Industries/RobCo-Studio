@@ -597,6 +597,31 @@ pub fn toml_files(dir: &Path) -> Listing {
     Listing::Files(files, refused)
 }
 
+/// Whether Studio would list a theme file after it writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Room {
+    /// The file is among the first [`MAX_FILES`] by file name.
+    Listed,
+    /// The file is new and the folder holds [`MAX_FILES`] files already.
+    /// A new file that sorts early would push another theme out, so it is
+    /// refused too.
+    Full,
+    /// The file exists and sorts past the first [`MAX_FILES`].
+    PastLimit,
+}
+
+/// Whether `file` is among the files Studio reads once it is written.
+/// `files` is a fresh listing of the folder, in file name order, as
+/// [`toml_files`] gives it. Every write of a theme file asks this first.
+pub fn room_for(files: &[String], file: &str) -> Room {
+    match files.iter().position(|f| f == file) {
+        Some(at) if at < MAX_FILES => Room::Listed,
+        Some(_) => Room::PastLimit,
+        None if files.len() < MAX_FILES => Room::Listed,
+        None => Room::Full,
+    }
+}
+
 /// The line for a themes folder Studio could not read.
 pub fn folder_unreadable(why: &str) -> Note {
     warn(format!(

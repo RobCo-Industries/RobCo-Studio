@@ -187,6 +187,9 @@ enum Before {
     FullLast,
     /// Two files both named Ember.
     Twin,
+    /// Ember is in use, then another program adds 64 files that sort
+    /// before ember.toml.
+    Pushed,
 }
 
 /// An action that writes or removes a theme file, then reads the folder.
@@ -198,6 +201,9 @@ enum Act {
     Rename,
     Delete,
     Add,
+    /// A pick of Amber while the change is not saved, then Save in the
+    /// question.
+    Keep,
 }
 
 /// What must hold after the action.
@@ -216,7 +222,7 @@ fn folder_for(d: &TempDir, before: Before) -> PathBuf {
     let ember = |f: &str| std::fs::write(t.join(f), EMBER).unwrap();
     match before {
         Before::Empty => {}
-        Before::One => ember("ember.toml"),
+        Before::One | Before::Pushed => ember("ember.toml"),
         Before::FullFirst | Before::FullLast => {
             ember("ember.toml");
             for i in 0..63 {
@@ -243,6 +249,7 @@ fn new_name(before: Before) -> &'static str {
 fn every_write_lists_the_theme_or_keeps_the_change() {
     use After::{Deleted, Kept, Refused};
     use Before::*;
+    let pushed = ThemeFault::PastLimit("ember.toml".into());
     let rows: &[(Act, Before, After)] = &[
         (Act::Save, Empty, Refused(ThemeFault::ShippedTheme)),
         (Act::Save, One, Kept("ember.toml")),
@@ -275,6 +282,18 @@ fn every_write_lists_the_theme_or_keeps_the_change() {
         (Act::Add, FullFirst, Refused(ThemeFault::Full)),
         (Act::Add, FullLast, Refused(ThemeFault::Full)),
         (Act::Add, Twin, Kept("aaa.toml")),
+        (Act::Keep, Empty, Kept("aaa.toml")),
+        (Act::Keep, One, Kept("ember.toml")),
+        (Act::Keep, FullFirst, Kept("ember.toml")),
+        (Act::Keep, Twin, Kept("ember.toml")),
+        // Files added from outside push ember.toml past the limit.
+        (Act::Save, Pushed, Refused(pushed.clone())),
+        (Act::SaveAs, Pushed, Refused(ThemeFault::Full)),
+        (Act::Replace, Pushed, Refused(pushed.clone())),
+        (Act::Rename, Pushed, Refused(pushed.clone())),
+        (Act::Delete, Pushed, Deleted),
+        (Act::Add, Pushed, Refused(ThemeFault::Full)),
+        (Act::Keep, Pushed, Refused(pushed.clone())),
     ];
     for (act, before, after) in rows {
         let row = format!("{act:?} {before:?}");
@@ -285,7 +304,16 @@ fn every_write_lists_the_theme_or_keeps_the_change() {
             s.pick_theme(i);
         }
         s.edit_theme(|t| t.strengths.noise = 0.2);
+        if matches!(before, Pushed) {
+            for i in 0..64 {
+                std::fs::write(t.join(format!("a{i:02}.toml")), "version = 1\n").unwrap();
+            }
+        }
         let files = store::toml_files(&t).files().to_vec();
+        let bytes: Vec<Vec<u8>> = files
+            .iter()
+            .map(|f| std::fs::read(t.join(f)).unwrap())
+            .collect();
         let name = new_name(*before);
         let src = d.0.join("from.toml");
         let got = match act {
@@ -302,10 +330,29 @@ fn every_write_lists_the_theme_or_keeps_the_change() {
                 assert!(s.theme_editor.question.is_some(), "{row}");
                 s.answer_theme(crate::editor::Answer::DoNotSave).unwrap()
             }
+            Act::Keep => {
+                // A theme that ships is kept under the proposed name.
+                s.pick_theme(1);
+                if let Some(super::super::theme_pane::ThemeQuestion::Leave { name, .. }) =
+                    &mut s.theme_editor.question
+                {
+                    *name = "Aaa".into();
+                }
+                assert!(s.theme_editor.question.is_some(), "{row}");
+                s.answer_theme(crate::editor::Answer::Save).unwrap()
+            }
         };
         match after {
             Kept(file) => {
                 assert!(got.is_ok(), "{row}: {got:?}");
+                if matches!(act, Act::Keep) {
+                    // Keep saves the change, then Amber takes its place.
+                    let saved = store::read_folder(&t);
+                    let (_, spec) = saved.themes.iter().find(|(f, _)| f == file).unwrap();
+                    assert_eq!(spec.strengths.noise, 0.2, "{row}");
+                    assert_eq!(s.current, 1, "{row}");
+                    continue;
+                }
                 assert_eq!(s.theme_files[s.current].as_deref(), Some(*file), "{row}");
                 // Add takes the file's numbers, the others the edit.
                 let noise = if matches!(act, Act::Add) { 0.0 } else { 0.2 };
@@ -322,6 +369,9 @@ fn every_write_lists_the_theme_or_keeps_the_change() {
                 assert_eq!(got.as_ref().err(), Some(fault), "{row}");
                 assert!(!fault.message().is_empty(), "{row}");
                 assert_eq!(store::toml_files(&t).files().to_vec(), files, "{row}");
+                for (f, b) in files.iter().zip(&bytes) {
+                    assert_eq!(&std::fs::read(t.join(f)).unwrap(), b, "{row}: {f}");
+                }
                 assert!(s.changed.is_some(), "{row}");
                 assert_eq!(s.spec().strengths.noise, 0.2, "{row}");
             }
@@ -334,6 +384,10 @@ fn a_full_folder_says_why() {
     assert_eq!(
         ThemeFault::Full.message(),
         "The themes folder holds 64 files, the most Studio reads. Delete one first. The theme is not saved."
+    );
+    assert_eq!(
+        ThemeFault::PastLimit("ember.toml".into()).message(),
+        "Other files now sort before ember.toml in the themes folder, and Studio reads only the first 64. Move or delete one of them first. The theme is not saved."
     );
 }
 

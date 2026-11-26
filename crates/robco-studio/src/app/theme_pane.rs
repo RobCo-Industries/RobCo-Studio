@@ -963,6 +963,7 @@ impl Studio {
             ThemeFault::Write(_)
                 | ThemeFault::NoFolder
                 | ThemeFault::Full
+                | ThemeFault::PastLimit(_)
                 | ThemeFault::NotTheme(_)
                 | ThemeFault::ShippedTheme
         ) {
