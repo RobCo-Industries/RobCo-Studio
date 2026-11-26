@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use studio_core::resolve::index::{self, Index};
+use studio_core::resolve::index::{self, Index, IndexSource};
 
-use crate::Failure;
+use crate::{Failure, Net};
 
 /// What a `--index` location is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,24 +48,27 @@ fn is_scheme(s: &str) -> bool {
         && b.all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
 }
 
-/// Reads the index at a location, and returns it with the folder that its
-/// relative `url` values start from.
+/// Reads the index at a location. Returns it with the folder that its
+/// relative `url` values start from, `None` for an `https` index, which
+/// may hold none.
 ///
-/// No `https` transport exists yet: an `https://` index fails with
-/// `index: read`, the code of a download that fails, and says why.
-pub fn read(location: &Location) -> Result<(Index, PathBuf), Failure> {
+/// A download that fails, and one longer than
+/// [`studio_net::MAX_INDEX_BYTES`], give `index: read`.
+pub fn read(location: &Location, net: &Net) -> Result<(Index, Option<PathBuf>), Failure> {
     match location {
-        Location::Https(url) => Err(Failure::new(
-            "index: read",
-            format!("{url}: this build of robco cannot download yet, give a local index file"),
-        )),
+        Location::Https(url) => {
+            let read = |d: String| Failure::new("index: read", d);
+            let bytes = net.https().map_err(read)?.fetch_index(url).map_err(read)?;
+            let index = index::parse(&bytes, IndexSource::Https).map_err(|e| Failure::of(&e))?;
+            Ok((index, None))
+        }
         Location::Local(path) => {
             let index = index::read_file(path).map_err(|e| Failure::of(&e))?;
             let base = match path.parent() {
                 Some(p) if p != Path::new("") => p.to_path_buf(),
                 _ => PathBuf::from("."),
             };
-            Ok((index, base))
+            Ok((index, Some(base)))
         }
     }
 }
@@ -109,14 +112,12 @@ mod tests {
     }
 
     #[test]
-    fn an_https_index_is_not_fetched() {
-        let e = read(&Location::Https("https://x/i.json".to_owned())).unwrap_err();
-        assert_eq!(e.code, "index: read");
-    }
-
-    #[test]
     fn a_missing_file_is_index_read() {
-        let e = read(&Location::Local(PathBuf::from("no-such-index.json"))).unwrap_err();
+        let e = read(
+            &Location::Local(PathBuf::from("no-such-index.json")),
+            &Net::system(),
+        )
+        .unwrap_err();
         assert_eq!(e.code, "index: read");
     }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `robco` command.
+//! The `robco` command. `main.rs` only calls [`run`]; the program's tests
+//! call it too, with a transport that trusts a test certificate.
 //!
 //! It implements `robco sdk list` and `robco sdk install` of RobCo-Core
 //! `docs/spec/STUDIO_CLI.md`, and prints the version for `robco --version`
@@ -15,10 +16,13 @@ mod index;
 mod install;
 mod lines;
 mod list;
+mod net;
 
+use std::ffi::OsString;
 use std::fmt::Display;
 use std::io::Write;
-use std::process::ExitCode;
+
+pub use net::Net;
 
 use studio_core::codes::{self, ErrorCode};
 
@@ -57,15 +61,15 @@ impl Failure {
     }
 }
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut stdout, mut stderr) = (std::io::stdout().lock(), std::io::stderr().lock());
-    let code = run(&args, &mut stdout, &mut stderr);
-    ExitCode::from(code)
-}
-
-/// Runs one command line and returns its exit code.
-fn run(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+/// Runs one command line and returns its exit code. `net` downloads from
+/// `https://` URLs, and `var` reads the environment.
+pub fn run(
+    args: &[String],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    net: &Net,
+    var: &dyn Fn(&str) -> Option<OsString>,
+) -> u8 {
     let mut out = Out::new(args::wants_json(args), stdout, stderr);
     let command = match args::parse(args) {
         Ok(Command::Version) => {
@@ -79,12 +83,12 @@ fn run(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         Command::SdkInstall { .. } => "sdk install",
         _ => "sdk list",
     };
-    let cache = match cache::folder(|k| std::env::var_os(k)) {
+    let cache = match cache::folder(var) {
         Ok(c) => c,
         Err(d) => return out.fail(name, "cache: path", &d, 4),
     };
     let result = match &command {
-        Command::SdkList { index: given } => list_command(&mut out, &cache, given.as_deref()),
+        Command::SdkList { index: given } => list_command(&mut out, &cache, given.as_deref(), net),
         Command::SdkInstall {
             argument,
             name,
@@ -93,6 +97,7 @@ fn run(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         } => install::run(
             &mut out,
             &cache,
+            net,
             &install::Request {
                 argument,
                 name,
@@ -118,10 +123,11 @@ fn list_command(
     out: &mut Out<'_>,
     cache: &std::path::Path,
     given: Option<&str>,
+    net: &Net,
 ) -> Result<(), Failure> {
     let idx = match given {
         None => None,
-        Some(g) => Some(index::read(&index::locate(Some(g))?)?.0),
+        Some(g) => Some(index::read(&index::locate(Some(g))?, net)?.0),
     };
     let items = list::collect(cache, idx.as_ref())?;
     list::write(out, &items);

@@ -20,10 +20,15 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use std::time::Duration;
+
+use robco::Net;
 use serde_json::{Value, json};
 use studio_core::codes;
 use studio_core::install::{self, LocalFiles, Pin, sha256_hex};
 use studio_core::resolve::index::{self, IndexSource};
+use studio_net::Https;
+use studio_net::testing::{self, Pki, Server};
 use zip::write::SimpleFileOptions;
 
 /// `robco sdk install pipos@1.4 --index index.json --json`, on Linux, with
@@ -505,7 +510,8 @@ fn sdk_refuses_bad_index_locations() {
         "index: read",
         None,
     );
-    // No https transport exists yet: the index cannot be fetched.
+    // Nothing answers on port 1 of this machine: the index cannot be
+    // fetched.
     refused(
         &f,
         &[
@@ -513,7 +519,7 @@ fn sdk_refuses_bad_index_locations() {
             "install",
             "pipos",
             "--index",
-            "https://x.invalid/i.json",
+            "https://127.0.0.1:1/i.json",
         ],
         "index: read",
         None,
@@ -706,4 +712,181 @@ fn sdk_install_fails_in_the_download_step_on_a_read_only_cache() {
     assert_eq!(error["exit"], 9, "{stdout}");
     let result: Value = serde_json::from_str(lines[lines.len() - 1]).unwrap();
     assert_eq!(result["ok"], false, "{stdout}");
+}
+
+/// Runs `robco` in this process with a transport that trusts only the
+/// test's certificate, and the cache of the fixture.
+fn robco_https(f: &Fixture, pki: &Pki, args: &[&str]) -> (u8, String) {
+    let https = Https::trusting_only(
+        &pki.ca_der,
+        "robco/0.0.0",
+        Duration::from_secs(10),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    let cache = f.cache();
+    let var = move |k: &str| (k == "ROBCO_CACHE").then(|| cache.clone().into_os_string());
+    let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = robco::run(&args, &mut out, &mut err, &Net::with(https), &var);
+    (code, text(&out))
+}
+
+/// The fixture's index with each `url` an `https://` URL on `port`.
+fn https_index(f: &Fixture, port: u16) -> Value {
+    let mut i = f.index.clone();
+    i["packages"][0]["url"] = json!(format!("https://127.0.0.1:{port}/pipos.zip"));
+    i["tools"][0]["archives"][host()]["url"] = json!(format!("https://127.0.0.1:{port}/gcc.zip"));
+    i["tools"][1]["archives"][host()]["url"] = json!(format!("https://127.0.0.1:{port}/qemu.zip"));
+    i
+}
+
+fn archive(f: &Fixture, name: &str) -> Vec<u8> {
+    fs::read(f.dir.join("archives").join(name)).unwrap()
+}
+
+#[test]
+fn sdk_install_over_https() {
+    let f = Fixture::new("https-install");
+    let pki = Pki::new();
+    let far = Server::start(&pki, vec![testing::ok(archive(&f, "qemu.zip"))]);
+    // The ports are known only once both servers listen, so the index is
+    // served by a handler that reads them.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let index_handler: testing::Handler = Box::new(move |_, w| {
+        let body = rx.recv().unwrap();
+        write!(
+            w,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )?;
+        w.write_all(&body)
+    });
+    let near = Server::start(
+        &pki,
+        vec![
+            index_handler,
+            testing::ok(archive(&f, "pipos-1.4.0.zip")),
+            testing::ok(archive(&f, "gcc.zip")),
+            testing::redirect(302, far.url("/release/qemu.zip")),
+        ],
+    );
+    let index = https_index(&f, near.port);
+    tx.send(index.to_string().into_bytes()).unwrap();
+    let url = near.url("/index.json");
+    let (code, out) = robco_https(&f, &pki, &["sdk", "install", "pipos@1.4", "--index", &url]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("package pipos 1.4.0 installed"), "{out}");
+    assert!(out.contains("tool qemu 10.1.2"), "{out}");
+    assert!(f.cache().join("packages/pipos/1.4.0/flags.json").is_file());
+    let seen = near.finish();
+    assert!(seen[0].request.starts_with("GET /index.json "));
+    assert!(
+        far.finish()[0]
+            .request
+            .starts_with("GET /release/qemu.zip ")
+    );
+
+    // `sdk list` reads the same index over https.
+    let s = Server::start(&pki, vec![testing::ok(index.to_string().into_bytes())]);
+    let (code, out) = robco_https(
+        &f,
+        &pki,
+        &["sdk", "list", "--index", &s.url("/i.json"), "--json"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(r#""count":3"#), "{out}");
+    s.finish();
+}
+
+#[test]
+fn an_https_index_with_a_relative_url_is_refused() {
+    let f = Fixture::new("https-relative");
+    let pki = Pki::new();
+    let s = Server::start(&pki, vec![testing::ok(f.index.to_string().into_bytes())]);
+    let (code, out) = robco_https(
+        &f,
+        &pki,
+        &[
+            "sdk",
+            "install",
+            "pipos",
+            "--index",
+            &s.url("/i.json"),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 4);
+    assert!(out.contains(r#""code":"index: entry""#), "{out}");
+    s.finish();
+}
+
+#[test]
+fn an_https_index_that_fails_is_index_read() {
+    let f = Fixture::new("https-404");
+    let pki = Pki::new();
+    let h: testing::Handler =
+        Box::new(|_, w| w.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"));
+    let s = Server::start(&pki, vec![h]);
+    let (code, out) = robco_https(
+        &f,
+        &pki,
+        &[
+            "sdk",
+            "list",
+            "--index",
+            &s.url("/i.json?k=secret"),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 4);
+    assert!(out.contains(r#""code":"index: read""#), "{out}");
+    assert!(!out.contains("secret"), "{out}");
+    s.finish();
+}
+
+#[test]
+fn an_archive_longer_than_the_index_says_is_stopped() {
+    let f = Fixture::new("https-long");
+    let pki = Pki::new();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let index_handler: testing::Handler = Box::new(move |_, w| {
+        let body = rx.recv().unwrap();
+        write!(
+            w,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )?;
+        w.write_all(&body)
+    });
+    // The archive never ends: only the installer's bound stops it.
+    let endless: testing::Handler = Box::new(|_, w| {
+        w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\n\r\n")?;
+        let block = vec![0u8; 64 * 1024];
+        for _ in 0..16 * 1024 {
+            w.write_all(&block)?;
+        }
+        Ok(())
+    });
+    let s = Server::start(&pki, vec![index_handler, endless]);
+    tx.send(https_index(&f, s.port).to_string().into_bytes())
+        .unwrap();
+    let (code, out) = robco_https(
+        &f,
+        &pki,
+        &[
+            "sdk",
+            "install",
+            "pipos",
+            "--index",
+            &s.url("/i.json"),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 4);
+    assert!(out.contains(r#""code":"package: hash""#), "{out}");
+    assert!(out.contains("is longer than"), "{out}");
+    let seen = s.finish();
+    assert!(seen[1].result.is_err(), "the server sent the whole archive");
+    assert!(!f.cache().join("packages/pipos").exists());
 }
