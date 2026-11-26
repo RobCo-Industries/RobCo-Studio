@@ -130,6 +130,21 @@ impl<'a> Out<'a> {
         self.put(&line);
     }
 
+    /// One line a program printed: a `diagnostic` line with `--json`, or
+    /// the line as the program printed it on standard error without it.
+    pub fn diagnostic(&mut self, program: &str, text: &str) {
+        if self.json {
+            let line = json_line(
+                "diagnostic",
+                vec![("program", Val::s(program)), ("text", Val::s(text))],
+            );
+            self.put(&line);
+        } else {
+            let _ = writeln!(self.stderr, "{text}");
+            let _ = self.stderr.flush();
+        }
+    }
+
     /// A line for a person, without `--json` only.
     pub fn text(&mut self, text: &str) {
         if !self.json {

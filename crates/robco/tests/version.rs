@@ -34,7 +34,7 @@ fn version_matches_the_workspace_manifest() {
 
 #[test]
 fn anything_else_fails() {
-    for args in [&[][..], &["build"], &["--version", "extra"]] {
+    for args in [&[][..], &["bogus"], &["--version", "extra"]] {
         let out = robco(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert!(out.stdout.is_empty(), "{args:?}");

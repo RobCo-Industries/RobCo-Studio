@@ -16,6 +16,11 @@ pub enum Command {
         /// The location of the index, when given.
         index: Option<String>,
     },
+    /// `robco build [--index LOCATION]`.
+    Build {
+        /// The location of the index, when given.
+        index: Option<String>,
+    },
     /// `robco sdk install PACKAGE[@VERSION] [--index LOCATION]`.
     SdkInstall {
         /// The package argument as given.
@@ -51,11 +56,17 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
         ["--version"] | ["-V"] | ["version"] => return Ok(Command::Version),
         ["sdk", "list", rest @ ..] => ("sdk list", rest),
         ["sdk", "install", rest @ ..] => ("sdk install", rest),
-        [] => return Err(usage("", "no command: robco sdk list or robco sdk install")),
+        ["build", rest @ ..] => ("build", rest),
+        [] => {
+            return Err(usage(
+                "",
+                "no command: robco build, sdk list or sdk install",
+            ));
+        }
         _ => {
             return Err(usage(
                 "",
-                "unknown command: robco sdk list or robco sdk install",
+                "unknown command: robco build, sdk list or sdk install",
             ));
         }
     };
@@ -98,6 +109,10 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
     match command {
         "sdk list" => match positional.as_slice() {
             [] => Ok(Command::SdkList { index }),
+            [extra, ..] => Err(usage(command, &format!("extra argument {extra}"))),
+        },
+        "build" => match positional.as_slice() {
+            [] => Ok(Command::Build { index }),
             [extra, ..] => Err(usage(command, &format!("extra argument {extra}"))),
         },
         _ => match positional.as_slice() {
@@ -163,6 +178,12 @@ mod tests {
     #[test]
     fn options_come_in_any_order_and_in_both_forms() {
         assert_eq!(p(&["sdk", "list"]).unwrap(), list(None));
+        assert_eq!(
+            p(&["build", "--json", "--index=i.json"]).unwrap(),
+            Command::Build {
+                index: Some("i.json".to_owned())
+            }
+        );
         assert_eq!(p(&["sdk", "list", "--json"]).unwrap(), list(None));
         assert_eq!(
             p(&["sdk", "list", "--index", "i.json"]).unwrap(),
@@ -212,7 +233,11 @@ mod tests {
     fn every_wrong_form_is_usage() {
         let cases: &[(&[&str], &str)] = &[
             (&[], ""),
-            (&["build"], ""),
+            (&["bogus"], ""),
+            (&["build", "extra"], "build"),
+            (&["build", "--index"], "build"),
+            (&["build", "--bogus"], "build"),
+            (&["build", "--json", "--json"], "build"),
             (&["sdk"], ""),
             (&["sdk", "remove", "pipos"], ""),
             (&["sdk", "doctor"], ""),
