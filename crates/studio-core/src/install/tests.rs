@@ -1168,3 +1168,125 @@ fn install_refuses_a_name_that_is_not_a_folder_on_every_system() {
     assert_eq!(r.unwrap_err().error_code(), "package: archive");
     assert_eq!(fs::read_dir(d.cache()).unwrap().count(), 0);
 }
+
+// Links of tool archives, made after every file and folder.
+
+/// True when `p` is a link the system can follow to a folder.
+#[cfg(unix)]
+fn is_dir_link(p: &Path) -> bool {
+    fs::symlink_metadata(p).unwrap().file_type().is_symlink() && p.is_dir()
+}
+
+#[cfg(unix)]
+#[test]
+fn install_a_tool_link_listed_before_its_folder() {
+    let d = Dir::new("link-first");
+    let bytes = tool_tgz(&[
+        T::Link("lib-link", "lib"),
+        T::Dir("bin/"),
+        T::Dir("lib/"),
+        T::File("lib/a", b"a"),
+    ]);
+    assert_eq!(install_tool(&d, &bytes, ""), Ok(State::Installed));
+    let dir = tool_path_of(&d);
+    assert!(is_dir_link(&dir.join("lib-link")));
+    assert_eq!(fs::read(dir.join("lib-link/a")).unwrap(), b"a");
+}
+
+#[cfg(unix)]
+#[test]
+fn install_a_tool_link_to_a_link_in_both_orders() {
+    let tail = [T::Dir("bin/"), T::Dir("lib/"), T::File("lib/a", b"a")];
+    for first in [true, false] {
+        let d = Dir::new("link-chain");
+        let (outer, inner) = (T::Link("outer", "inner"), T::Link("inner", "lib"));
+        let mut e: Vec<T<'_>> = if first {
+            vec![outer, inner]
+        } else {
+            vec![inner, outer]
+        };
+        e.extend(tail.iter().map(|t| match t {
+            T::Dir(n) => T::Dir(n),
+            T::File(n, b) => T::File(n, b),
+            T::Link(n, t) => T::Link(n, t),
+        }));
+        assert_eq!(install_tool(&d, &tool_tgz(&e), ""), Ok(State::Installed));
+        let dir = tool_path_of(&d);
+        assert!(is_dir_link(&dir.join("outer")));
+        assert_eq!(fs::read(dir.join("outer/a")).unwrap(), b"a");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn install_refuses_a_cycle_of_tool_links() {
+    let d = Dir::new("link-cycle");
+    let bytes = tool_tgz(&[T::Dir("bin/"), T::Link("bin/x", "y"), T::Link("bin/y", "x")]);
+    let m = tool_refused(&d, install_tool(&d, &bytes, ""), "tool: archive");
+    assert!(m.contains("cycle"), "{m}");
+}
+
+#[cfg(unix)]
+#[test]
+fn install_refuses_a_tool_link_to_an_unlisted_target() {
+    let d = Dir::new("link-nowhere");
+    let bytes = tool_tgz(&[T::Dir("bin/"), T::Link("bin/x", "missing")]);
+    let m = tool_refused(&d, install_tool(&d, &bytes, ""), "tool: archive");
+    assert!(m.contains("nothing"), "{m}");
+}
+
+/// The kind and order of links follow from the entries alone, on every
+/// system: whatever the order of the entries, a folder target gives a
+/// folder link, a file target a file link, and a link comes after the
+/// links its target passes through.
+#[test]
+fn links_take_the_kind_of_their_target_in_any_order() {
+    let link = |n: &str, t: &str| (n.to_owned(), Entry::Link(t.to_owned()));
+    let entries = vec![
+        link("to-dir", "lib"),
+        link("to-file", "lib/a"),
+        link("to-link", "to-dir"),
+        link("through", "to-dir/a"),
+        ("lib/".to_owned(), Entry::Dir),
+        ("lib/a".to_owned(), Entry::File(None)),
+    ];
+    let want = |n: &str, t: &str, dir: bool| Link {
+        name: n.to_owned(),
+        target: t.to_owned(),
+        dir,
+    };
+    let mut reversed = entries.clone();
+    reversed.reverse();
+    let forward = plan_links(&entries).unwrap();
+    assert_eq!(
+        forward,
+        vec![
+            want("to-dir", "lib", true),
+            want("to-file", "lib/a", false),
+            want("to-link", "to-dir", true),
+            want("through", "to-dir/a", false),
+        ]
+    );
+    let backward = plan_links(&reversed).unwrap();
+    assert_eq!(
+        backward,
+        vec![
+            want("to-dir", "lib", true),
+            want("through", "to-dir/a", false),
+            want("to-link", "to-dir", true),
+            want("to-file", "lib/a", false),
+        ]
+    );
+    let cycle = [link("x", "y"), link("y", "x")];
+    assert_eq!(
+        plan_links(&cycle).unwrap_err().error_code(),
+        "tool: archive"
+    );
+    let out = [link("x", "../up")];
+    assert_eq!(plan_links(&out).unwrap_err().error_code(), "tool: archive");
+    let nowhere = [link("x", "missing")];
+    assert_eq!(
+        plan_links(&nowhere).unwrap_err().error_code(),
+        "tool: archive"
+    );
+}
