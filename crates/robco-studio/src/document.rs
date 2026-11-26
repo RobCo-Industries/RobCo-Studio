@@ -197,12 +197,18 @@ fn write_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let (tmp, mut file) = loop {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = dir.join(format!(".{name}.save-{}.{n}", std::process::id()));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-        {
-            Ok(f) => break (tmp, f),
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        // The new text never sits in a file that others may read: the temp
+        // file starts private and gets its final bits only after the write.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        match opts.open(&tmp) {
+            Ok(f) => {
+                #[cfg(test)]
+                tests::temp_opened(&tmp);
+                break (tmp, f);
+            }
             Err(e) if e.kind() == ErrorKind::AlreadyExists && tries < 16 => tries += 1,
             Err(e) => return Err(e),
         }
@@ -212,6 +218,9 @@ fn write_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .and_then(|()| file.sync_all())
         .and_then(|()| match &perms {
             Some(p) => file.set_permissions(p.clone()),
+            #[cfg(unix)]
+            None => plain_create_perms(&dir, &name).and_then(|p| file.set_permissions(p)),
+            #[cfg(not(unix))]
             None => Ok(()),
         });
     drop(file);
@@ -222,9 +231,66 @@ fn write_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     done
 }
 
+/// The bits a plain create gives a new file in `dir` under the umask. A
+/// second, empty file is made the plain way, read and removed: this reads
+/// the umask without `unsafe`.
+#[cfg(unix)]
+fn plain_create_perms(dir: &Path, name: &str) -> std::io::Result<std::fs::Permissions> {
+    use std::io::ErrorKind;
+    let mut tries = 0;
+    loop {
+        let probe = dir.join(format!(".{name}.mode-{}.{tries}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(f) => {
+                let perms = f.metadata().map(|m| m.permissions());
+                drop(f);
+                let removed = std::fs::remove_file(&probe);
+                return perms.and_then(|p| removed.map(|()| p));
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists && tries < 16 => tries += 1,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static TMP_MODES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Test seam: record the temp file's bits as it is made, before the
+    /// text goes in.
+    pub(super) fn temp_opened(tmp: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(m) = std::fs::metadata(tmp) {
+                TMP_MODES.with(|v| v.borrow_mut().push(m.permissions().mode() & 0o777));
+            }
+        }
+        let _ = tmp;
+    }
+
+    /// Removes a test folder when the test ends, pass or fail.
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn crlf_round_trip() {
@@ -305,5 +371,37 @@ mod tests {
         let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_file_is_private_from_the_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let g = Gone(scratch("private"));
+        let f = g.0.join("secret.c");
+        std::fs::write(&f, b"old\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        TMP_MODES.with(|v| v.borrow_mut().clear());
+        write_safely(&f, b"new\n").unwrap();
+        let seen = TMP_MODES.with(|v| v.borrow().clone());
+        assert_eq!(seen, vec![0o600]);
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read(&f).unwrap(), b"new\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_file_gets_plain_create_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let g = Gone(scratch("fresh"));
+        let plain = g.0.join("plain.c");
+        std::fs::write(&plain, b"").unwrap();
+        let want = std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
+        let f = g.0.join("fresh.c");
+        write_safely(&f, b"x\n").unwrap();
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, want);
+        assert_eq!(std::fs::read_dir(&g.0).unwrap().count(), 2);
     }
 }
