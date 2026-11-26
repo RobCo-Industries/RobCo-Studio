@@ -14,7 +14,6 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use robco_studio::Studio;
 use robco_studio::app::Page;
 use robco_studio::art::{Art, Icon, Mark};
-use robco_studio::theme::Scheme;
 use std::path::{Path, PathBuf};
 
 const MANIFEST: &str = "format = 1\n\n[project]\nname = \"PIPES\"\ntitle = \"Pipes\"\nversion = \"1.0.0\"\nkind = \"holotape\"\nsubtype = \"game\"\n\n[target]\nplatform = \"pipos\"\nabi = \"1.3\"\n\n[build]\nbackend = \"robco\"\nsources = [\"src/*.c\"]\n";
@@ -118,7 +117,7 @@ fn open_main(h: &mut Harness<'static, Studio>) {
     h.run_steps(2);
 }
 
-/// The Project page with the sample project in each scheme, the Card
+/// The Project page with the sample project in each colour theme, the Card
 /// page, the compact header, the find bar, and two empty pages.
 #[test]
 #[ignore = "writes PNG files; needs a wgpu adapter"]
@@ -149,13 +148,13 @@ fn render_the_window() {
     h.state_mut().page = Page::Card;
     shot(&mut h, &dir, "window-card.png").unwrap();
     h.state_mut().page = Page::Project;
-    h.state_mut().theme.scheme = Scheme::Amber;
+    h.state_mut().pick_theme(1);
     shot(&mut h, &dir, "window-amber.png").unwrap();
-    h.state_mut().theme.scheme = Scheme::Blue;
+    h.state_mut().pick_theme(2);
     shot(&mut h, &dir, "window-blue.png").unwrap();
-    h.state_mut().theme.scheme = Scheme::White;
+    h.state_mut().pick_theme(3);
     shot(&mut h, &dir, "window-white.png").unwrap();
-    h.state_mut().theme.scheme = Scheme::Green;
+    h.state_mut().pick_theme(0);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
     h.run_steps(2);
     h.state_mut().editor.find.query = "game".into();
@@ -255,10 +254,8 @@ fn paint_sheet(ui: &mut egui::Ui, arts: &mut Option<[Art; 2]>) {
     use robco_studio::theme::{Screen, Theme, effect, text};
     let ctx = ui.ctx().clone();
     let soft = Theme::default();
-    let off = Theme {
-        screen: Screen::Off,
-        ..soft
-    };
+    let mut off = soft;
+    off.screen = Screen::Off;
     let [on_art, off_art] =
         arts.get_or_insert_with(|| [Art::new(&ctx, &soft), Art::new(&ctx, &off)]);
     let p = soft.palette();
@@ -332,31 +329,84 @@ fn render_the_art_sheet() {
     img.save(dir.join("sheet-green.png")).unwrap();
 }
 
-/// A window with the screen at `level`, its pass plugged in before the
-/// first frame on the same device as the harness's renderer, as eframe
-/// would give it.
-fn screen_harness(
-    folder: Option<&Path>,
-    ppp: f32,
-    level: robco_studio::theme::Screen,
-) -> Harness<'static, Studio> {
-    screen_harness_gpu(folder, ppp, level).0
+/// How the screen shows in a picture, and how a test gets it: the shown
+/// form follows the theme, reduce motion and the adapter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Look {
+    /// Flat: ten zeros.
+    Off,
+    /// Green with no adapter known: the still overlays.
+    Soft,
+    /// Green with reduce motion on.
+    Still,
+    /// Green.
+    Live,
+    /// Arcade.
+    Arcade,
+}
+
+impl Look {
+    const ALL: [Look; 5] = [Look::Off, Look::Soft, Look::Still, Look::Live, Look::Arcade];
+
+    fn name(self) -> &'static str {
+        match self {
+            Look::Off => "off",
+            Look::Soft => "soft",
+            Look::Still => "still",
+            Look::Live => "live",
+            Look::Arcade => "arcade",
+        }
+    }
+
+    /// The shipped theme, reduce motion, and whether the adapter is
+    /// hidden from the rules.
+    fn how(self) -> (usize, bool, bool) {
+        match self {
+            Look::Off => (5, false, false),
+            Look::Soft => (0, false, true),
+            Look::Still => (0, true, false),
+            Look::Live => (0, false, false),
+            Look::Arcade => (4, false, false),
+        }
+    }
+
+    /// The form the screen draws in this look on a real adapter.
+    fn screen(self) -> robco_studio::theme::Screen {
+        use robco_studio::theme::Screen;
+        match self {
+            Look::Off => Screen::Off,
+            Look::Soft => Screen::Soft,
+            Look::Still => Screen::Still,
+            Look::Live | Look::Arcade => Screen::Live,
+        }
+    }
+}
+
+/// A window in `look`, its pass plugged in before the first frame on the
+/// same device as the harness's renderer, as eframe would give it.
+fn screen_harness(folder: Option<&Path>, ppp: f32, look: Look) -> Harness<'static, Studio> {
+    screen_harness_gpu(folder, ppp, look).0
 }
 
 /// [`screen_harness`] and the render state its pass was made on.
 fn screen_harness_gpu(
     folder: Option<&Path>,
     ppp: f32,
-    level: robco_studio::theme::Screen,
+    look: Look,
 ) -> (Harness<'static, Studio>, eframe::egui_wgpu::RenderState) {
     use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
     use robco_studio::screen::Adapter;
     let rs = create_render_state(default_wgpu_setup(), Default::default());
-    let adapter = Adapter::of(rs.adapter.get_info().device_type);
+    let (theme, reduce, hidden) = look.how();
+    let adapter = if hidden {
+        Adapter::Unknown
+    } else {
+        Adapter::of(rs.adapter.get_info().device_type)
+    };
     let mut studio = Studio::new(folder);
     let link = studio.screen.link();
     let gpu = rs.clone();
-    studio.choose_screen(adapter, Some(false), Some(level));
+    studio.choose_screen(adapter, Some(reduce), Some(theme));
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 720.0))
         .with_pixels_per_point(ppp)
@@ -367,42 +417,59 @@ fn screen_harness_gpu(
     (h, rs)
 }
 
-/// The Project page at each screen level, three Live frames half a second
-/// apart, an open menu, an open dropdown, a tooltip and a dialog at Live,
-/// and Live at display scale 2, as `screen-*.png`, and View with high
-/// legibility on, as `menu-view-marks.png`. Into `STUDIO_SHOTS`.
+/// Make the theme in use run the pass at zero: persistence alone, so
+/// little that its afterglow ends at once, and the pass then draws every
+/// strength at 0.
+fn pass_at_zero(h: &mut Harness<'static, Studio>) {
+    use robco_studio::theme::Strengths;
+    h.state_mut().edit_theme(|t| {
+        t.moves = true;
+        t.strengths = Strengths {
+            persistence: 0.01,
+            ..Strengths::NONE
+        };
+    });
+}
+
+/// The Project page in each look, three Live frames half a second apart,
+/// an open menu, an open dropdown, a tooltip and a dialog at Live, and Live
+/// at display scale 2, as `screen-*.png`, and View with high legibility on,
+/// as `menu-view-marks.png`. Into `STUDIO_SHOTS`.
 #[test]
 #[ignore = "writes PNG files; needs a wgpu adapter"]
 fn render_the_screen_levels() {
     use egui_kittest::kittest::NodeT;
-    use robco_studio::theme::Screen;
     let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
     let d = sample("screen").unwrap();
-    for level in Screen::ALL {
-        let mut h = screen_harness(Some(&d), 1.0, level);
-        assert_eq!(h.state().theme.screen, level, "no hardware adapter here");
+    for look in Look::ALL {
+        let mut h = screen_harness(Some(&d), 1.0, look);
+        assert_eq!(
+            h.state().theme.screen,
+            look.screen(),
+            "no hardware adapter here"
+        );
         open_main(&mut h);
-        let name = format!("screen-{}.png", level.name().to_lowercase());
+        let name = format!("screen-{}.png", look.name());
         shot(&mut h, &dir, &name).unwrap();
     }
-    let mut h = screen_harness(Some(&d), 1.0, Screen::Live);
+    let mut h = screen_harness(Some(&d), 1.0, Look::Live);
     open_main(&mut h);
     for i in 0..3 {
         // Two steps of a quarter second each.
         shot(&mut h, &dir, &format!("screen-live-{i}.png")).unwrap();
         h.run_steps(2);
     }
-    // An open menu, with its Screen submenu.
+    // An open menu, with its Theme submenu.
     h.query_all_by_label("View")
         .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
         .unwrap()
         .click();
     h.run_steps(2);
     let sub = h
-        .query_all_by_label("Screen")
+        .query_all_by_label("Theme")
         .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
         .unwrap()
         .rect();
@@ -434,7 +501,8 @@ fn render_the_screen_levels() {
     shot(&mut h, &dir, "screen-live-dialog.png").unwrap();
     h.state_mut().screen.adjusting = false;
     h.run_steps(2);
-    // View with high legibility on: its mark, and Off's in Screen.
+    // View with high legibility on: its mark, Green's in Theme, and the
+    // note that high legibility holds the theme.
     h.state_mut().theme.high_legibility = true;
     h.run_steps(2);
     h.query_all_by_label("View")
@@ -443,7 +511,7 @@ fn render_the_screen_levels() {
         .click();
     h.run_steps(2);
     let sub = h
-        .query_all_by_label("Screen")
+        .query_all_by_label("Theme")
         .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
         .unwrap()
         .rect();
@@ -451,34 +519,38 @@ fn render_the_screen_levels() {
     h.run_steps(3);
     shot(&mut h, &dir, "menu-view-marks.png").unwrap();
     drop(h);
-    let mut h = screen_harness(Some(&d), 2.0, Screen::Live);
+    let mut h = screen_harness(Some(&d), 2.0, Look::Live);
     open_main(&mut h);
     shot(&mut h, &dir, "screen-live-2x.png").unwrap();
 }
 
-/// A level entered from another draws as the same level entered at start:
-/// Soft from Live keeps the drawings' halos and the scanline quad, Off from
-/// Soft drops them. Neither level runs the pass, so pixel for pixel.
+/// A theme entered from another draws as the same theme entered at start,
+/// with no adapter known: Green, at Soft, entered from Flat gains the
+/// drawings' halos and the scanline quad, and Flat, at Off, entered from
+/// Green drops them. Neither runs the pass, so pixel for pixel.
 #[test]
 #[ignore = "needs a wgpu adapter"]
-fn a_level_entered_later_draws_as_at_start() {
-    use robco_studio::menus::Command;
+fn a_theme_entered_later_draws_as_at_start() {
+    use robco_studio::menus::{Command, ThemeId};
     use robco_studio::theme::Screen;
     let d = sample("entered").unwrap();
     let dir = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from);
-    for (from, to) in [(Screen::Live, Screen::Soft), (Screen::Soft, Screen::Off)] {
-        let picture = |first: Screen| {
-            let mut h = screen_harness(Some(&d), 1.0, first);
-            assert_eq!(h.state().theme.screen, first, "no hardware adapter here");
+    let shown = |t: usize| if t == 0 { Screen::Soft } else { Screen::Off };
+    for (from, to) in [(5, 0), (0, 5)] {
+        let picture = |first: usize| {
+            let mut h = screen_harness(Some(&d), 1.0, Look::Soft);
+            if first != 0 {
+                h.state_mut().pick_theme(first);
+                h.run_steps(2);
+            }
+            assert_eq!(h.state().theme.screen, shown(first));
             open_main(&mut h);
             if first != to {
-                h.state_mut().pending.push(Command::Screen(to));
+                h.state_mut().pending.push(Command::Theme(ThemeId::At(to)));
             }
             h.run_steps(4);
-            assert_eq!(h.state().theme.screen, to);
+            assert_eq!(h.state().theme.screen, shown(to));
             h.state_mut().status.1 = "Ready.".to_owned();
-            // The click on main.c went through Live's curve; the same place
-            // for the pointer in both pictures.
             h.hover_at(egui::pos2(900.0, 500.0));
             h.run_steps(4);
             h.render().unwrap()
@@ -487,7 +559,12 @@ fn a_level_entered_later_draws_as_at_start() {
         let later = picture(from);
         if let Some(dir) = &dir {
             std::fs::create_dir_all(dir).unwrap();
-            let name = format!("screen-{}-from-{}.png", to.name(), from.name()).to_lowercase();
+            let name = format!(
+                "screen-{}-from-{}.png",
+                shown(to).name(),
+                shown(from).name()
+            )
+            .to_lowercase();
             later.save(dir.join(name)).unwrap();
         }
         assert_eq!(start.dimensions(), later.dimensions());
@@ -516,17 +593,18 @@ fn a_level_entered_later_draws_as_at_start() {
 #[test]
 #[ignore = "needs a wgpu adapter"]
 fn the_pass_at_zero_draws_what_egui_draws() {
-    use robco_studio::theme::{Screen, Strengths};
+    use robco_studio::theme::Screen;
     let d = sample("zero").unwrap();
-    let mut off = screen_harness(Some(&d), 1.0, Screen::Off);
+    let mut off = screen_harness(Some(&d), 1.0, Look::Off);
     open_main(&mut off);
     off.run_steps(4);
     let flat = off.render().unwrap();
-    let mut pass = screen_harness(Some(&d), 1.0, Screen::Still);
-    if pass.state().theme.screen != Screen::Still {
+    let mut pass = screen_harness(Some(&d), 1.0, Look::Live);
+    if pass.state().theme.screen != Screen::Live {
         return; // A software adapter: no pass to compare.
     }
-    pass.state_mut().screen.strengths = Strengths::NONE;
+    pass_at_zero(&mut pass);
+    pass.state_mut().status.1 = off.state().status.1.clone();
     open_main(&mut pass);
     pass.run_steps(4);
     let through = pass.render().unwrap();
@@ -539,8 +617,7 @@ fn the_pass_at_zero_draws_what_egui_draws() {
     }
     assert!(differ < 50, "{differ} pixels differ, by up to {worst}");
     // Live: the corner is outside the curve, black.
-    pass.state_mut().screen.strengths = Screen::Live.strengths();
-    pass.state_mut().theme.screen = Screen::Live;
+    pass.state_mut().pick_theme(0);
     pass.run_steps(2);
     let live = pass.render().unwrap();
     for (x, y) in [(0, 0), (1279, 0), (0, 719), (1279, 719)] {
@@ -557,13 +634,12 @@ fn the_pass_at_zero_draws_what_egui_draws() {
 fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
     use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
     use robco_studio::screen::{Adapter, Settings};
-    use robco_studio::theme::{Screen, Strengths};
+    use robco_studio::theme::{Screen, Strengths, crt};
     let rs = create_render_state(default_wgpu_setup(), Default::default());
     if Adapter::of(rs.adapter.get_info().device_type) != Adapter::Hardware {
         return; // A software adapter: no pass.
     }
-    let mut settings = Settings::default();
-    settings.strengths = Strengths::NONE;
+    let settings = Settings::default();
     let link = settings.link();
     let gpu = rs.clone();
     let spot = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(64.0, 64.0));
@@ -584,11 +660,10 @@ fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
                     egui::Color32::WHITE,
                 );
                 drop(tex);
-                let theme = robco_studio::theme::Theme {
-                    screen: Screen::Still,
-                    ..Default::default()
-                };
-                let drawn = s.drawn(theme);
+                let mut theme = robco_studio::theme::Theme::default();
+                theme.screen = Screen::Still;
+                theme.strengths = Strengths::NONE;
+                let drawn = s.drawn(theme, crt::RATE);
                 s.end_frame(&ctx, &drawn);
             },
             settings,
@@ -606,13 +681,13 @@ fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
 #[test]
 #[ignore = "needs a wgpu adapter"]
 fn a_second_plug_keeps_the_pass() {
-    use robco_studio::theme::{Screen, Strengths};
+    use robco_studio::theme::Screen;
     let d = sample("replug").unwrap();
-    let (mut h, rs) = screen_harness_gpu(Some(&d), 1.0, Screen::Still);
-    if h.state().theme.screen != Screen::Still {
+    let (mut h, rs) = screen_harness_gpu(Some(&d), 1.0, Look::Live);
+    if h.state().theme.screen != Screen::Live {
         return; // A software adapter: no pass.
     }
-    h.state_mut().screen.strengths = Strengths::NONE;
+    pass_at_zero(&mut h);
     open_main(&mut h);
     h.run_steps(4);
     let before = h.render().unwrap();
@@ -732,34 +807,38 @@ fn the_afterglow_starts_empty_when_the_pass_resumes() {
     );
 }
 
-/// A frame is shaded by the level it was drawn for. A command that
-/// switches Soft to Live in the middle of a frame leaves that frame a
-/// plain Soft frame, with no pass over Soft's halos and scanline quad; the
-/// next frame is a plain Live frame. And the reverse. Live's moving
-/// strengths and persistence are zero, so the pictures compare exactly.
+/// A frame is shaded by the theme it was drawn for. A command that
+/// switches Flat, at Off, to a theme at Live in the middle of a frame
+/// leaves that frame a plain Off frame, with no pass; the next frame is a
+/// plain Live frame. And the reverse. The Live theme's moving strengths
+/// and persistence are zero, so the pictures compare exactly.
 #[test]
 #[ignore = "needs a wgpu adapter"]
-fn a_frame_is_shaded_by_the_level_that_drew_it() {
-    use robco_studio::menus::Command;
-    use robco_studio::theme::{Screen, Strengths};
-    let still_live = Strengths {
-        noise: 0.0,
-        flicker: 0.0,
-        band: 0.0,
-        scanlines: 0.0,
-        persistence: 0.0,
-        ..Screen::Live.strengths()
+fn a_frame_is_shaded_by_the_theme_that_drew_it() {
+    use robco_studio::menus::{Command, ThemeId};
+    use robco_studio::theme::{SHIPPED, Screen, Spec, Strengths, crt};
+    const FLAT: usize = 5;
+    // The theme at Live, added after the six.
+    const STILL_LIVE: usize = 6;
+    let still_live = Spec {
+        name: "Calm".into(),
+        strengths: Strengths {
+            scanlines: 0.0,
+            ..crt::LIVE.still()
+        },
+        ..SHIPPED[0].clone()
     };
-    let settle = |h: &mut Harness<'static, Studio>, level: Screen| {
-        if level == Screen::Live {
-            h.state_mut().screen.strengths = still_live;
-        }
+    let harness_at = |theme: usize| {
+        let mut h = screen_harness(None, 1.0, Look::Live);
+        h.state_mut().themes.push(still_live.clone());
+        h.state_mut().pick_theme(theme);
         h.run_steps(3);
+        h
     };
-    // A plain frame at `level`, with `status` in the footer.
-    let plain = |level: Screen, status: &(robco_studio::kit::Level, String)| {
-        let mut h = screen_harness(None, 1.0, level);
-        settle(&mut h, level);
+    let level = |t: usize| if t == FLAT { Screen::Off } else { Screen::Live };
+    // A plain frame in `theme`, with `status` in the footer.
+    let plain = |theme: usize, status: &(robco_studio::kit::Level, String)| {
+        let mut h = harness_at(theme);
         h.state_mut().status = status.clone();
         h.step();
         h.render().unwrap()
@@ -768,25 +847,21 @@ fn a_frame_is_shaded_by_the_level_that_drew_it() {
         assert_eq!(a.len(), b.len());
         a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count()
     };
-    for (from, to) in [(Screen::Soft, Screen::Live), (Screen::Live, Screen::Soft)] {
-        let mut h = screen_harness(None, 1.0, from);
-        if h.state().theme.screen != from {
+    for (from, to) in [(FLAT, STILL_LIVE), (STILL_LIVE, FLAT)] {
+        let mut h = harness_at(from);
+        if h.state().theme.screen != level(from) {
             return; // A software adapter: no pass.
         }
-        settle(&mut h, from);
-        h.state_mut().pending.push(Command::Screen(to));
+        h.state_mut().pending.push(Command::Theme(ThemeId::At(to)));
         h.step();
         let mid = h.render().unwrap();
         let status = h.state().status.clone();
-        assert_eq!(h.state().theme.screen, to);
+        assert_eq!(h.state().theme.screen, level(to));
         let n = differ(mid.as_raw(), plain(from, &status).as_raw());
         assert_eq!(
             n, 0,
             "{from:?} to {to:?}: the switch frame is not {from:?}'s"
         );
-        if to == Screen::Live {
-            h.state_mut().screen.strengths = still_live;
-        }
         h.step();
         let next = h.render().unwrap();
         let n = differ(next.as_raw(), plain(to, &status).as_raw());

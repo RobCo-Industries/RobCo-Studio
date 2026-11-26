@@ -1288,27 +1288,18 @@ mod replace_tests {
         assert_eq!(c, 6);
     }
 
-    /// A scheme change recolours the code even when the text colour and
+    /// A theme change recolours the code even when the text colour and
     /// the font stay the same, as they do with high legibility on.
     #[test]
-    fn scheme_change_recolours_cached_code() {
+    fn theme_change_recolours_cached_code() {
         use super::{Editor, Theme};
         let mut e = Editor::default();
-        let mut t = Theme {
-            high_legibility: true,
-            ..Theme::default()
-        };
+        let mut t = Theme::default();
+        t.high_legibility = true;
+        let green_bright = t.palette().bright;
         let green = e.layout_job(&t, 1, true, "int x;");
-        t.scheme = crate::theme::Scheme::Amber;
-        assert_eq!(
-            green.sections[0].format.color,
-            Theme {
-                scheme: crate::theme::Scheme::Green,
-                ..t
-            }
-            .palette()
-            .bright
-        );
+        t.set_base(crate::theme::AMBER.bright);
+        assert_eq!(green.sections[0].format.color, green_bright);
         let amber = e.layout_job(&t, 1, true, "int x;");
         assert_eq!(amber.sections[0].format.color, t.palette().bright);
         assert_ne!(t.palette().bright, green.sections[0].format.color);

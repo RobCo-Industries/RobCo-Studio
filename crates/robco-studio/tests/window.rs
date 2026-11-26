@@ -1669,14 +1669,20 @@ fn an_eight_character_name_stays_inside_the_tape_label() {
     assert_eq!(label.accesskit_node().role(), Role::Image);
 }
 
-/// The window with a real adapter as far as the rules know, at `level`. No
-/// GPU here: the pass does not draw, but every rule around it holds.
-fn screen_at(level: robco_studio::theme::Screen) -> Harness<'static, Studio> {
+/// The places of the themes that ship.
+const GREEN: usize = 0;
+const ARCADE: usize = 4;
+const FLAT: usize = 5;
+
+/// The window with a real adapter as far as the rules know, in the theme
+/// that ships at place `theme`, with reduce motion `reduce`. No GPU here:
+/// the pass does not draw, but every rule around it holds.
+fn themed(theme: usize, reduce: bool) -> Harness<'static, Studio> {
     let mut s = Studio::new(None);
     s.choose_screen(
         robco_studio::screen::Adapter::Hardware,
-        Some(false),
-        Some(level),
+        Some(reduce),
+        Some(theme),
     );
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 720.0))
@@ -1685,22 +1691,24 @@ fn screen_at(level: robco_studio::theme::Screen) -> Harness<'static, Studio> {
     h
 }
 
-/// Open View, Screen and read each level's item: available, and checked.
-/// None when the menu or an item is missing.
-fn screen_items(h: &mut Harness<'static, Studio>) -> Option<Vec<(String, bool, bool)>> {
+/// The six names of the themes that ship.
+const SIX: [&str; 6] = ["Green", "Amber", "Blue", "White", "Arcade", "Flat"];
+
+/// Open View, Theme and read each theme's row: available, and checked.
+/// None when the menu or a row is missing.
+fn theme_rows(h: &mut Harness<'static, Studio>) -> Option<Vec<(String, bool, bool)>> {
     use egui::accesskit::Toggled;
     h.query_all_by_label("View")
         .find(|n| n.accesskit_node().role() == Role::MenuItem)?
         .click();
     h.run_steps(2);
     let sub = h
-        .query_all_by_label("Screen")
+        .query_all_by_label("Theme")
         .find(|n| n.accesskit_node().role() == Role::MenuItem)?
         .rect();
     h.hover_at(sub.center());
     h.run_steps(3);
-    ["Off", "Soft", "Still", "Live", "Arcade"]
-        .iter()
+    SIX.iter()
         .map(|l| {
             let n = h
                 .query_all_by_label(l)
@@ -1716,53 +1724,60 @@ fn screen_items(h: &mut Harness<'static, Studio>) -> Option<Vec<(String, bool, b
 }
 
 #[test]
-fn the_screen_menu_shows_the_levels_and_the_choice() {
+fn the_theme_menu_shows_the_themes_and_the_choice() {
     use robco_studio::theme::Screen;
-    // No adapter: the pass levels say why they are not there.
+    // No adapter: every theme is there, Green is marked, and a note says
+    // what holds it.
     let mut h = harness(None);
-    let items = screen_items(&mut h).unwrap();
-    let on: Vec<_> = items.iter().map(|(_, on, _)| *on).collect();
-    assert_eq!(on, [true, true, false, false, false]);
-    let checked: Vec<_> = items.iter().map(|(_, _, c)| *c).collect();
-    assert_eq!(checked, [false, true, false, false, false]);
-    let still = h
-        .query_all_by_label("Still")
-        .find(|n| n.accesskit_node().role() == Role::MenuItemRadio)
+    let rows = theme_rows(&mut h).unwrap();
+    assert!(rows.iter().all(|(_, on, _)| *on), "{rows:?}");
+    let checked: Vec<_> = rows.iter().map(|(_, _, c)| *c).collect();
+    assert_eq!(checked, [true, false, false, false, false, false]);
+    let note = h
+        .query_all_by_label(robco_studio::theme::HELD_SIMPLER)
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)
         .unwrap();
-    assert_eq!(
-        still.accesskit_node().description().as_deref(),
-        Some(robco_studio::screen::NO_ADAPTER)
-    );
-    // Off from the menu.
-    h.query_all_by_label("Off")
+    assert!(note.accesskit_node().is_disabled());
+    for row in ["Edit theme", "Add a theme file", "Show the themes folder"] {
+        assert!(menu_item(&h, row).is_some(), "{row}");
+    }
+    // Flat from the menu.
+    h.query_all_by_label("Flat")
         .find(|n| n.accesskit_node().role() == Role::MenuItemRadio)
         .unwrap()
         .click();
     h.run_steps(2);
-    assert_eq!(h.state().theme.screen, Screen::Off);
-    assert_eq!(h.state().status.1, "Screen: Off.");
+    assert_eq!(h.state().current, FLAT);
+    assert_eq!(h.state().theme.screen(), Screen::Off);
+    assert_eq!(h.state().status.1, "Theme: Flat.");
 
-    // With an adapter, Live by default, and every level there.
-    let mut h = screen_at(Screen::Live);
-    let items = screen_items(&mut h).unwrap();
-    assert!(items.iter().all(|(_, on, _)| *on));
-    assert!(items[3].2, "{items:?}");
+    // With an adapter, Green at Live, and no note.
+    let mut h = themed(GREEN, false);
+    let rows = theme_rows(&mut h).unwrap();
+    assert!(rows[0].2, "{rows:?}");
+    assert_eq!(h.state().theme.screen(), Screen::Live);
+    assert!(h.query_all_by_label_contains("Shown ").next().is_none());
 }
 
 #[test]
-fn high_legibility_forces_the_screen_off() {
+fn high_legibility_holds_the_theme_flat() {
     use robco_studio::theme::Screen;
-    let mut h = screen_at(Screen::Arcade);
+    let mut h = themed(ARCADE, false);
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
     h.run_steps(2);
     assert!(h.state().theme.high_legibility);
     assert_eq!(h.state().theme.screen(), Screen::Off);
-    let items = screen_items(&mut h).unwrap();
-    let on: Vec<_> = items.iter().map(|(_, on, _)| *on).collect();
-    assert_eq!(on, [true, false, false, false, false]);
-    assert!(items[0].2, "Off is the choice: {items:?}");
-    // No curve while it is off.
+    let rows = theme_rows(&mut h).unwrap();
+    assert!(rows.iter().all(|(_, on, _)| *on));
+    assert!(rows[ARCADE].2, "Arcade stays the choice: {rows:?}");
+    assert!(
+        h.query_all_by_label(robco_studio::theme::HELD_FLAT)
+            .next()
+            .is_some()
+    );
+    // No curve while it is held.
     assert!(h.state().theme.halo().is_none());
+    assert_eq!(h.state().spec().strengths, robco_studio::theme::crt::ARCADE);
 }
 
 /// A click where the curved screen draws a tab lands on that tab. The
@@ -1770,24 +1785,23 @@ fn high_legibility_forces_the_screen_off() {
 #[test]
 fn a_click_on_the_curve_lands_where_it_is_drawn() {
     use robco_studio::screen::drawn_at;
-    use robco_studio::theme::Screen;
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
     // Where the tab is laid out: the tree follows the curve, so read it
     // with no curve.
-    let tab = screen_at(Screen::Soft)
+    let tab = themed(FLAT, false)
         .query_all_by_label("Card")
         .find(|n| n.accesskit_node().role() == Role::Tab)
         .unwrap()
         .rect();
-    let click = |level: Screen| {
-        let mut h = screen_at(level);
+    let click = |theme: usize| {
+        let mut h = themed(theme, false);
         // egui grows a hit area by 5 points, which hides a small miss.
         h.ctx
             .all_styles_mut(|s| s.interaction.interact_radius = 0.0);
         h.run_steps(2);
         // The bottom edge of the tab, which the curve draws lower.
         let target = egui::pos2(tab.center().x, tab.max.y - 1.5);
-        let glass = drawn_at(target, screen, Screen::Arcade.strengths().curvature);
+        let glass = drawn_at(target, screen, robco_studio::theme::crt::ARCADE.curvature);
         assert!((glass - target).length() > 3.0, "the curve moved nothing");
         h.hover_at(glass);
         h.run_steps(1);
@@ -1803,17 +1817,17 @@ fn a_click_on_the_curve_lands_where_it_is_drawn() {
         h.run_steps(1);
         h.state().page
     };
-    assert_eq!(click(Screen::Arcade), Page::Card);
-    assert_eq!(click(Screen::Soft), Page::Project);
+    assert_eq!(click(ARCADE), Page::Card);
+    assert_eq!(click(FLAT), Page::Project);
 }
 
 #[test]
 fn adjust_moves_a_strength_and_reset_brings_it_back() {
-    use robco_studio::theme::Screen;
-    let mut h = screen_at(Screen::Live);
+    use robco_studio::theme::crt;
+    let mut h = themed(GREEN, false);
     h.state_mut()
         .pending
-        .push(robco_studio::menus::Command::ScreenAdjust);
+        .push(robco_studio::menus::Command::ThemeEdit);
     h.run_steps(2);
     assert!(h.state().screen.adjusting);
     let bloom = h
@@ -1822,22 +1836,26 @@ fn adjust_moves_a_strength_and_reset_brings_it_back() {
         .unwrap();
     bloom.set_value_accesskit(0.9);
     h.run_steps(2);
-    assert!((h.state().screen.strengths.bloom - 0.9).abs() < 1e-6);
-    assert!(h.state().screen_custom());
-    assert_eq!(h.state().status.1, "Screen: Custom.");
+    assert!((h.state().spec().strengths.bloom - 0.9).abs() < 1e-6);
+    assert!(h.state().changed.is_some());
+    assert_eq!(h.state().status.1, "Theme: Green, changed. Not saved.");
+    assert!(shown(&h, "Green, changed"));
+    // The theme that ships keeps its numbers.
+    assert_eq!(h.state().themes[GREEN].strengths, crt::LIVE);
     // The simulator's Reset is not in this release: the dialog's is.
     h.query_all_by_label("Reset")
         .find(|n| !n.accesskit_node().is_disabled())
         .unwrap()
         .click();
     h.run_steps(2);
-    assert_eq!(h.state().screen.strengths, Screen::Live.strengths());
-    assert!(!h.state().screen_custom());
-    assert_eq!(h.state().status.1, "Screen: Live.");
+    assert_eq!(h.state().spec().strengths, crt::LIVE);
+    assert!(h.state().changed.is_none());
+    assert_eq!(h.state().status.1, "Theme: Green.");
     // The frame rate choice.
     h.get_by_label("60").click();
     h.run_steps(2);
-    assert_eq!(h.state().screen.rate, 60);
+    assert_eq!(h.state().spec().rate, 60);
+    assert!(h.state().changed.is_some());
     h.get_by_label("Close").click();
     h.run_steps(2);
     assert!(!h.state().screen.adjusting);
@@ -1856,19 +1874,26 @@ fn repaint_asked(h: &Harness<'static, Studio>) -> Option<std::time::Duration> {
 #[test]
 fn only_a_focused_live_screen_asks_for_frames() {
     use robco_studio::theme::Screen;
-    for level in [Screen::Off, Screen::Soft, Screen::Still] {
-        let mut h = screen_at(level);
+    // Off, Soft with no adapter, Still by reduce motion.
+    let mut soft = harness(None);
+    soft.run_steps(2);
+    for (mut h, level) in [
+        (themed(FLAT, false), Screen::Off),
+        (soft, Screen::Soft),
+        (themed(GREEN, true), Screen::Still),
+    ] {
+        assert_eq!(h.state().theme.screen(), level);
         h.run_steps(4);
         assert_eq!(repaint_asked(&h), None, "{level:?}");
     }
-    let mut h = screen_at(Screen::Live);
+    let mut h = themed(GREEN, false);
     h.run_steps(4);
     let d = repaint_asked(&h).unwrap();
     assert!(d <= std::time::Duration::from_secs(1) / 30, "{d:?}");
     // Without persistence: the harness counts some of its own frames as a
     // change, and the afterglow then never ends. The afterglow has its own
     // tests on the clock.
-    h.state_mut().screen.strengths.persistence = 0.0;
+    h.state_mut().edit_theme(|t| t.strengths.persistence = 0.0);
     h.input_mut().focused = false;
     h.run_steps(4);
     assert_eq!(repaint_asked(&h), None);
@@ -1892,18 +1917,23 @@ fn settle(h: &mut Harness<'static, Studio>, max: u32) -> u32 {
 #[test]
 fn persistence_alone_asks_for_frames_after_a_change_then_stops() {
     use robco_studio::screen::Adapter;
-    use robco_studio::theme::{Screen, Strengths};
+    use robco_studio::theme::{Strengths, crt};
     for persistence in [0.0, 1.0] {
         let mut h = Harness::builder()
             .with_size(egui::vec2(1280.0, 720.0))
             .with_step_dt(1.0 / 30.0)
             .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(None));
         let s = h.state_mut();
-        s.choose_screen(Adapter::Hardware, Some(false), Some(Screen::Still));
-        s.screen.strengths = Strengths {
-            persistence,
-            ..Screen::Still.strengths()
-        };
+        s.choose_screen(Adapter::Hardware, Some(false), Some(GREEN));
+        // A theme that does not move draws no persistence: this one moves,
+        // with persistence the one moving strength.
+        s.edit_theme(|t| {
+            t.strengths = Strengths {
+                persistence,
+                scanlines: 0.0,
+                ..crt::LIVE.still()
+            };
+        });
         assert!(settle(&mut h, 300) < 300, "{persistence}: settles at start");
         h.hover_at(egui::pos2(640.0, 400.0));
         let n = settle(&mut h, 300);
@@ -1923,19 +1953,20 @@ fn persistence_alone_asks_for_frames_after_a_change_then_stops() {
 #[test]
 fn the_tree_follows_the_curve() {
     use robco_studio::screen::{Adapter, drawn_at, map_pointer};
-    use robco_studio::theme::Screen;
     let d = sample("curve").unwrap();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
-    for level in [Screen::Live, Screen::Arcade] {
+    for level in [GREEN, ARCADE] {
         let at = |curvature: f32| {
             let mut h = harness(Some(&*d));
             let s = h.state_mut();
             s.choose_screen(Adapter::Hardware, Some(false), Some(level));
-            s.screen.strengths.curvature = curvature;
+            s.edit_theme(|t| t.strengths.curvature = curvature);
+            // The same footer for both: the change's news is not drawn.
+            s.status.1 = "Ready".into();
             h.run_steps(3);
             h
         };
-        let curvature = level.strengths().curvature;
+        let curvature = robco_studio::theme::SHIPPED[level].strengths.curvature;
         assert!(curvature > 0.0);
         let flat = at(0.0);
         let curved = at(curvature);
@@ -1990,7 +2021,7 @@ fn live_with_fake(folder: &Path) -> Harness<'static, Studio> {
     s.choose_screen(
         robco_studio::screen::Adapter::Hardware,
         Some(false),
-        Some(robco_studio::theme::Screen::Live),
+        Some(GREEN),
     );
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 720.0))
@@ -2016,7 +2047,7 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
     let mut h = live_with_fake(&a);
     h.state_mut()
         .pending
-        .push(robco_studio::menus::Command::ScreenAdjust);
+        .push(robco_studio::menus::Command::ThemeEdit);
     h.run_steps(2);
     let bloom = h
         .query_all_by_label("Bloom")
@@ -2024,7 +2055,7 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
         .unwrap();
     bloom.set_value_accesskit(0.9);
     h.run_steps(2);
-    let before = h.state().screen.strengths;
+    let before = h.state().spec().strengths;
     assert!((before.bloom - 0.9).abs() < 1e-6);
     press_open(&mut h);
     assert!(h.state().choosing());
@@ -2068,12 +2099,12 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
         .unwrap()
         .click_accesskit();
     h.run_steps(2);
-    assert_eq!(h.state().screen.strengths, before, "the dialog took input");
+    assert_eq!(h.state().spec().strengths, before, "the dialog took input");
     assert!(h.state().screen.adjusting, "Close acted");
     // A click on View opens no menu.
     menu_item(&h, "View").unwrap().click();
     h.run_steps(3);
-    assert!(menu_item(&h, "Screen").is_none(), "a menu opened");
+    assert!(menu_item(&h, "Theme").is_none(), "a menu opened");
 }
 
 /// The Bloom slider of the Adjust dialog, open on a window at Live whose
@@ -2084,7 +2115,7 @@ fn adjust_with_fake(folder: &Path) -> (Harness<'static, Studio>, Fake, egui::Rec
     s.choose_screen(
         robco_studio::screen::Adapter::Hardware,
         Some(false),
-        Some(robco_studio::theme::Screen::Live),
+        Some(GREEN),
     );
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 720.0))
@@ -2092,7 +2123,7 @@ fn adjust_with_fake(folder: &Path) -> (Harness<'static, Studio>, Fake, egui::Rec
     h.run_steps(3);
     h.state_mut()
         .pending
-        .push(robco_studio::menus::Command::ScreenAdjust);
+        .push(robco_studio::menus::Command::ThemeEdit);
     h.run_steps(2);
     let r = bloom(&h).map_or(egui::Rect::NOTHING, |n| n.rect());
     (h, fake, r)
@@ -2127,7 +2158,7 @@ fn a_press_held_over_the_chooser_ends_with_no_click() {
     });
     h.run_steps(1);
     // A slider follows a press at once: the value from here on must hold.
-    let before = h.state().screen.strengths;
+    let before = h.state().spec().strengths;
     press_open(&mut h);
     assert!(h.state().choosing());
     h.event(Event::PointerButton {
@@ -2148,7 +2179,7 @@ fn a_press_held_over_the_chooser_ends_with_no_click() {
     h.event(Event::PointerMoved(r.center()));
     h.run_steps(2);
     assert_eq!(
-        h.state().screen.strengths,
+        h.state().spec().strengths,
         before,
         "a click or a drag acted"
     );
@@ -2172,7 +2203,7 @@ fn a_key_held_over_the_chooser_does_not_repeat() {
         });
         h.run_steps(2);
     };
-    let bloom_now = |h: &Harness<'static, Studio>| h.state().screen.strengths.bloom;
+    let bloom_now = |h: &Harness<'static, Studio>| h.state().spec().strengths.bloom;
     let start = bloom_now(&h);
     key(&mut h, true, false);
     let pressed = bloom_now(&h);
@@ -2214,7 +2245,7 @@ fn a_key_released_in_the_chooser_acts_on_its_next_press() {
         });
         h.run_steps(2);
     };
-    let bloom_now = |h: &Harness<'static, Studio>| h.state().screen.strengths.bloom;
+    let bloom_now = |h: &Harness<'static, Studio>| h.state().spec().strengths.bloom;
     key(&mut h, true, false);
     let held = bloom_now(&h);
     press_open(&mut h);
@@ -2238,13 +2269,13 @@ fn the_chooser_closes_an_open_menu() {
     let mut h = live_with_fake(&a);
     menu_item(&h, "View").unwrap().click();
     h.run_steps(3);
-    assert!(menu_item(&h, "Screen").is_some(), "View is open");
+    assert!(menu_item(&h, "Theme").is_some(), "View is open");
     h.state_mut()
         .pending
         .push(robco_studio::menus::Command::OpenFolder);
     h.run_steps(3);
     assert!(h.state().choosing());
-    assert!(menu_item(&h, "Screen").is_none(), "the menu stayed open");
+    assert!(menu_item(&h, "Theme").is_none(), "the menu stayed open");
 }
 
 /// A window started on `folder` with the screen chosen for `adapter` and
@@ -2279,8 +2310,8 @@ fn a_start_error_keeps_the_line_over_the_screen_note() {
     let error = Studio::new(Some(&gone)).status;
     assert_eq!(error.0, Level::Error);
     for (adapter, reduce, word) in [
-        (Adapter::Software, false, "Screen: Soft."),
-        (Adapter::Hardware, true, "Screen: Still."),
+        (Adapter::Software, false, "Theme: Green, shown without it."),
+        (Adapter::Hardware, true, "Theme: Green, shown still."),
     ] {
         let mut h = started(&gone, adapter, reduce);
         assert_eq!(h.state().status, error);
@@ -2296,7 +2327,10 @@ fn a_good_start_shows_the_screen_note() {
     let a = pipes("start-soft").unwrap();
     let h = started(&a, robco_studio::screen::Adapter::Software, false);
     assert!(
-        h.state().status.1.ends_with("Screen: Soft."),
+        h.state()
+            .status
+            .1
+            .ends_with("Theme: Green, shown without it."),
         "{:?}",
         h.state().status
     );
@@ -2331,7 +2365,7 @@ fn adjusting(tag: &str) -> Option<(Sample, Harness<'static, Studio>)> {
     s.choose_screen(
         robco_studio::screen::Adapter::Hardware,
         Some(false),
-        Some(robco_studio::theme::Screen::Live),
+        Some(GREEN),
     );
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 720.0))
@@ -2341,7 +2375,7 @@ fn adjusting(tag: &str) -> Option<(Sample, Harness<'static, Studio>)> {
     h.state_mut().editor.docs[0].text.insert(0, 'x');
     h.state_mut()
         .pending
-        .push(robco_studio::menus::Command::ScreenAdjust);
+        .push(robco_studio::menus::Command::ThemeEdit);
     h.run_steps(3);
     (h.state().front() == Front::Adjust).then_some((d, h))
 }
@@ -2354,9 +2388,9 @@ const ASK_CLOSE: &str = "Save src/main.c before closing?";
 const ASK_QUIT: &str = ASK_CLOSE;
 
 fn adjust_item() -> Option<robco_studio::menus::Item> {
-    robco_studio::menus::screen_items()
+    robco_studio::menus::theme_items(&robco_studio::theme::SHIPPED, None, &[])
         .into_iter()
-        .find(|i| i.command == robco_studio::menus::Command::ScreenAdjust)
+        .find(|i| i.command == robco_studio::menus::Command::ThemeEdit)
 }
 
 /// Adjust is modal: closing a tab behind it does nothing at all.
@@ -2387,7 +2421,7 @@ fn adjust_is_modal_and_close_tab_waits() {
 #[test]
 fn a_question_beats_adjust_and_adjust_comes_back() {
     let (_d, mut h) = adjusting("adjust-question").unwrap();
-    let strengths = h.state().screen.strengths;
+    let strengths = h.state().spec().strengths;
     for answer_by_click in [false, true] {
         h.key_press_modifiers(Modifiers::COMMAND, Key::Q);
         h.run_steps(2);
@@ -2411,7 +2445,7 @@ fn a_question_beats_adjust_and_adjust_comes_back() {
         assert!(!shown(&h, ASK_QUIT));
         assert_eq!(h.state().front(), Front::Adjust, "Escape left Adjust");
         assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
-        assert_eq!(h.state().screen.strengths, strengths);
+        assert_eq!(h.state().spec().strengths, strengths);
         assert_eq!(h.state().editor.docs.len(), 1);
     }
     // Escape then closes Adjust, the one in front.
@@ -2420,34 +2454,36 @@ fn a_question_beats_adjust_and_adjust_comes_back() {
     assert_eq!(h.state().front(), Front::Nothing);
 }
 
-/// A Screen level from the macOS menu bar, while a quit question covers
-/// Adjust with a moved slider, changes nothing; after Cancel, Adjust is
-/// back with the slider where it was.
+/// A theme from the macOS menu bar, while a quit question covers Adjust
+/// with a moved slider, changes nothing; after Cancel, Adjust is back with
+/// the slider where it was.
 #[test]
-fn a_native_screen_level_waits_behind_a_question_over_adjust() {
+fn a_native_theme_waits_behind_a_question_over_adjust() {
     let (_d, mut h) = adjusting("adjust-native-level").unwrap();
     bloom(&h).unwrap().set_value_accesskit(0.9);
     h.run_steps(2);
-    let moved = h.state().screen.strengths;
+    let moved = h.state().spec().strengths;
     assert!((moved.bloom - 0.9).abs() < 1e-6);
     h.key_press_modifiers(Modifiers::COMMAND, Key::Q);
     h.run_steps(2);
     assert_eq!(h.state().front(), Front::Question);
-    for l in robco_studio::theme::Screen::ALL {
+    for l in 0..robco_studio::theme::SHIPPED.len() {
         h.state_mut()
             .pending
-            .push(robco_studio::menus::Command::Screen(l));
+            .push(robco_studio::menus::Command::Theme(
+                robco_studio::menus::ThemeId::At(l),
+            ));
         h.run_steps(2);
         assert_eq!(h.state().front(), Front::Question, "{l:?}");
         assert_eq!(h.state().theme.screen(), robco_studio::theme::Screen::Live);
-        assert_eq!(h.state().screen.strengths, moved, "{l:?}");
+        assert_eq!(h.state().spec().strengths, moved, "{l:?}");
         assert!(h.state().screen.adjusting, "{l:?}");
     }
     h.get_by_label("Cancel").click();
     h.run_steps(3);
     assert_eq!(h.state().front(), Front::Adjust);
     assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
-    assert_eq!(h.state().screen.strengths, moved);
+    assert_eq!(h.state().spec().strengths, moved);
 }
 
 /// While a question is open, the Adjust command does not open Adjust.
@@ -2462,7 +2498,7 @@ fn a_question_refuses_the_adjust_command() {
     assert_eq!(h.state().front(), Front::Question);
     h.state_mut()
         .pending
-        .push(robco_studio::menus::Command::ScreenAdjust);
+        .push(robco_studio::menus::Command::ThemeEdit);
     h.run_steps(3);
     assert!(!h.state().screen.adjusting);
     assert!(!shown(&h, robco_studio::app::ADJUST_TITLE));
@@ -2525,12 +2561,11 @@ fn the_window_behind_a_dialog_takes_no_keys_and_gets_its_focus_back() {
     use egui::text::{CCursor, CCursorRange};
     use robco_studio::editor::{Editor, Question};
     use robco_studio::screen::Adapter;
-    use robco_studio::theme::Screen;
     for dialog in [Dialog::Adjust, Dialog::Question, Dialog::Chooser] {
         let d = pipes(&format!("inert-{dialog:?}").to_lowercase()).unwrap();
         let (mut h, fake) = with_fake(Some(&*d), None);
         h.state_mut()
-            .choose_screen(Adapter::Hardware, Some(false), Some(Screen::Still));
+            .choose_screen(Adapter::Hardware, Some(true), Some(GREEN));
         open_main(&mut h);
         let doc = h.state().editor.current().unwrap().id;
         let id = Editor::text_id(doc);
@@ -2611,16 +2646,15 @@ fn the_window_behind_a_dialog_takes_no_keys_and_gets_its_focus_back() {
 #[test]
 fn the_arrow_keys_move_a_slider_of_adjust() {
     use robco_studio::screen::Adapter;
-    use robco_studio::theme::Screen;
     let mut h = harness(None);
     h.state_mut()
-        .choose_screen(Adapter::Hardware, Some(false), Some(Screen::Still));
+        .choose_screen(Adapter::Hardware, Some(true), Some(GREEN));
     h.state_mut().screen.adjusting = true;
     h.run_steps(3);
-    let before = h.state().screen.strengths;
+    let before = h.state().spec().strengths;
     h.key_press(Key::ArrowRight);
     h.run_steps(2);
-    assert_ne!(h.state().screen.strengths, before);
+    assert_ne!(h.state().spec().strengths, before);
 }
 
 /// High legibility in the window's View menu is a check box whose state

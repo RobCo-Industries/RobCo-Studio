@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The window: its strips, its pages, the panes of the Project page, focus
-//! from pane to pane, the save question and the screen's Adjust dialog.
+//! from pane to pane, the save question and the pane that adjusts the
+//! theme.
 
 use crate::art::{Art, Icon, Mark};
 use crate::chooser::{self, Choice, FolderChooser, SystemChooser};
 use crate::editor::{Answer, Editor};
 use crate::kit::{Button, ButtonKind, Kit, Level, MenuMark};
-use crate::menus::{self, Command};
+use crate::menus::{self, Command, ThemeId};
 use crate::project::{Manifest, Project, Row};
 use crate::screen::{self, Adapter};
-use crate::theme::{Screen, Strengths, Theme, Type, crt, effect, size};
+use crate::theme::{Spec, Strengths, Theme, Type, crt, effect, size};
 use eframe::egui::{
     self, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, UiBuilder, accesskit::Role,
 };
@@ -145,8 +146,15 @@ impl Default for Layout {
 
 /// The window's state.
 pub struct Studio {
-    /// The look.
+    /// What draws, worked out from the theme each frame. Its high
+    /// legibility is the person's switch.
     pub theme: Theme,
+    /// Every theme known, the six that ship first.
+    pub themes: Vec<Spec>,
+    /// The place of the theme in use in `themes`.
+    pub current: usize,
+    /// The theme in use, changed and not saved, or None.
+    pub changed: Option<Spec>,
     /// The page shown.
     pub page: Page,
     /// The open folder.
@@ -180,7 +188,7 @@ pub struct Studio {
     sim_room: u8,
     /// Commands chosen in a menu outside the window, run next frame.
     pub pending: Vec<Command>,
-    /// The screen pass and its settings beyond the level.
+    /// The screen pass, the adapter and reduce motion.
     pub screen: screen::Settings,
     art: Option<Art>,
     /// What draws this frame, taken in `prepare`.
@@ -347,6 +355,9 @@ impl Studio {
     pub fn new(folder: Option<&Path>) -> Self {
         let mut s = Self {
             theme: Theme::default(),
+            themes: crate::theme::SHIPPED.to_vec(),
+            current: 0,
+            changed: None,
             page: Page::Project,
             project: None,
             editor: Editor::default(),
@@ -366,7 +377,8 @@ impl Studio {
             art: None,
             drawn: screen::Drawn {
                 theme: Theme::default(),
-                strengths: Screen::Soft.strengths(),
+                strengths: crt::LIVE,
+                rate: crt::RATE,
             },
             styled: None,
             fonts: false,
@@ -477,19 +489,17 @@ impl Studio {
     }
 
     /// Why the menu item `it` cannot act now, or None. The scale items
-    /// follow the simulator pane's room, as its Larger button does. The
-    /// screen levels follow the adapter and high legibility.
+    /// follow the simulator pane's room, as its Larger button does. A note
+    /// of View, Theme cannot be picked, and says itself.
     pub fn unavailable(&self, it: &menus::Item) -> Option<String> {
         if let Verdict::Refused(why) = verdict(it.command, self.front()) {
             return Some(why.to_owned());
         }
+        if let Command::ThemeHeld(h) = it.command {
+            return Some(crate::theme::held_note(h).to_owned());
+        }
         match it.command {
             Command::SimZoom(z) => zoom_unavailable(z, self.sim_room),
-            Command::Screen(l) => {
-                screen::unavailable(l, self.screen.adapter, self.theme.high_legibility)
-                    .map(str::to_owned)
-            }
-            Command::ScreenAdjust => (!self.theme.screen().pass()).then(|| ADJUST_NOT.to_owned()),
             _ => it.unavailable.map(str::to_owned),
         }
     }
@@ -506,9 +516,8 @@ impl Studio {
     }
 
     /// Whether the menu item of command `c` shows its mark now, by
-    /// [`menus::check`]. False for an item with no state. A mark follows
-    /// what is in use: high legibility marks the Off level, and no level
-    /// is marked while the strengths are Custom.
+    /// [`menus::check`]. False for an item with no state. The theme in use
+    /// is marked; while it is changed, its changed row carries the mark.
     pub fn checked(&self, c: Command) -> bool {
         match c {
             Command::PageProject => self.page == Page::Project,
@@ -520,53 +529,131 @@ impl Studio {
             Command::CompactHeader => self.compact_header,
             Command::HighLegibility => self.theme.high_legibility,
             Command::SimZoom(z) => self.sim_zoom == z,
-            Command::Phosphor(s) => self.theme.scheme == s,
-            Command::Screen(l) => self.theme.screen() == l && !self.screen_custom(),
+            Command::Theme(ThemeId::At(i)) => self.changed.is_none() && self.current == i,
+            Command::Theme(ThemeId::Changed) => self.changed.is_some(),
             _ => false,
         }
     }
 
-    /// The strengths differ from the level's own.
-    pub fn screen_custom(&self) -> bool {
-        screen::custom(self.theme.screen(), &self.screen.strengths)
+    /// The theme in use: the changed one, else the saved one.
+    pub fn spec(&self) -> &Spec {
+        match &self.changed {
+            Some(c) => c,
+            None => self
+                .themes
+                .get(self.current)
+                .unwrap_or(&crate::theme::SHIPPED[0]),
+        }
     }
 
-    /// Choose the screen level at start, by the rules: a level asked for
-    /// on the command line, the adapter, the system's reduce-motion
-    /// setting. With eframe's render state the pass is plugged into `ctx`
-    /// and draws: call this before the first frame.
+    /// The name of the theme in use, as the menu and the status line give
+    /// it: "Green", or "Green, changed".
+    pub fn theme_name(&self) -> String {
+        match &self.changed {
+            Some(c) => format!("{}, changed", c.name),
+            None => self.spec().name.to_string(),
+        }
+    }
+
+    /// What the theme in use draws on this machine now, and what holds it.
+    pub fn shown(&self) -> screen::Shown {
+        screen::shown(
+            self.spec(),
+            self.screen.adapter,
+            self.screen.reduce_motion,
+            self.theme.high_legibility,
+        )
+    }
+
+    /// The menus, with the rows of View, Theme made from the themes now.
+    pub fn menus(&self) -> Vec<menus::Menu> {
+        let held = self.shown().held;
+        menus::menus_with(menus::theme_items(
+            &self.themes,
+            self.changed.as_ref(),
+            &held,
+        ))
+    }
+
+    /// Change the theme in use by `edit`. The first change makes it a
+    /// changed theme, not saved, and the status line says so once. Studio
+    /// writes nothing.
+    pub fn edit_theme(&mut self, edit: impl FnOnce(&mut Spec)) {
+        let mut spec = self.spec().clone();
+        edit(&mut spec);
+        if spec == *self.spec() {
+            return;
+        }
+        if self.changed.is_none() {
+            self.say(Level::Info, crate::theme::changed_news(&spec.name));
+        }
+        self.changed = Some(spec);
+        self.refresh_theme();
+    }
+
+    /// Take the theme at place `i` of the list. A changed theme goes.
+    pub fn pick_theme(&mut self, i: usize) {
+        if i >= self.themes.len() {
+            return;
+        }
+        self.current = i;
+        self.changed = None;
+        self.refresh_theme();
+        let name = self.spec().name.to_string();
+        self.say(Level::Info, crate::theme::news(&name, None));
+    }
+
+    /// Work out what draws from the theme in use, the machine and high
+    /// legibility. The frame takes it at its start.
+    fn refresh_theme(&mut self) {
+        let shown = self.shown();
+        self.theme.set_base(self.spec().base);
+        self.theme.screen = shown.screen;
+        self.theme.strengths = shown.strengths;
+    }
+
+    /// Start the screen, by the rules: a theme asked for on the command
+    /// line, by its place among the themes that ship, the adapter, the
+    /// system's reduce-motion setting. With eframe's render state the pass
+    /// is plugged into `ctx` and draws: call this before the first frame.
     pub fn start_screen(
         &mut self,
         ctx: &egui::Context,
         adapter: Adapter,
         gpu: Option<&eframe::egui_wgpu::RenderState>,
         reduce_motion: Option<bool>,
-        asked: Option<Screen>,
+        asked: Option<usize>,
     ) {
         self.screen.plug(ctx, gpu);
         self.choose_screen(adapter, reduce_motion, asked);
     }
 
-    /// Choose the screen level by the rules of [`Studio::start_screen`],
-    /// for a window whose screen is plugged in already.
+    /// Start the screen by the rules of [`Studio::start_screen`], for a
+    /// window whose screen is plugged in already. When something holds
+    /// the theme, the status line says so.
     pub fn choose_screen(
         &mut self,
         adapter: Adapter,
         reduce_motion: Option<bool>,
-        asked: Option<Screen>,
+        asked: Option<usize>,
     ) {
         self.screen.adapter = adapter;
-        let (level, why) = screen::start(adapter, reduce_motion, asked);
-        self.set_screen(level);
-        if let Some(why) = why {
-            self.say(Level::Info, why);
+        self.screen.reduce_motion = reduce_motion == Some(true);
+        if let Some(i) = asked.filter(|i| *i < self.themes.len()) {
+            self.current = i;
+            self.changed = None;
         }
-    }
-
-    /// Show `level` with its own strengths.
-    fn set_screen(&mut self, level: Screen) {
-        self.theme.screen = level;
-        self.screen.strengths = level.strengths();
+        self.refresh_theme();
+        // A window with no known adapter is a test harness or has no
+        // wgpu: it says nothing about an adapter it does not know.
+        let first = self
+            .shown()
+            .first()
+            .filter(|h| *h != screen::Held::NoAdapter || adapter == Adapter::Software);
+        if let Some(h) = first {
+            let name = self.theme_name();
+            self.say(Level::Info, crate::theme::news(&name, Some(h)));
+        }
     }
 
     /// What is in front now. The one place that decides it: the dialogs,
@@ -689,8 +776,7 @@ impl Studio {
 
     /// Run a menu command, from the window's menus, a shortcut or the
     /// native menu bar. A command runs after this frame's `prepare` and may
-    /// change what it checked: the level, the scheme, high legibility, the
-    /// strengths, the page. So every command asks for the next frame, which
+    /// change what it checked: the theme, high legibility, the page. So every command asks for the next frame, which
     /// draws its effect even when nothing moves and no input comes.
     pub fn run(&mut self, ctx: &egui::Context, c: Command) {
         ctx.request_repaint();
@@ -743,24 +829,12 @@ impl Studio {
             },
             Command::NextPane => self.move_focus(ctx, true),
             Command::PreviousPane => self.move_focus(ctx, false),
-            Command::Phosphor(s) => self.theme.scheme = s,
-            Command::Screen(l) => {
-                match screen::unavailable(l, self.screen.adapter, self.theme.high_legibility) {
-                    Some(why) => self.say(Level::Info, why.to_owned()),
-                    None => {
-                        self.set_screen(l);
-                        self.say(Level::Info, screen::news(l, false));
-                    }
-                }
+            Command::Theme(ThemeId::At(i)) => self.pick_theme(i),
+            Command::ThemeEdit => self.screen.adjusting = true,
+            Command::HighLegibility => {
+                self.theme.high_legibility = !self.theme.high_legibility;
+                self.refresh_theme();
             }
-            Command::ScreenAdjust => {
-                if self.theme.screen().pass() {
-                    self.screen.adjusting = true;
-                } else {
-                    self.say(Level::Info, ADJUST_NOT.to_owned());
-                }
-            }
-            Command::HighLegibility => self.theme.high_legibility = !self.theme.high_legibility,
             c => {
                 if let Some(name) = menus::not_yet(c) {
                     self.say(Level::Info, menus::not_yet_news(name));
@@ -807,6 +881,11 @@ impl Studio {
                 Key::L,
                 Command::HighLegibility,
             );
+            k(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::T,
+                Command::ThemeEdit,
+            );
             k(Modifiers::COMMAND, Key::O, Command::OpenFolder);
             k(Modifiers::COMMAND, Key::Q, Command::Quit);
         });
@@ -821,8 +900,9 @@ impl Studio {
 
     fn prepare(&mut self, ctx: &egui::Context) {
         // The one value that draws this frame. A command or a slider later
-        // in the frame changes the level or the strengths for the next one.
-        self.drawn = self.screen.drawn(self.theme);
+        // in the frame changes the theme for the next one.
+        self.refresh_theme();
+        self.drawn = self.screen.drawn(self.theme, self.spec().rate);
         let theme = self.drawn.theme;
         if !self.fonts {
             Theme::install_fonts(ctx);
@@ -849,7 +929,7 @@ impl Studio {
         }
     }
 
-    /// What draws the current frame: the level, its theme and the
+    /// What draws the current frame: the theme, its screen and the
     /// strengths, as taken at the frame's start.
     pub fn drawn(&self) -> screen::Drawn {
         self.drawn
@@ -952,7 +1032,7 @@ impl Studio {
             ctx.request_repaint();
         }
         self.finish_switch();
-        if art.halos() {
+        if art.has_scanlines() {
             art.scanlines(
                 &ctx.layer_painter(egui::LayerId::new(
                     egui::Order::Debug,
@@ -1039,7 +1119,7 @@ impl Studio {
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
         let mut x = rect.left() + size::UNIT;
-        for m in menus::menus() {
+        for m in self.menus() {
             let w = kit.caps_width(&bar, m.title) + size::LABEL_PAD * 2.0;
             let r = Rect::from_min_size(
                 egui::pos2(x, rect.center().y - size::MENU_ITEM_H / 2.0),
@@ -1114,21 +1194,24 @@ impl Studio {
         if it.separator {
             ui.separator();
         }
+        if let Command::ThemeHeld(_) = it.command {
+            kit.menu_note(ui, &it.text, size::MENU_POPUP_W);
+            return;
+        }
         let note = match it.shortcut {
             Some(s) => s.shown(mac),
-            None if it.command == Command::ScreenAdjust && self.screen_custom() => {
-                CUSTOM.to_owned()
-            }
+            None if it.unsaved => menus::NOT_SAVED.to_owned(),
             None => String::new(),
         };
         let why = self.unavailable(it);
-        let row = kit.menu_choice(
+        let row = kit.menu_choice_unsaved(
             ui,
-            it.text,
+            &it.text,
             &note,
             self.menu_mark(it.command),
             why.as_deref(),
             size::MENU_POPUP_W,
+            it.unsaved,
         );
         if row.clicked() {
             *chosen = Some(it.command);
@@ -2108,19 +2191,16 @@ impl Studio {
         }
     }
 
-    /// The Adjust dialog of View, Screen: a slider for each strength, the
-    /// frame rate, and Reset back to the level's own numbers.
+    /// The pane of View, Theme, Edit theme: a slider for each strength of
+    /// the theme in use, the frame rate, and Reset back to the saved
+    /// theme. A moved slider makes the theme a changed one.
     fn adjust(&mut self, kit: &Kit<'_>, ctx: &egui::Context) {
-        if !self.theme.screen().pass() {
-            self.screen.adjusting = false;
-            return;
-        }
         let p = kit.p();
-        let level = self.theme.screen();
+        let name = self.theme_name();
         let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
         let mut reset = false;
-        let mut s = self.screen.strengths;
-        let mut rate = self.screen.rate;
+        let mut s = self.spec().strengths;
+        let mut rate = self.spec().rate;
         let w = size::DIALOG_W;
         let mut first = None;
         let area = egui::Area::new(Id::unique("adjust"))
@@ -2142,12 +2222,7 @@ impl Studio {
                             );
                             kit.art.icon(ui.painter(), r, Icon::Settings, p.bright);
                             kit.text(ui, ADJUST_TITLE, Type::BodyBold, p.text);
-                            let what = if screen::custom(level, &s) {
-                                CUSTOM
-                            } else {
-                                level.name()
-                            };
-                            kit.text(ui, what, Type::Body, p.dim);
+                            kit.text(ui, &name, Type::Body, p.dim);
                         });
                         ui.add_space(size::UNIT);
                         ui.spacing_mut().slider_width = inner / 2.0;
@@ -2204,17 +2279,21 @@ impl Studio {
         if !inside && let Some(r) = first {
             r.request_focus();
         }
-        let custom_before = self.screen_custom();
-        let before = (self.screen.strengths, self.screen.rate);
-        self.screen.strengths = if reset { level.strengths() } else { s };
-        self.screen.rate = rate;
+        let before = (self.spec().strengths, self.spec().rate);
+        if reset {
+            if self.changed.is_some() {
+                self.pick_theme(self.current);
+            }
+        } else if (s, rate) != before {
+            self.edit_theme(|t| {
+                t.strengths = s;
+                t.rate = rate;
+            });
+        }
         // The pass runs at the strengths that drew this frame: a moved
         // slider applies from the next frame, so ask for it.
-        if (self.screen.strengths, self.screen.rate) != before {
+        if (self.spec().strengths, self.spec().rate) != before {
             ctx.request_repaint();
-        }
-        if self.screen_custom() != custom_before {
-            self.say(Level::Info, screen::news(level, self.screen_custom()));
         }
         if close {
             self.screen.adjusting = false;
@@ -2248,10 +2327,6 @@ fn scrim(kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
 pub const ADJUST_TITLE: &str = "Adjust the screen";
 /// The frame rate choice of the Adjust dialog.
 const RATE_LABEL: &str = "Frames a second";
-/// Said by Adjust when the screen has no pass to adjust.
-pub const ADJUST_NOT: &str = "Adjust works at Still, Live and Arcade.";
-/// The note of Adjust while the strengths differ from the level's.
-pub const CUSTOM: &str = "Custom";
 /// The note of a row that opens a submenu.
 const SUBMENU: &str = ">";
 
@@ -2294,7 +2369,7 @@ enum Part {
     Quit,
     /// Open folder: it brings the chooser, which holds Adjust as it is.
     OpenFolder,
-    /// A Screen level or Adjust: what the Adjust dialog is about.
+    /// A row of View, Theme: what the Adjust dialog is about.
     Screen,
     /// Any other command, which acts on the window behind a dialog.
     Window,
@@ -2309,14 +2384,14 @@ enum Part {
 /// - The chooser: nothing acts.
 /// - A question: nothing acts, a second Quit included; only the
 ///   question's own answers do, and Escape cancels it.
-/// - Adjust: Quit, Open folder, the Screen levels and Adjust act.
+/// - Adjust: Quit, Open folder and the rows of View, Theme act.
 /// - Nothing: every command acts by its own rules.
 pub fn verdict(c: Command, front: Front) -> Verdict {
     use Command as C;
     let role = match c {
         C::Quit => Part::Quit,
         C::OpenFolder => Part::OpenFolder,
-        C::Screen(_) | C::ScreenAdjust => Part::Screen,
+        C::Theme(_) | C::ThemeEdit | C::ThemeAdd | C::ThemeFolder | C::ThemeHeld(_) => Part::Screen,
         C::NewProject
         | C::OpenRecent
         | C::Save
@@ -2345,7 +2420,6 @@ pub fn verdict(c: Command, front: Front) -> Verdict {
         | C::TextLarger
         | C::TextSmaller
         | C::TextReset
-        | C::Phosphor(_)
         | C::HighLegibility
         | C::ProjectSettings
         | C::NewFile
@@ -2616,6 +2690,7 @@ pub fn panes(l: &mut Layout, page: Rect) -> Panes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Screen;
 
     /// The longest name the manifest allows, in its widest form, fits the
     /// tape's label field with the stated margin on each side. Every Spleen
@@ -2628,15 +2703,19 @@ mod tests {
         assert!(w <= room, "{longest} is {w} points, the label has {room}");
     }
 
-    /// A level changed by a menu command in the middle of a frame, after
-    /// the art was checked, still ends with art made for the new level:
-    /// Off to Soft gains the baked halos, Soft to Off loses them.
+    /// The place of Flat, whose ten zeros draw Off.
+    const FLAT: usize = 5;
+
+    /// A theme changed by a menu command in the middle of a frame, after
+    /// the art was checked, still ends with art made for the new theme:
+    /// Flat to Green gains the baked halos and the scanlines, with no
+    /// adapter here, and Green to Flat loses them.
     #[test]
-    fn the_art_follows_a_level_changed_mid_frame() {
+    fn the_art_follows_a_theme_changed_mid_frame() {
         let mut h = egui_kittest::Harness::builder()
             .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(None));
-        for (from, to) in [(Screen::Off, Screen::Soft), (Screen::Soft, Screen::Off)] {
-            h.state_mut().set_screen(from);
+        for (from, to) in [(FLAT, 0), (0, FLAT)] {
+            h.state_mut().pick_theme(from);
             h.run_steps(2);
             let made = |h: &egui_kittest::Harness<'_, Studio>| {
                 h.state()
@@ -2644,20 +2723,21 @@ mod tests {
                     .as_ref()
                     .map(|a| (a.halos(), a.has_scanlines()))
             };
-            let soft = from == Screen::Soft;
+            let soft = from == 0;
             assert_eq!(made(&h), Some((soft, soft)));
-            h.state_mut().pending.push(Command::Screen(to));
+            h.state_mut().pending.push(Command::Theme(ThemeId::At(to)));
             h.run_steps(3);
-            assert_eq!(h.state().theme.screen(), to);
-            let soft = to == Screen::Soft;
+            let want = if to == 0 { Screen::Soft } else { Screen::Off };
+            assert_eq!(h.state().theme.screen(), want);
+            let soft = to == 0;
             assert_eq!(made(&h), Some((soft, soft)), "{from:?} to {to:?}");
         }
     }
 
-    /// A command in the middle of a frame changes the level for the next
-    /// frame only: the frame it runs in keeps the level, the strengths
-    /// and the curve the pointer is mapped through that drew it. Soft to
-    /// Live and back.
+    /// A command in the middle of a frame changes the theme for the next
+    /// frame only: the frame it runs in keeps the screen, the strengths
+    /// and the curve the pointer is mapped through that drew it. Flat to
+    /// Green and back, on a real adapter.
     #[test]
     fn the_drawn_value_holds_for_the_whole_frame() {
         let mut h = egui_kittest::Harness::builder()
@@ -2671,38 +2751,44 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .curvature
         };
-        for (from, to) in [(Screen::Soft, Screen::Live), (Screen::Live, Screen::Soft)] {
-            h.state_mut().set_screen(from);
+        let screen_of = |i: usize| if i == 0 { Screen::Live } else { Screen::Off };
+        for (from, to) in [(FLAT, 0), (0, FLAT)] {
+            h.state_mut().pick_theme(from);
             h.run_steps(2);
             let before = h.state().drawn();
-            assert_eq!(before.level(), from);
+            assert_eq!(before.level(), screen_of(from));
             let c = curve(&h);
-            h.state_mut().pending.push(Command::Screen(to));
+            h.state_mut().pending.push(Command::Theme(ThemeId::At(to)));
             h.step();
-            assert_eq!(h.state().theme.screen(), to, "the command ran");
+            assert_eq!(h.state().theme.screen(), screen_of(to), "the command ran");
             assert_eq!(h.state().drawn(), before, "{from:?} to {to:?}");
             assert_eq!(curve(&h), c, "the curve changed mid frame");
             h.step();
-            assert_eq!(h.state().drawn().level(), to);
-            assert_eq!(h.state().drawn().strengths, to.strengths());
-            assert_eq!(curve(&h) > 0.0, to.pass());
+            assert_eq!(h.state().drawn().level(), screen_of(to));
+            assert_eq!(
+                h.state().drawn().strengths,
+                crate::theme::SHIPPED[to].strengths
+            );
+            assert_eq!(curve(&h) > 0.0, screen_of(to).pass());
         }
     }
 
-    /// A native menu command that switches Soft to Off, with no input and
-    /// nothing moving, asks for the next frame, and that frame is Off's.
+    /// A native menu command that switches Green to Flat, Soft to Off with
+    /// no adapter here, with no input and nothing moving, asks for the
+    /// next frame, and that frame is Off's.
     #[test]
-    fn a_native_level_change_asks_for_its_frame() {
+    fn a_native_theme_change_asks_for_its_frame() {
         let mut h = egui_kittest::Harness::builder()
             .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(None));
-        h.state_mut().set_screen(Screen::Soft);
         h.run_steps(4);
         h.step();
         assert!(
             !h.ctx.has_requested_repaint(),
             "Soft at rest asks for nothing"
         );
-        h.state_mut().pending.push(Command::Screen(Screen::Off));
+        h.state_mut()
+            .pending
+            .push(Command::Theme(ThemeId::At(FLAT)));
         h.step();
         assert!(h.ctx.has_requested_repaint(), "the change asks for a frame");
         h.step();
@@ -2714,8 +2800,8 @@ mod tests {
         assert_eq!(art, Some((false, false)));
     }
 
-    /// What a command can change, cheap to compare: the level, the
-    /// strengths, the page, the project, the documents and the dialogs.
+    /// What a command can change, cheap to compare: the theme, the page,
+    /// the project, the documents and the dialogs.
     fn digest(s: &Studio) -> String {
         let docs: Vec<(u64, &str)> = s
             .editor
@@ -2726,12 +2812,7 @@ mod tests {
         format!(
             "{:?}",
             (
-                (
-                    s.theme,
-                    s.screen.strengths,
-                    s.screen.rate,
-                    s.screen.adjusting
-                ),
+                (s.theme, s.current, &s.changed, s.screen.adjusting),
                 (s.page, s.layout, s.compact_header, s.sim_zoom),
                 s.project.as_ref().map(|p| p.root.clone()),
                 docs,
@@ -2740,12 +2821,11 @@ mod tests {
         )
     }
 
-    /// A window on one edited file at Live, with `front` in front. A
+    /// A window on one edited file in Green at Live, with `front` in front. A
     /// question comes over an open Adjust, the case that once leaked.
     fn fronted(f: &Path, front: Front) -> Studio {
         let mut s = Studio::new(None);
-        s.screen.adapter = screen::Adapter::Hardware;
-        s.set_screen(Screen::Live);
+        s.choose_screen(screen::Adapter::Hardware, None, Some(0));
         s.open_file(f);
         if let Some(d) = s.editor.current_mut() {
             d.text = "new\n".into();
@@ -2776,7 +2856,21 @@ mod tests {
         let ctx = egui::Context::default();
         let mut items: Vec<menus::Item> =
             menus::menus().into_iter().flat_map(|m| m.items).collect();
-        items.extend(menus::screen_items());
+        // The rows a long list, a changed theme and the notes bring.
+        let mut many = crate::theme::SHIPPED.to_vec();
+        many.extend((0..9).map(|i| Spec {
+            name: format!("Mine {i}").into(),
+            ..crate::theme::SHIPPED[1].clone()
+        }));
+        items.extend(menus::theme_items(
+            &many,
+            Some(&crate::theme::SHIPPED[0]),
+            &[
+                screen::Held::Legible,
+                screen::Held::Still,
+                screen::Held::NoAdapter,
+            ],
+        ));
         let run = |front: Front, it: &menus::Item| {
             std::fs::write(&f, b"old\n").unwrap();
             let mut s = fronted(&f, front);
@@ -2808,7 +2902,7 @@ mod tests {
                     }
                     Verdict::Acts => {
                         // Adjust over Adjust finds it open already.
-                        let open = front == Front::Adjust && it.command == Command::ScreenAdjust;
+                        let open = front == Front::Adjust && it.command == Command::ThemeEdit;
                         assert_eq!(
                             changed,
                             acts_alone && !open,
@@ -2830,13 +2924,14 @@ mod tests {
             Verdict::Refused(ASKING)
         );
         assert_eq!(
-            verdict(Command::Screen(Screen::Off), Front::Question),
+            verdict(Command::Theme(ThemeId::At(FLAT)), Front::Question),
             Verdict::Refused(ASKING)
         );
         assert_eq!(
-            verdict(Command::Screen(Screen::Off), Front::Adjust),
+            verdict(Command::Theme(ThemeId::At(FLAT)), Front::Adjust),
             Verdict::Acts
         );
+        assert_eq!(verdict(Command::ThemeAdd, Front::Adjust), Verdict::Acts);
         assert_eq!(verdict(Command::OpenFolder, Front::Adjust), Verdict::Acts);
         assert_eq!(
             verdict(Command::Save, Front::Adjust),
@@ -3167,7 +3262,7 @@ mod tests {
     /// Each choice set has exactly one item marked.
     fn one_per_choice(s: &Studio) {
         let list = menus::native_items(s);
-        for set in ["page", "phosphor", "screen", "scale"] {
+        for set in ["page", "theme", "scale"] {
             let on = list
                 .iter()
                 .filter(|i| menus::check(i.command) == menus::Check::Choice(set) && i.checked)
@@ -3194,8 +3289,7 @@ mod tests {
         ];
         let list = menus::native_items(&s);
         for i in &list {
-            let is_state = want.contains(&i.command)
-                || matches!(i.command, Command::Phosphor(_) | Command::Screen(_));
+            let is_state = want.contains(&i.command) || matches!(i.command, Command::Theme(_));
             let kind = if is_state {
                 menus::NativeKind::Check
             } else {
@@ -3206,15 +3300,15 @@ mod tests {
                 assert!(!i.checked, "{}", i.title);
             }
         }
-        for sc in crate::theme::Scheme::ALL {
+        for i in 0..crate::theme::SHIPPED.len() {
             assert_eq!(
-                native(&s, Command::Phosphor(sc)).kind,
+                native(&s, Command::Theme(ThemeId::At(i))).kind,
                 menus::NativeKind::Check
             );
         }
         assert_eq!(
             list.len(),
-            menus::menus().iter().map(|m| m.items.len()).sum::<usize>()
+            s.menus().iter().map(|m| m.items.len()).sum::<usize>()
         );
         one_per_choice(&s);
     }
@@ -3227,18 +3321,13 @@ mod tests {
         assert!(!native(&s, Command::HighLegibility).checked);
         s.run(&ctx, Command::HighLegibility);
         assert!(native(&s, Command::HighLegibility).checked);
-        // By the rule: high legibility draws no effects, so Off is marked.
-        assert!(native(&s, Command::Screen(Screen::Off)).checked);
-        assert!(!native(&s, Command::Screen(Screen::Soft)).checked);
+        // High legibility holds the theme flat, and it stays marked.
+        assert!(native(&s, Command::Theme(ThemeId::At(0))).checked);
         one_per_choice(&s);
-        // Soft is refused while high legibility holds: the mark stays on Off.
-        s.run(&ctx, Command::Screen(Screen::Soft));
-        assert!(native(&s, Command::Screen(Screen::Off)).checked);
-        assert!(!native(&s, Command::Screen(Screen::Soft)).checked);
         // By the shortcut.
         press(&mut s, &ctx, Key::L, Modifiers::COMMAND | Modifiers::SHIFT);
         assert!(!native(&s, Command::HighLegibility).checked);
-        assert!(native(&s, Command::Screen(Screen::Soft)).checked);
+        assert!(native(&s, Command::Theme(ThemeId::At(0))).checked);
         press(&mut s, &ctx, Key::Num3, Modifiers::COMMAND);
         assert!(native(&s, Command::PageDevice).checked);
         assert!(!native(&s, Command::PageProject).checked);
@@ -3249,9 +3338,9 @@ mod tests {
         assert_eq!(native(&s, Command::ToggleFiles).checked, !files);
         s.run(&ctx, Command::CompactHeader);
         assert!(native(&s, Command::CompactHeader).checked);
-        s.run(&ctx, Command::Phosphor(crate::theme::Scheme::Amber));
-        assert!(native(&s, Command::Phosphor(crate::theme::Scheme::Amber)).checked);
-        assert!(!native(&s, Command::Phosphor(crate::theme::Scheme::Green)).checked);
+        s.run(&ctx, Command::Theme(ThemeId::At(1)));
+        assert!(native(&s, Command::Theme(ThemeId::At(1))).checked);
+        assert!(!native(&s, Command::Theme(ThemeId::At(0))).checked);
         one_per_choice(&s);
     }
 
@@ -3337,51 +3426,123 @@ mod tests {
             Command::HighLegibility,
             Command::CompactHeader,
             Command::PageCard,
-            Command::Phosphor(crate::theme::Scheme::Amber),
+            Command::Theme(ThemeId::At(1)),
             Command::HighLegibility,
-            Command::Screen(Screen::Live),
+            Command::Theme(ThemeId::At(4)),
             Command::ToggleBottom,
         ] {
             s.run(&ctx, c);
             window_and_bar_agree(&s);
         }
-        s.screen.strengths.bloom += 0.25;
+        s.edit_theme(|t| t.strengths.bloom += 0.25);
         window_and_bar_agree(&s);
     }
 
-    /// The level in use is marked, alone; Custom marks none; Adjust is
+    /// The theme in use is marked, alone; a changed theme marks its own
+    /// row; Edit theme, Add a theme file and Show the themes folder are
     /// plain.
     #[test]
-    fn the_screen_levels_mark_the_level_in_use() {
-        let marked = |s: &Studio| -> Vec<Screen> {
-            Screen::ALL
+    fn the_theme_rows_mark_the_theme_in_use() {
+        let marked = |s: &Studio| -> Vec<Command> {
+            menus::native_items(s)
                 .into_iter()
-                .filter(|l| native(s, Command::Screen(*l)).checked)
+                .filter(|i| matches!(i.command, Command::Theme(_)) && i.checked)
+                .map(|i| i.command)
                 .collect()
         };
         let ctx = egui::Context::default();
         let mut s = Studio::new(None);
+        for c in [Command::ThemeEdit, Command::ThemeAdd, Command::ThemeFolder] {
+            assert_eq!(native(&s, c).kind, menus::NativeKind::Plain);
+        }
+        assert_eq!(marked(&s), [Command::Theme(ThemeId::At(0))]);
+        s.choose_screen(Adapter::Hardware, None, Some(4));
+        assert_eq!(marked(&s), [Command::Theme(ThemeId::At(4))]);
+        assert_eq!(s.status.1, "Ready");
+        // A moved slider: the changed row carries the mark, and the
+        // status line says so once.
+        s.edit_theme(|t| t.strengths.bloom = 0.9);
+        assert_eq!(marked(&s), [Command::Theme(ThemeId::Changed)]);
         assert_eq!(
-            native(&s, Command::ScreenAdjust).kind,
-            menus::NativeKind::Plain
+            native(&s, Command::Theme(ThemeId::Changed)).title,
+            "Arcade, changed"
         );
-        assert_eq!(marked(&s), [s.theme.screen()]);
-        s.choose_screen(Adapter::Hardware, None, Some(Screen::Live));
-        assert_eq!(marked(&s), [Screen::Live]);
-        s.screen.strengths.bloom += 0.25;
-        assert!(s.screen_custom());
-        assert_eq!(marked(&s), []);
-        s.run(&ctx, Command::Screen(Screen::Arcade));
-        assert_eq!(marked(&s), [Screen::Arcade]);
-        // High legibility draws Off, so Off is marked.
+        assert_eq!(s.status.1, "Theme: Arcade, changed. Not saved.");
+        s.status.1 = "x".into();
+        s.edit_theme(|t| t.strengths.bloom = 0.8);
+        assert_eq!(s.status.1, "x", "said once");
+        assert_eq!(s.theme_name(), "Arcade, changed");
+        // Another theme takes its place, and the change goes.
+        s.run(&ctx, Command::Theme(ThemeId::At(1)));
+        assert_eq!(marked(&s), [Command::Theme(ThemeId::At(1))]);
+        assert!(s.changed.is_none());
+        assert_eq!(s.status.1, "Theme: Amber.");
+        // High legibility holds the theme flat; it stays marked.
         s.run(&ctx, Command::HighLegibility);
-        assert_eq!(marked(&s), [Screen::Off]);
-        // A software adapter starts at Soft, reduce motion at Still.
+        assert_eq!(marked(&s), [Command::Theme(ThemeId::At(1))]);
+        assert_eq!(s.theme.screen(), Screen::Off);
+    }
+
+    /// What holds the theme says so on the status line at start, and as
+    /// one note each in View, Theme, which cannot be picked.
+    #[test]
+    fn what_holds_the_theme_says_so() {
+        let notes = |s: &Studio| -> Vec<String> {
+            menus::native_items(s)
+                .into_iter()
+                .filter(|i| matches!(i.command, Command::ThemeHeld(_)))
+                .inspect(|i| assert!(!i.enabled, "{}", i.title))
+                .map(|i| i.title)
+                .collect()
+        };
         let mut s = Studio::new(None);
         s.choose_screen(Adapter::Software, None, None);
-        assert_eq!(marked(&s), [Screen::Soft]);
+        assert_eq!(
+            s.status.1,
+            "This machine has no graphics adapter for the screen pass. Theme: Green, shown without it."
+        );
+        assert_eq!(s.theme.screen(), Screen::Soft);
+        assert_eq!(notes(&s), [crate::theme::HELD_SIMPLER]);
         let mut s = Studio::new(None);
         s.choose_screen(Adapter::Hardware, Some(true), None);
-        assert_eq!(marked(&s), [Screen::Still]);
+        assert_eq!(
+            s.status.1,
+            "The system asks for reduced motion. Theme: Green, shown still."
+        );
+        assert_eq!(s.theme.screen(), Screen::Still);
+        assert_eq!(notes(&s), [crate::theme::HELD_STILL]);
+        // Flat has nothing to hold.
+        let mut s = Studio::new(None);
+        s.choose_screen(Adapter::Hardware, Some(true), Some(FLAT));
+        assert_eq!(s.status.1, "Ready");
+        assert!(notes(&s).is_empty());
+        // No known adapter: the note, and nothing on the status line.
+        let mut s = Studio::new(None);
+        s.choose_screen(Adapter::Unknown, None, None);
+        assert_eq!(s.status.1, "Ready");
+        assert_eq!(notes(&s), [crate::theme::HELD_SIMPLER]);
+        s.theme.high_legibility = true;
+        assert_eq!(
+            notes(&s),
+            [crate::theme::HELD_FLAT, crate::theme::HELD_SIMPLER]
+        );
+    }
+
+    /// Edit theme opens the pane by its shortcut; Add a theme file and Show
+    /// the themes folder are not built yet and say so.
+    #[test]
+    fn edit_theme_opens_the_pane_and_the_rest_say_not_yet() {
+        let ctx = egui::Context::default();
+        let mut s = Studio::new(None);
+        press(&mut s, &ctx, Key::T, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(s.front(), Front::Adjust);
+        s.screen.adjusting = false;
+        s.run(&ctx, Command::ThemeAdd);
+        assert_eq!(s.status.1, "Add a theme file is not in this version yet.");
+        s.run(&ctx, Command::ThemeFolder);
+        assert_eq!(
+            s.status.1,
+            "Show the themes folder is not in this version yet."
+        );
     }
 }

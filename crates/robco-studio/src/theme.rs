@@ -12,98 +12,139 @@ use eframe::egui::{
 };
 use std::sync::Arc;
 
-/// The phosphor hue of the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scheme {
-    /// Green phosphor, the default.
-    Green,
-    /// Amber phosphor.
-    Amber,
-    /// Blue phosphor.
-    Blue,
-    /// White phosphor.
-    White,
-}
-
-impl Scheme {
-    /// Every scheme, in menu order.
-    pub const ALL: [Scheme; 4] = [Scheme::Green, Scheme::Amber, Scheme::Blue, Scheme::White];
-
-    /// The scheme's name in the menu.
-    pub fn name(self) -> &'static str {
-        match self {
-            Scheme::Green => "Green",
-            Scheme::Amber => "Amber",
-            Scheme::Blue => "Blue",
-            Scheme::White => "White",
-        }
-    }
-}
-
-/// How the screen looks: the levels of View, Screen.
+/// What the screen draws this frame. It is no choice: [`crate::screen::shown`]
+/// works it out from the theme, the adapter, reduce motion and high
+/// legibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     /// Nothing extra: no halo, no scanlines.
     Off,
     /// Still overlays: faint scanlines, a halo on lit things, the baked
-    /// glow of the drawings. No screen pass. The default with no graphics
-    /// adapter.
+    /// glow of the drawings. No screen pass. What a machine without a
+    /// graphics adapter shows.
     Soft,
     /// The screen pass with the effects that do not move.
     Still,
-    /// The screen pass with motion. The default on a graphics adapter.
+    /// The screen pass with motion.
     Live,
-    /// The screen pass, everything strong.
-    Arcade,
 }
 
 impl Screen {
-    /// Every level, in menu order.
-    pub const ALL: [Screen; 5] = [
-        Screen::Off,
-        Screen::Soft,
-        Screen::Still,
-        Screen::Live,
-        Screen::Arcade,
-    ];
+    /// Every form, from the plainest.
+    pub const ALL: [Screen; 4] = [Screen::Off, Screen::Soft, Screen::Still, Screen::Live];
 
-    /// The level's name in the menu and on the status line.
+    /// The form's name, for pictures and test messages.
     pub fn name(self) -> &'static str {
         match self {
             Screen::Off => "Off",
             Screen::Soft => "Soft",
             Screen::Still => "Still",
             Screen::Live => "Live",
-            Screen::Arcade => "Arcade",
         }
     }
 
-    /// The level whose name is `name`, in any case.
-    pub fn from_name(name: &str) -> Option<Screen> {
-        Screen::ALL
-            .into_iter()
-            .find(|l| l.name().eq_ignore_ascii_case(name))
-    }
-
-    /// The level draws through the screen pass.
+    /// The form draws through the screen pass.
     pub fn pass(self) -> bool {
-        matches!(self, Screen::Still | Screen::Live | Screen::Arcade)
+        matches!(self, Screen::Still | Screen::Live)
     }
 
-    /// The level moves: the scanlines drift.
+    /// The form moves: the scanlines drift.
     pub fn moving(self) -> bool {
-        matches!(self, Screen::Live | Screen::Arcade)
+        self == Screen::Live
     }
+}
 
-    /// The strengths of the level. Zero for the levels with no pass.
-    pub fn strengths(self) -> Strengths {
-        match self {
-            Screen::Off | Screen::Soft => Strengths::NONE,
-            Screen::Still => crt::STILL,
-            Screen::Live => crt::LIVE,
-            Screen::Arcade => crt::ARCADE,
-        }
+/// A theme: a name, a base colour and a screen. The palette comes from the
+/// base colour by the rule of [`crate::palette`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spec {
+    /// The name in the menu and on the status line.
+    pub name: std::borrow::Cow<'static, str>,
+    /// The colour the palette starts from.
+    pub base: Color32,
+    /// The ten strengths, as saved.
+    pub strengths: Strengths,
+    /// The screen moves. Off, the moving strengths draw at 0 and the
+    /// scanlines stand still, but the theme keeps their numbers.
+    pub moves: bool,
+    /// Frames a second while the screen moves: one of [`crt::RATES`].
+    pub rate: u32,
+}
+
+impl Spec {
+    /// A theme that ships with Studio has this name, in any case.
+    pub fn is_shipped(&self) -> bool {
+        shipped(&self.name).is_some()
     }
+}
+
+const fn ships(name: &'static str, base: Color32, strengths: Strengths, moves: bool) -> Spec {
+    Spec {
+        name: std::borrow::Cow::Borrowed(name),
+        base,
+        strengths,
+        moves,
+        rate: crt::RATE,
+    }
+}
+
+/// The six themes that ship with Studio, in menu order. Green is the
+/// default.
+pub static SHIPPED: [Spec; 6] = [
+    ships("Green", GREEN.bright, crt::LIVE, true),
+    ships("Amber", AMBER.bright, crt::LIVE, true),
+    ships("Blue", BLUE.bright, crt::LIVE, true),
+    ships("White", WHITE.bright, crt::LIVE, true),
+    ships("Arcade", GREEN.bright, crt::ARCADE, true),
+    ships("Flat", GREEN.bright, Strengths::NONE, false),
+];
+
+/// The place in [`SHIPPED`] of the theme named `name`, in any case.
+pub fn shipped(name: &str) -> Option<usize> {
+    SHIPPED
+        .iter()
+        .position(|t| t.name.eq_ignore_ascii_case(name))
+}
+
+/// Said when high legibility holds the theme flat.
+pub const LEGIBLE: &str = "High legibility is on.";
+/// Said when reduce motion holds the theme still.
+pub const REDUCED: &str = "The system asks for reduced motion.";
+/// Said when the screen pass cannot run on this machine.
+pub const NO_ADAPTER: &str = "This machine has no graphics adapter for the screen pass.";
+/// The note in the menu while high legibility holds the theme.
+pub const HELD_FLAT: &str = "Shown flat. High legibility is on.";
+/// The note in the menu while reduce motion holds the theme.
+pub const HELD_STILL: &str = "Shown still. Reduce motion is on.";
+/// The note in the menu while the machine has no graphics adapter.
+pub const HELD_SIMPLER: &str = "Shown simpler. No graphics adapter.";
+
+/// The note for what holds the theme.
+pub fn held_note(h: crate::screen::Held) -> &'static str {
+    use crate::screen::Held;
+    match h {
+        Held::Legible => HELD_FLAT,
+        Held::Still => HELD_STILL,
+        Held::NoAdapter => HELD_SIMPLER,
+    }
+}
+
+/// The status line for the theme named `name`, held back by `held` or
+/// not: "Theme: Green." or "High legibility is on. Theme: Green, shown
+/// flat.".
+pub fn news(name: &str, held: Option<crate::screen::Held>) -> String {
+    use crate::screen::Held;
+    match held {
+        None => format!("Theme: {name}."),
+        Some(Held::Legible) => format!("{LEGIBLE} Theme: {name}, shown flat."),
+        Some(Held::Still) => format!("{REDUCED} Theme: {name}, shown still."),
+        Some(Held::NoAdapter) => format!("{NO_ADAPTER} Theme: {name}, shown without it."),
+    }
+}
+
+/// The status line at the first change of the theme named `name`.
+pub fn changed_news(name: &str) -> String {
+    format!("Theme: {name}, changed. Not saved.")
 }
 
 /// The ten strengths of the screen pass, each from 0 to 1. Zero turns an
@@ -185,7 +226,7 @@ impl Strengths {
     }
 
     /// The same with every effect that moves turned off: what an
-    /// unfocused window holds.
+    /// unfocused window holds, and what a theme that does not move draws.
     pub fn still(&self) -> Strengths {
         Strengths {
             persistence: 0.0,
@@ -201,28 +242,20 @@ impl Strengths {
 pub mod crt {
     use super::Strengths;
 
-    /// Still: the pass with the effects that do not move.
-    pub const STILL: Strengths = Strengths {
+    /// The Live numbers: Green, Amber, Blue and White.
+    pub const LIVE: Strengths = Strengths {
         bloom: 0.35,
         vignette: 0.50,
         scanlines: 0.30,
         curvature: 0.12,
-        persistence: 0.0,
-        noise: 0.0,
-        flicker: 0.0,
-        band: 0.0,
-        mask: 0.0,
-        aberration: 0.0,
-    };
-    /// Live: the pass with motion.
-    pub const LIVE: Strengths = Strengths {
         persistence: 0.50,
         noise: 0.10,
         flicker: 0.20,
         band: 0.30,
-        ..STILL
+        mask: 0.0,
+        aberration: 0.0,
     };
-    /// Arcade: everything strong.
+    /// The Arcade numbers: everything strong.
     pub const ARCADE: Strengths = Strengths {
         bloom: 0.60,
         vignette: 0.80,
@@ -235,14 +268,14 @@ pub mod crt {
         mask: 0.30,
         aberration: 0.20,
     };
-    /// The frame rates the Adjust dialog offers, a second.
+    /// The frame rates a theme may have, a second.
     pub const RATES: [u32; 3] = [15, 30, 60];
     /// The longest step one frame adds to the screen's clock, in seconds:
     /// one frame at the slowest rate. A late frame, or the first one after
     /// the window was hidden, then moves the picture one frame on, not by
     /// the whole time away.
     pub const MAX_STEP: f32 = 1.0 / RATES[0] as f32;
-    /// The frame rate of Live and Arcade unless changed.
+    /// The frame rate of the themes that ship.
     pub const RATE: u32 = 30;
     /// Curvature 1 moves a corner of the glass by this part of the half
     /// width. Keep in step with `curve` in `screen.wgsl`.
@@ -269,7 +302,7 @@ pub mod crt {
     pub const SLIDER_STEP: f64 = 0.01;
 }
 
-/// The colour roles of one scheme.
+/// The colour roles of one theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     /// The window behind the panes.
@@ -304,7 +337,7 @@ const fn hex(v: u32) -> Color32 {
     Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
 }
 
-/// The green scheme.
+/// The green palette, pinned to its base colour.
 pub const GREEN: Palette = Palette {
     ground: hex(0x05140a),
     pane: hex(0x091d10),
@@ -321,7 +354,7 @@ pub const GREEN: Palette = Palette {
     lit: hex(0xdcf08f),
 };
 
-/// The amber scheme.
+/// The amber palette, pinned to its base colour.
 pub const AMBER: Palette = Palette {
     ground: hex(0x140c03),
     pane: hex(0x1d1306),
@@ -338,7 +371,7 @@ pub const AMBER: Palette = Palette {
     lit: hex(0xf8ec70),
 };
 
-/// The blue scheme.
+/// The blue palette, pinned to its base colour.
 pub const BLUE: Palette = Palette {
     ground: hex(0x050f18),
     pane: hex(0x091a27),
@@ -355,7 +388,7 @@ pub const BLUE: Palette = Palette {
     lit: hex(0xdcf08f),
 };
 
-/// The white scheme.
+/// The white palette, pinned to its base colour.
 pub const WHITE: Palette = Palette {
     ground: hex(0x0b0e0e),
     pane: hex(0x131717),
@@ -373,8 +406,8 @@ pub const WHITE: Palette = Palette {
 };
 
 /// High legibility: neutral text and frames. `bright` is the green value of
-/// the table; [`Theme::palette`] puts the scheme's own `bright` in for the
-/// other schemes.
+/// the table; [`Theme::palette`] puts the theme's own `bright` in for every
+/// other base colour.
 pub const HIGH_LEGIBILITY: Palette = Palette {
     ground: hex(0x0c0e0d),
     pane: hex(0x131615),
@@ -711,47 +744,86 @@ pub enum Type {
     LabelFallback,
 }
 
-/// The scheme, the mode and the screen level of the running window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What draws one frame: the theme's palette, high legibility and the
+/// screen as [`crate::screen::shown`] worked it out.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
-    /// The phosphor.
-    pub scheme: Scheme,
+    /// The base colour of the theme.
+    base: Color32,
+    /// The palette of `base`, made once.
+    own: Palette,
     /// Neutral text and frames, the screen Off.
     pub high_legibility: bool,
-    /// The screen level, unless high legibility forces it Off.
+    /// What the screen draws, unless high legibility forces it Off.
     pub screen: Screen,
+    /// The strengths drawn. At Soft, Bloom and Scanlines say whether the
+    /// still overlays draw.
+    pub strengths: Strengths,
 }
 
 impl Default for Theme {
     fn default() -> Self {
-        Self {
-            scheme: Scheme::Green,
-            high_legibility: false,
-            screen: Screen::Soft,
-        }
+        Self::new(GREEN.bright)
     }
 }
 
 impl Theme {
-    /// The colours of this theme.
+    /// A theme of base colour `base`, at Soft with the Live numbers.
+    pub fn new(base: Color32) -> Self {
+        Self {
+            base,
+            own: crate::palette::palette(base),
+            high_legibility: false,
+            screen: Screen::Soft,
+            strengths: crt::LIVE,
+        }
+    }
+
+    /// The base colour.
+    pub fn base(&self) -> Color32 {
+        self.base
+    }
+
+    /// Take the base colour `base`, and its palette.
+    pub fn set_base(&mut self, base: Color32) {
+        if base != self.base {
+            *self = Self {
+                base,
+                own: crate::palette::palette(base),
+                ..*self
+            };
+        }
+    }
+
+    /// The colours of this theme. High legibility takes the neutral
+    /// palette with the theme's `bright`. When the rule moved the theme's
+    /// `alarm` or paled its `warn`, it takes those too, so a red accent and
+    /// a red alarm do not meet. The four pinned palettes keep their own
+    /// high legibility: green as the table has it, the other three with
+    /// their `bright` alone.
     pub fn palette(&self) -> Palette {
-        let own = match self.scheme {
-            Scheme::Green => GREEN,
-            Scheme::Amber => AMBER,
-            Scheme::Blue => BLUE,
-            Scheme::White => WHITE,
-        };
+        let own = self.own;
         if !self.high_legibility {
             return own;
         }
         let mut p = HIGH_LEGIBILITY;
-        if self.scheme != Scheme::Green {
-            p.bright = own.bright;
+        if self.base == GREEN.bright {
+            return p;
+        }
+        p.bright = own.bright;
+        if crate::palette::PINNED.iter().any(|(b, _)| *b == self.base) {
+            return p;
+        }
+        if own.alarm != crate::palette::ALARM_HOME {
+            p.alarm = own.alarm;
+        }
+        if own.warn != crate::palette::WARN_HOME {
+            p.warn = own.warn;
         }
         p
     }
 
-    /// The screen level actually drawn: high legibility forces Off.
+    /// The screen drawn: high legibility forces Off.
     pub fn screen(&self) -> Screen {
         if self.high_legibility {
             Screen::Off
@@ -760,11 +832,17 @@ impl Theme {
         }
     }
 
-    /// The kit draws its still glow: rectangle halos, label halos, the
-    /// scanline quad and the drawings' baked halo groups. Only at Soft:
-    /// the screen pass's bloom does that work at the pass levels.
-    pub fn still_glow(&self) -> bool {
-        self.screen() == Screen::Soft
+    /// The kit draws its halos: rectangle halos, label halos and the
+    /// drawings' baked halo groups. Only at Soft, with Bloom above 0: the
+    /// screen pass's bloom does that work when it runs.
+    pub fn halo_on(&self) -> bool {
+        self.screen() == Screen::Soft && self.strengths.bloom > 0.0
+    }
+
+    /// The window draws its scanline quad. Only at Soft, with Scanlines
+    /// above 0.
+    pub fn scanlines_on(&self) -> bool {
+        self.screen() == Screen::Soft && self.strengths.scanlines > 0.0
     }
 
     /// The font of a text role. High legibility raises body and code to 14.
@@ -813,9 +891,9 @@ impl Theme {
         }
     }
 
-    /// The halo under a lit thing, or None but at Soft.
+    /// The halo under a lit thing, or None unless halos draw.
     pub fn halo(&self) -> Option<Shadow> {
-        self.still_glow().then(|| Shadow {
+        self.halo_on().then(|| Shadow {
             offset: [0, 0],
             blur: effect::HALO_BLUR,
             spread: effect::HALO_SPREAD,
@@ -849,10 +927,10 @@ impl Theme {
         })
     }
 
-    /// The tint of a bright caps label's halo, out of 1, or None but at
-    /// Soft.
+    /// The tint of a bright caps label's halo, out of 1, or None unless
+    /// halos draw.
     pub fn label_halo(&self) -> Option<f32> {
-        self.still_glow().then_some(effect::LABEL_HALO_SOFT)
+        self.halo_on().then_some(effect::LABEL_HALO_SOFT)
     }
 
     /// The fill under an error row: 12 percent `alarm` over `pane`.
@@ -862,9 +940,9 @@ impl Theme {
     }
 
     /// The scanline texture: `SCANLINE_PERIOD` rows of one device pixel,
-    /// black with alpha in the first row. None but at Soft.
+    /// black with alpha in the first row. None unless the quad draws.
     pub fn scanline_image(&self) -> Option<egui::ColorImage> {
-        if !self.still_glow() {
+        if !self.scanlines_on() {
             return None;
         }
         let mut px = vec![Color32::TRANSPARENT; effect::SCANLINE_PERIOD];
@@ -1007,7 +1085,7 @@ mod tests {
         let on = Theme::default();
         assert!(on.pane_halo().is_some() && on.label_halo().is_some());
         assert!(on.scanline_image().is_some());
-        for level in [Screen::Off, Screen::Still, Screen::Live, Screen::Arcade] {
+        for level in [Screen::Off, Screen::Still, Screen::Live] {
             let off = Theme {
                 screen: level,
                 ..on
@@ -1020,6 +1098,28 @@ mod tests {
         }
         let (h, f) = (on.halo().map(|s| s.color), on.pane_halo().map(|s| s.color));
         assert!(f.zip(h).is_some_and(|(f, h)| f.a() < h.a()));
+        // Bloom at 0: no halo, the scanlines stay.
+        let no_bloom = Theme {
+            strengths: Strengths {
+                bloom: 0.0,
+                ..crt::LIVE
+            },
+            ..on
+        };
+        assert!(!no_bloom.halo_on() && no_bloom.scanlines_on());
+        assert!(no_bloom.halo().is_none() && no_bloom.label_halo().is_none());
+        assert!(no_bloom.scanline_image().is_some());
+        // Scanlines at 0: no quad, the halos stay.
+        let no_lines = Theme {
+            strengths: Strengths {
+                scanlines: 0.0,
+                ..crt::LIVE
+            },
+            ..on
+        };
+        assert!(no_lines.halo_on() && !no_lines.scanlines_on());
+        assert!(no_lines.scanline_image().is_none());
+        assert!(no_lines.pane_halo().is_some());
     }
 
     /// The colour tables hold the values of the design, spot checked.
@@ -1037,7 +1137,7 @@ mod tests {
     fn high_legibility_turns_the_screen_off() {
         let t = Theme {
             high_legibility: true,
-            screen: Screen::Arcade,
+            screen: Screen::Live,
             ..Theme::default()
         };
         assert_eq!(t.screen(), Screen::Off);
@@ -1046,47 +1146,123 @@ mod tests {
         assert_eq!(t.palette().text, HIGH_LEGIBILITY.text);
     }
 
-    /// The levels hold their numbers: Still, Live and Arcade.
+    /// The six themes that ship hold their numbers.
     #[test]
-    fn levels_hold_their_numbers() {
-        let still = Screen::Still.strengths();
+    fn shipped_hold_their_numbers() {
+        let names: Vec<_> = SHIPPED.iter().map(|t| t.name.as_ref()).collect();
+        assert_eq!(names, ["Green", "Amber", "Blue", "White", "Arcade", "Flat"]);
+        let bases: Vec<_> = SHIPPED.iter().map(|t| t.base).collect();
         assert_eq!(
+            bases,
             [
-                still.bloom,
-                still.vignette,
-                still.scanlines,
-                still.curvature
-            ],
-            [0.35, 0.50, 0.30, 0.12]
+                hex(0x5aff7f),
+                hex(0xffb93f),
+                hex(0x66c9ff),
+                hex(0xf4ffff),
+                hex(0x5aff7f),
+                hex(0x5aff7f)
+            ]
         );
-        for i in 4..10 {
-            assert_eq!(still.get(i), Some(0.0), "{}", Strengths::NAMES[i]);
-        }
-        let live = Screen::Live.strengths();
-        let want = [0.35, 0.50, 0.30, 0.12, 0.50, 0.10, 0.20, 0.30, 0.0, 0.0];
+        let live = [0.35, 0.50, 0.30, 0.12, 0.50, 0.10, 0.20, 0.30, 0.0, 0.0];
         let arcade = [0.60, 0.80, 0.60, 0.40, 0.80, 0.40, 0.50, 0.60, 0.30, 0.20];
-        for i in 0..10 {
-            assert_eq!(live.get(i), Some(want[i]), "{}", Strengths::NAMES[i]);
-            assert_eq!(Screen::Arcade.strengths().get(i), Some(arcade[i]));
-            assert_eq!(Screen::Off.strengths().get(i), Some(0.0));
-            assert_eq!(Screen::Soft.strengths().get(i), Some(0.0));
+        for (t, want, moves) in [
+            (&SHIPPED[0], live, true),
+            (&SHIPPED[1], live, true),
+            (&SHIPPED[2], live, true),
+            (&SHIPPED[3], live, true),
+            (&SHIPPED[4], arcade, true),
+            (&SHIPPED[5], [0.0; 10], false),
+        ] {
+            for (i, w) in want.iter().enumerate() {
+                assert_eq!(
+                    t.strengths.get(i),
+                    Some(*w),
+                    "{} {}",
+                    t.name,
+                    Strengths::NAMES[i]
+                );
+            }
+            assert_eq!(t.moves, moves, "{}", t.name);
+            assert_eq!(t.rate, 30, "{}", t.name);
+            assert!(t.is_shipped());
         }
         assert_eq!(Strengths::NONE.get(10), None);
-        assert!(Screen::Live.moving() && Screen::Arcade.moving() && !Screen::Still.moving());
+        assert_eq!(shipped("arcade"), Some(4));
+        assert_eq!(shipped("FLAT"), Some(5));
+        assert_eq!(shipped("live"), None);
+        assert_eq!(crt::LIVE.still().noise, 0.0);
+        assert_eq!(crt::LIVE.still().bloom, crt::LIVE.bloom);
+        assert!(Screen::Live.moving() && !Screen::Still.moving());
         assert!(!Screen::Soft.pass() && !Screen::Off.pass() && Screen::Still.pass());
-        assert_eq!(Screen::from_name("live"), Some(Screen::Live));
-        assert_eq!(Screen::from_name("full"), None);
-        assert_eq!(live.still().noise, 0.0);
-        assert_eq!(live.still().bloom, live.bloom);
     }
 
     #[test]
     fn amber_bright_in_high_legibility() {
-        let t = Theme {
-            scheme: Scheme::Amber,
+        let mut t = Theme::new(AMBER.bright);
+        t.high_legibility = true;
+        assert_eq!(t.palette().bright, AMBER.bright);
+        // The pinned four keep the neutral alarm and warning.
+        assert_eq!(t.palette().alarm, HIGH_LEGIBILITY.alarm);
+        assert_eq!(t.palette().warn, HIGH_LEGIBILITY.warn);
+        let g = Theme {
             high_legibility: true,
             ..Theme::default()
         };
-        assert_eq!(t.palette().bright, AMBER.bright);
+        assert_eq!(g.palette(), HIGH_LEGIBILITY);
+    }
+
+    /// A red base colour: the rule moved its alarm away from the red, and
+    /// high legibility takes that alarm in place of its own red one.
+    #[test]
+    fn legible_red_theme_moves_the_alarm() {
+        let red = hex(0xff3030);
+        let own = crate::palette::palette(red);
+        assert_ne!(own.alarm, crate::palette::ALARM_HOME, "the rule moved it");
+        let mut t = Theme::new(red);
+        t.high_legibility = true;
+        let p = t.palette();
+        assert_eq!(p.bright, own.bright);
+        assert_eq!(p.alarm, own.alarm);
+        assert_ne!(p.alarm, HIGH_LEGIBILITY.alarm);
+        assert_eq!(p.text, HIGH_LEGIBILITY.text);
+        // A base colour that leaves the alarm home keeps the neutral one.
+        let cyan = Theme {
+            high_legibility: true,
+            ..Theme::new(hex(0x40e0ff))
+        };
+        assert_eq!(
+            crate::palette::palette(hex(0x40e0ff)).alarm,
+            crate::palette::ALARM_HOME
+        );
+        assert_eq!(cyan.palette().alarm, HIGH_LEGIBILITY.alarm);
+    }
+
+    /// The status lines and the notes, word for word.
+    #[test]
+    fn the_words_of_a_held_theme() {
+        use crate::screen::Held;
+        assert_eq!(news("Ember", None), "Theme: Ember.");
+        assert_eq!(
+            news("Ember", Some(Held::Legible)),
+            "High legibility is on. Theme: Ember, shown flat."
+        );
+        assert_eq!(
+            news("Ember", Some(Held::Still)),
+            "The system asks for reduced motion. Theme: Ember, shown still."
+        );
+        assert_eq!(
+            news("Ember", Some(Held::NoAdapter)),
+            "This machine has no graphics adapter for the screen pass. Theme: Ember, shown without it."
+        );
+        assert_eq!(
+            held_note(Held::Legible),
+            "Shown flat. High legibility is on."
+        );
+        assert_eq!(held_note(Held::Still), "Shown still. Reduce motion is on.");
+        assert_eq!(
+            held_note(Held::NoAdapter),
+            "Shown simpler. No graphics adapter."
+        );
+        assert_eq!(changed_news("Green"), "Theme: Green, changed. Not saved.");
     }
 }

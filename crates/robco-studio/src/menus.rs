@@ -3,7 +3,21 @@
 //! The menus, described once. The row in the window reads this model, and so
 //! would a native menu bar. Each item has its command, its shortcut, and,
 //! when this release cannot do it, the reason. An item can sit in a submenu
-//! of its menu, and can have a separator before it.
+//! of its menu, and can have a separator before it. The rows of View, Theme
+//! come from the list of themes, so the menus are made from it.
+
+use crate::screen::Held;
+use crate::theme::Spec;
+use std::borrow::Cow;
+
+/// A row of View, Theme that takes a theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeId {
+    /// The theme at this place in the list the menus were made from.
+    At(usize),
+    /// The changed theme, not saved.
+    Changed,
+}
 
 /// A command a menu item gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,9 +53,12 @@ pub enum Command {
     TextLarger,
     TextSmaller,
     TextReset,
-    Phosphor(crate::theme::Scheme),
-    Screen(crate::theme::Screen),
-    ScreenAdjust,
+    Theme(ThemeId),
+    ThemeEdit,
+    ThemeAdd,
+    ThemeFolder,
+    /// A note of View, Theme: it cannot be picked.
+    ThemeHeld(Held),
     HighLegibility,
     ProjectSettings,
     NewFile,
@@ -119,10 +136,10 @@ impl Shortcut {
 }
 
 /// One item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     /// Its text.
-    pub text: &'static str,
+    pub text: Cow<'static, str>,
     /// What it does.
     pub command: Command,
     /// Its shortcut.
@@ -133,10 +150,19 @@ pub struct Item {
     pub group: Option<&'static str>,
     /// A separator comes before it.
     pub separator: bool,
+    /// It is a changed theme that is not saved: it shows the square and
+    /// "not saved" that an unsaved file has.
+    pub unsaved: bool,
 }
 
-/// The submenu of the screen levels and Adjust, in View.
-pub const SCREEN: &str = "Screen";
+/// The submenu of the themes, in View.
+pub const THEME: &str = "Theme";
+/// The most themes of a person's own that View, Theme lists.
+pub const THEMES_IN_MENU: usize = 8;
+/// The row after them when there are more. It opens the editor.
+pub const MORE_THEMES: &str = "More themes";
+/// The note of the changed theme's row.
+pub const NOT_SAVED: &str = "not saved";
 
 /// One menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,11 +179,13 @@ pub const LATER: &str = "Not in this release of Studio. Nothing was done.";
 /// The jobs drawn ready whose commands do not exist yet, with their
 /// names. Their buttons and menu items act, and the act only says so on
 /// the status line. A real command takes its job out of this list.
-pub const NOT_YET: [(Command, &str); 4] = [
+pub const NOT_YET: [(Command, &str); 6] = [
     (Command::Build, "Build"),
     (Command::Run, "Run"),
     (Command::Debug, "Debug"),
     (Command::WriteCard, "Write card"),
+    (Command::ThemeAdd, "Add a theme file"),
+    (Command::ThemeFolder, "Show the themes folder"),
 ];
 
 /// The name of `c` when it is a job of [`NOT_YET`].
@@ -183,49 +211,102 @@ const fn it(
     unavailable: Option<&'static str>,
 ) -> Item {
     Item {
-        text,
+        text: Cow::Borrowed(text),
         command,
         shortcut,
         unavailable,
         group: None,
         separator: false,
+        unsaved: false,
     }
 }
 
-/// The items of View, Screen: the five levels, a separator and Adjust.
-pub fn screen_items() -> Vec<Item> {
-    let mut out: Vec<Item> = crate::theme::Screen::ALL
+/// The rows of View, Theme, in order: the themes that ship; a separator
+/// and the person's own, sorted by name without regard to case, the first
+/// [`THEMES_IN_MENU`] then [`MORE_THEMES`]; the changed theme, when there
+/// is one; a separator, Edit theme, Add a theme file and Show the themes
+/// folder; a separator and one note for each thing in `held`.
+///
+/// `themes` is every theme known, in any order. A row picks a theme by its
+/// place in `themes`. `changed` is the changed theme, not saved.
+pub fn theme_items(themes: &[Spec], changed: Option<&Spec>, held: &[Held]) -> Vec<Item> {
+    let row = |text: Cow<'static, str>, command: Command| Item {
+        text,
+        group: Some(THEME),
+        ..it("", command, None, None)
+    };
+    let mut out: Vec<Item> = themes
         .iter()
-        .map(|l| Item {
-            group: Some(SCREEN),
-            ..it(l.name(), Command::Screen(*l), None, None)
-        })
+        .enumerate()
+        .filter(|(_, t)| t.is_shipped())
+        .map(|(i, t)| row(t.name.clone(), Command::Theme(ThemeId::At(i))))
         .collect();
+    let mut own: Vec<(usize, &Spec)> = themes
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.is_shipped())
+        .collect();
+    own.sort_by_cached_key(|(_, t)| t.name.to_lowercase());
+    for (k, (i, t)) in own.iter().take(THEMES_IN_MENU).enumerate() {
+        out.push(Item {
+            separator: k == 0,
+            ..row(t.name.clone(), Command::Theme(ThemeId::At(*i)))
+        });
+    }
+    if own.len() > THEMES_IN_MENU {
+        out.push(row(Cow::Borrowed(MORE_THEMES), Command::ThemeEdit));
+    }
+    if let Some(c) = changed {
+        out.push(Item {
+            unsaved: true,
+            ..row(
+                Cow::Owned(format!("{}, changed", c.name)),
+                Command::Theme(ThemeId::Changed),
+            )
+        });
+    }
     out.push(Item {
-        group: Some(SCREEN),
+        shortcut: sc(Mods::CmdShift, "T"),
         separator: true,
-        ..it("Adjust", Command::ScreenAdjust, None, None)
+        ..row(Cow::Borrowed("Edit theme"), Command::ThemeEdit)
     });
+    out.push(row(Cow::Borrowed("Add a theme file"), Command::ThemeAdd));
+    out.push(row(
+        Cow::Borrowed("Show the themes folder"),
+        Command::ThemeFolder,
+    ));
+    for (k, h) in held.iter().enumerate() {
+        out.push(Item {
+            separator: k == 0,
+            ..row(
+                Cow::Borrowed(crate::theme::held_note(*h)),
+                Command::ThemeHeld(*h),
+            )
+        });
+    }
     out
 }
 
-/// Every menu of the design's menu table, in order.
+/// Every menu of the design's menu table, in order, with the themes that
+/// ship in View, Theme, none changed and none held.
 pub fn menus() -> Vec<Menu> {
+    menus_with(theme_items(&crate::theme::SHIPPED, None, &[]))
+}
+
+/// Every menu of the design's menu table, in order, with `theme` as the
+/// rows of View, Theme, as [`theme_items`] makes them.
+pub fn menus_with(theme: Vec<Item>) -> Vec<Menu> {
     use Command as C;
     use Mods as M;
     let l = Some(LATER);
     let k = Some(KEYS_ONLY);
-    let mut phosphor: Vec<Item> = crate::theme::Scheme::ALL
-        .iter()
-        .map(|s| it(s.name(), C::Phosphor(*s), None, None))
-        .collect();
-    phosphor.extend(screen_items());
-    phosphor.extend([it(
+    let mut looks = theme;
+    looks.push(it(
         "High legibility",
         C::HighLegibility,
         sc(M::CmdShift, "L"),
         None,
-    )]);
+    ));
     let mut view = vec![
         it("Project", C::PageProject, sc(M::Cmd, "1"), None),
         it("Card", C::PageCard, sc(M::Cmd, "2"), None),
@@ -257,7 +338,7 @@ pub fn menus() -> Vec<Menu> {
         it("Smaller text", C::TextSmaller, sc(M::Cmd, "-"), l),
         it("Reset text size", C::TextReset, sc(M::Cmd, "0"), l),
     ];
-    view.extend(phosphor);
+    view.extend(looks);
     vec![
         Menu {
             title: "File",
@@ -373,10 +454,9 @@ pub fn item_id(m: usize, i: usize) -> String {
     format!("{m}.{i}")
 }
 
-/// The command of an item id, or None if it names no item.
-pub fn command_for_id(id: &str) -> Option<Command> {
+/// The command of an item id in `all`, or None if it names no item.
+pub fn command_for_id(all: &[Menu], id: &str) -> Option<Command> {
     let (m, i) = id.split_once('.')?;
-    let all = menus();
     Some(
         all.get(m.parse::<usize>().ok()?)?
             .items
@@ -403,8 +483,7 @@ pub fn check(c: Command) -> Check {
     match c {
         C::ToggleFiles | C::ToggleBottom | C::CompactHeader | C::HighLegibility => Check::Toggle,
         C::PageProject | C::PageCard | C::PageDevice | C::PageSdk => Check::Choice("page"),
-        C::Phosphor(_) => Check::Choice("phosphor"),
-        C::Screen(_) => Check::Choice("screen"),
+        C::Theme(_) => Check::Choice("theme"),
         C::SimZoom(_) => Check::Choice("scale"),
         // Every other command by name, with no catch-all: a new command
         // does not build until it says whether it has a state.
@@ -431,7 +510,10 @@ pub fn check(c: Command) -> Check {
         | C::TextLarger
         | C::TextSmaller
         | C::TextReset
-        | C::ScreenAdjust
+        | C::ThemeEdit
+        | C::ThemeAdd
+        | C::ThemeFolder
+        | C::ThemeHeld(_)
         | C::ProjectSettings
         | C::NewFile
         | C::Export
@@ -484,7 +566,7 @@ pub struct NativeItem {
     /// Plain or check.
     pub kind: NativeKind,
     /// Its text.
-    pub title: &'static str,
+    pub title: String,
     /// The submenu it sits in, or None for the menu itself.
     pub group: Option<&'static str>,
     /// A separator comes before it.
@@ -493,6 +575,8 @@ pub struct NativeItem {
     pub enabled: bool,
     /// Its mark is on. Always false for a plain item.
     pub checked: bool,
+    /// The changed theme, not saved.
+    pub unsaved: bool,
     /// The key it carries. None for an item this release cannot do, so
     /// the key still reaches the window.
     pub shortcut: Option<Shortcut>,
@@ -502,7 +586,7 @@ pub struct NativeItem {
 /// `studio` now. The bar builds and syncs from this list alone.
 pub fn native_items(studio: &crate::Studio) -> Vec<NativeItem> {
     let mut out = Vec::new();
-    for (m, menu) in menus().iter().enumerate() {
+    for (m, menu) in studio.menus().iter().enumerate() {
         for (i, it) in menu.items.iter().enumerate() {
             let kind = match check(it.command) {
                 Check::Plain => NativeKind::Plain,
@@ -513,16 +597,36 @@ pub fn native_items(studio: &crate::Studio) -> Vec<NativeItem> {
                 menu: m,
                 command: it.command,
                 kind,
-                title: it.text,
+                title: it.text.to_string(),
                 group: it.group,
                 separator: it.separator,
                 enabled: studio.unavailable(it).is_none(),
+                unsaved: it.unsaved,
                 checked: kind == NativeKind::Check && studio.checked(it.command),
                 shortcut: it.shortcut.filter(|_| it.unavailable.is_none()),
             });
         }
     }
     out
+}
+
+/// The bar must be built again: an item came or went, or one changed its
+/// id, text, kind, place or key. A change of enabled state or mark alone
+/// is a sync.
+pub fn shape_changed(old: &[NativeItem], new: &[NativeItem]) -> bool {
+    let shape = |i: &NativeItem| {
+        (
+            i.id.clone(),
+            i.menu,
+            i.command,
+            i.kind,
+            i.title.clone(),
+            i.group,
+            i.separator,
+            i.shortcut,
+        )
+    };
+    old.len() != new.len() || old.iter().zip(new).any(|(a, b)| shape(a) != shape(b))
 }
 
 #[cfg(test)]
@@ -561,28 +665,174 @@ mod tests {
 
     #[test]
     fn ids_lead_back_to_their_command() {
-        for (m, menu) in menus().iter().enumerate() {
+        let all = menus();
+        for (m, menu) in all.iter().enumerate() {
             for (i, it) in menu.items.iter().enumerate() {
-                assert_eq!(command_for_id(&item_id(m, i)), Some(it.command));
+                assert_eq!(command_for_id(&all, &item_id(m, i)), Some(it.command));
             }
         }
-        assert_eq!(command_for_id("99.0"), None);
-        assert_eq!(command_for_id("x"), None);
+        assert_eq!(command_for_id(&all, "99.0"), None);
+        assert_eq!(command_for_id(&all, "x"), None);
+    }
+
+    /// A theme of a person's own, named `name`.
+    fn own(name: &str) -> Spec {
+        Spec {
+            name: Cow::Owned(name.to_owned()),
+            ..crate::theme::SHIPPED[1].clone()
+        }
+    }
+
+    fn texts(items: &[Item]) -> Vec<String> {
+        items.iter().map(|i| i.text.to_string()).collect()
     }
 
     #[test]
-    fn view_has_the_screen_submenu() {
+    fn view_has_the_theme_submenu() {
         let view = menus().into_iter().find(|m| m.title == "View").unwrap();
-        let screen: Vec<_> = view
+        let theme: Vec<_> = view
             .items
             .iter()
-            .filter(|i| i.group == Some(SCREEN))
+            .filter(|i| i.group == Some(THEME))
+            .cloned()
             .collect();
-        let names: Vec<_> = screen.iter().map(|i| i.text).collect();
-        assert_eq!(names, ["Off", "Soft", "Still", "Live", "Arcade", "Adjust"]);
-        let seps: Vec<_> = screen.iter().map(|i| i.separator).collect();
-        assert_eq!(seps, [false, false, false, false, false, true]);
-        assert!(view.items.iter().all(|i| !i.text.contains("ffects")));
+        assert_eq!(
+            texts(&theme),
+            [
+                "Green",
+                "Amber",
+                "Blue",
+                "White",
+                "Arcade",
+                "Flat",
+                "Edit theme",
+                "Add a theme file",
+                "Show the themes folder"
+            ]
+        );
+        let seps: Vec<_> = theme.iter().map(|i| i.separator).collect();
+        assert_eq!(
+            seps,
+            [false, false, false, false, false, false, true, false, false]
+        );
+        // High legibility comes right under Theme.
+        let at = view
+            .items
+            .iter()
+            .position(|i| i.command == Command::HighLegibility)
+            .unwrap();
+        assert_eq!(view.items[at - 1].command, Command::ThemeFolder);
+        let edit = theme.iter().find(|i| i.text == "Edit theme").unwrap();
+        assert_eq!(
+            edit.shortcut.map(|s| s.shown(true)),
+            Some("Cmd+Shift+T".into())
+        );
+        assert_eq!(
+            edit.shortcut.map(|s| s.shown(false)),
+            Some("Ctrl+Shift+T".into())
+        );
+        // No phosphor item and no Screen submenu are left.
+        assert!(view.items.iter().all(|i| i.group != Some("Screen")));
+        assert_eq!(view.items.iter().filter(|i| i.text == "Green").count(), 1);
+    }
+
+    /// The person's own come after the six, sorted without regard to
+    /// case, each picking its own place in the list.
+    #[test]
+    fn theme_rows_in_order() {
+        let mut list = crate::theme::SHIPPED.to_vec();
+        list.extend([own("ember"), own("Dusk"), own("aqua")]);
+        let items = theme_items(&list, None, &[]);
+        assert_eq!(texts(&items[6..9]), ["aqua", "Dusk", "ember"]);
+        assert!(items[6].separator && !items[7].separator);
+        assert_eq!(items[6].command, Command::Theme(ThemeId::At(8)));
+        assert_eq!(items[8].command, Command::Theme(ThemeId::At(6)));
+        assert_eq!(items[0].command, Command::Theme(ThemeId::At(0)));
+        assert_eq!(items[9].text, "Edit theme");
+        assert!(items.iter().all(|i| i.group == Some(THEME) && !i.unsaved));
+    }
+
+    /// The changed theme comes after the themes, before Edit theme.
+    #[test]
+    fn the_changed_row() {
+        let list = crate::theme::SHIPPED.to_vec();
+        let changed = own("Ember");
+        let items = theme_items(&list, Some(&changed), &[]);
+        let at = items.iter().position(|i| i.unsaved).unwrap();
+        assert_eq!(at, 6);
+        assert_eq!(items[at].text, "Ember, changed");
+        assert_eq!(items[at].command, Command::Theme(ThemeId::Changed));
+        assert!(!items[at].separator);
+        assert_eq!(items[at + 1].text, "Edit theme");
+        assert_eq!(check(items[at].command), Check::Choice("theme"));
+    }
+
+    /// Eight of a person's own are listed; the ninth brings "More themes".
+    #[test]
+    fn more_themes_at_nine() {
+        let names = [
+            "kilo", "Juliet", "india", "Hotel", "golf", "Foxtrot", "echo", "Delta", "charlie",
+            "Bravo", "alpha",
+        ];
+        for n in [8, 9, 11] {
+            let mut list = crate::theme::SHIPPED.to_vec();
+            list.extend(names[..n].iter().map(|x| own(x)));
+            let items = theme_items(&list, None, &[]);
+            let own_rows: Vec<_> = items[6..]
+                .iter()
+                .take_while(|i| matches!(i.command, Command::Theme(_)))
+                .collect();
+            assert_eq!(own_rows.len(), 8, "{n}");
+            let more = items.iter().any(|i| i.text == MORE_THEMES);
+            assert_eq!(more, n > 8, "{n}");
+            if n == 11 {
+                assert_eq!(own_rows[0].text, "alpha");
+                assert_eq!(own_rows[7].text, "Hotel");
+                assert_eq!(items[14].text, MORE_THEMES);
+                assert_eq!(items[14].command, Command::ThemeEdit);
+            }
+        }
+    }
+
+    /// One note for each thing that holds the theme, after a separator.
+    #[test]
+    fn one_note_per_held() {
+        let list = crate::theme::SHIPPED.to_vec();
+        assert!(
+            theme_items(&list, None, &[])
+                .iter()
+                .all(|i| !matches!(i.command, Command::ThemeHeld(_)))
+        );
+        let all = [Held::Legible, Held::Still, Held::NoAdapter];
+        let items = theme_items(&list, None, &all);
+        let notes: Vec<_> = items
+            .iter()
+            .filter(|i| matches!(i.command, Command::ThemeHeld(_)))
+            .collect();
+        assert_eq!(notes.len(), 3);
+        assert_eq!(
+            notes.iter().map(|i| i.text.as_ref()).collect::<Vec<_>>(),
+            [
+                "Shown flat. High legibility is on.",
+                "Shown still. Reduce motion is on.",
+                "Shown simpler. No graphics adapter."
+            ]
+        );
+        assert!(notes[0].separator && !notes[1].separator);
+        assert_eq!(
+            items.last().map(|i| i.command),
+            Some(Command::ThemeHeld(Held::NoAdapter))
+        );
+        for h in all {
+            let one = theme_items(&list, None, &[h]);
+            let n: Vec<_> = one
+                .iter()
+                .filter(|i| matches!(i.command, Command::ThemeHeld(_)))
+                .collect();
+            assert_eq!(n.len(), 1);
+            assert_eq!(n[0].command, Command::ThemeHeld(h));
+            assert_eq!(n[0].text, crate::theme::held_note(h));
+        }
     }
 
     #[test]

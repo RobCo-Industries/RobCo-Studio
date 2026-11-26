@@ -1329,7 +1329,7 @@ mod tests {
     #[test]
     fn the_uniforms_follow_the_shader() {
         let f = Frame {
-            strengths: crate::theme::Screen::Arcade.strengths(),
+            strengths: crate::theme::crt::ARCADE,
             time: 2.0,
             scan_offset: 1.0,
             keep: 0.0,

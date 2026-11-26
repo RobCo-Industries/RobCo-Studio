@@ -782,10 +782,10 @@ pub struct Art {
 
 impl Art {
     /// Make every texture for the context's display scale and the theme's
-    /// screen level.
+    /// halos and scanlines.
     pub fn new(ctx: &egui::Context, theme: &theme::Theme) -> Self {
         let ppp = ctx.pixels_per_point();
-        let halos = theme.still_glow();
+        let halos = theme.halo_on();
         let px = (size::ICON * ppp).round().max(1.0);
         let mut icons = BTreeMap::new();
         for icon in Icon::ALL {
@@ -824,8 +824,8 @@ impl Art {
         }
     }
 
-    /// The art was made with the still glow: the drawings hold their baked
-    /// halo groups and the scanline texture exists.
+    /// The art was made with halos: the drawings hold their baked halo
+    /// groups.
     pub fn halos(&self) -> bool {
         self.halos
     }
@@ -835,10 +835,12 @@ impl Art {
         self.scanlines.is_some()
     }
 
-    /// The art was made for this display scale and for the glow state the
-    /// theme's level needs now. When false, make it again.
+    /// The art was made for this display scale and for the halos and the
+    /// scanlines the theme draws now. When false, make it again.
     pub fn fits(&self, pixels_per_point: f32, theme: &theme::Theme) -> bool {
-        self.pixels_per_point == pixels_per_point && self.halos == theme.still_glow()
+        self.pixels_per_point == pixels_per_point
+            && self.halos == theme.halo_on()
+            && self.scanlines.is_some() == theme.scanlines_on()
     }
 
     /// Paint an icon in a 16 px square at `rect`'s centre.

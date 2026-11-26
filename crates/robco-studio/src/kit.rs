@@ -1232,7 +1232,29 @@ impl<'a> Kit<'a> {
         unavailable: Option<&str>,
         width: f32,
     ) -> Response {
+        self.menu_choice_unsaved(ui, text, note, mark, unavailable, width, false)
+    }
+
+    /// A menu row with a mark, as [`Kit::menu_choice`]. An unsaved row
+    /// shows the square of an unsaved file before its note, and a screen
+    /// reader hears "not saved" after its name.
+    #[allow(clippy::too_many_arguments)]
+    pub fn menu_choice_unsaved(
+        &self,
+        ui: &mut Ui,
+        text: &str,
+        note: &str,
+        mark: MenuMark,
+        unavailable: Option<&str>,
+        width: f32,
+        unsaved: bool,
+    ) -> Response {
         let p = self.p();
+        let name = if unsaved {
+            format!("{text}, not saved")
+        } else {
+            text.to_owned()
+        };
         let sense = if unavailable.is_some() {
             Sense::focusable_noninteractive()
         } else {
@@ -1241,9 +1263,9 @@ impl<'a> Kit<'a> {
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::ROW_TREE), sense);
         let on = unavailable.is_none();
         resp.widget_info(|| match mark {
-            MenuMark::None => WidgetInfo::labeled(Role::MenuItem, on, text),
-            MenuMark::Check(c) => WidgetInfo::selected(Role::MenuItemCheckBox, on, c, text),
-            MenuMark::Radio(c) => WidgetInfo::selected(Role::MenuItemRadio, on, c, text),
+            MenuMark::None => WidgetInfo::labeled(Role::MenuItem, on, &name),
+            MenuMark::Check(c) => WidgetInfo::selected(Role::MenuItemCheckBox, on, c, &name),
+            MenuMark::Radio(c) => WidgetInfo::selected(Role::MenuItemRadio, on, c, &name),
         });
         if let Some(why) = unavailable {
             ui.ctx().accesskit_node_builder(resp.id, |n| {
@@ -1286,7 +1308,19 @@ impl<'a> Kit<'a> {
         } else {
             size::UNIT * 2.0
         };
-        let (g, cut) = self.fit(painter, text, Type::Body, fg, note_x - gap - x);
+        let square = if unsaved { size::STEP_12 } else { 0.0 };
+        if unsaved {
+            let s = size::STEP_6;
+            painter.rect_filled(
+                Rect::from_center_size(
+                    egui::pos2(note_x - gap - square / 2.0, rect.center().y),
+                    egui::vec2(s, s),
+                ),
+                CornerRadius::ZERO,
+                fg,
+            );
+        }
+        let (g, cut) = self.fit(painter, text, Type::Body, fg, note_x - gap - square - x);
         painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
         painter.galley(
             egui::pos2(note_x, rect.center().y - n.size().y / 2.0),
@@ -1301,6 +1335,43 @@ impl<'a> Kit<'a> {
             None if cut => resp.on_hover_text(text),
             None => resp,
         }
+    }
+
+    /// A row of a menu that cannot be picked: the info icon in the mark's
+    /// place and a note in `dim`. A screen reader hears an unavailable
+    /// menu item named by the note.
+    pub fn menu_note(&self, ui: &mut Ui, text: &str, width: f32) -> Response {
+        let p = self.p();
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(width, size::ROW_TREE),
+            Sense::focusable_noninteractive(),
+        );
+        resp.widget_info(|| WidgetInfo::labeled(Role::MenuItem, false, text));
+        ui.ctx()
+            .accesskit_node_builder(resp.id, |n| n.set_disabled());
+        let painter = ui.painter();
+        self.art.icon(
+            painter,
+            Rect::from_min_size(
+                egui::pos2(
+                    rect.left() + size::MENU_MARK_INDENT - size::UNIT - size::MENU_MARK,
+                    rect.top(),
+                ),
+                egui::vec2(size::MENU_MARK, rect.height()),
+            ),
+            Icon::Info,
+            p.dim,
+        );
+        let x = rect.left() + size::MENU_MARK_INDENT;
+        let (g, cut) = self.fit(
+            painter,
+            text,
+            Type::Body,
+            p.dim,
+            rect.right() - size::UNIT * 2.0 - x,
+        );
+        painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, p.dim);
+        if cut { resp.on_hover_text(text) } else { resp }
     }
 
     /// A banner: a full-width line with a level icon, a sentence or two, and
