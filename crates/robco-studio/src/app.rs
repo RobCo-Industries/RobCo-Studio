@@ -3262,4 +3262,78 @@ mod tests {
         assert!(!z3.enabled && z3.checked);
         one_per_choice(&s);
     }
+
+    /// Every command of the menus is either plain, with no mark anywhere,
+    /// or a check item whose state is defined: running it, when it can
+    /// act, leaves its mark as its rule says.
+    #[test]
+    fn every_command_is_plain_or_a_check_item_with_a_state() {
+        let ctx = egui::Context::default();
+        let fresh = || {
+            let mut s = Studio::new(None);
+            s.sim_room = 3;
+            s
+        };
+        for it in menus::menus().into_iter().flat_map(|m| m.items) {
+            let c = it.command;
+            let mut s = fresh();
+            let n = native(&s, c);
+            match menus::check(c) {
+                menus::Check::Plain => {
+                    assert_eq!(n.kind, menus::NativeKind::Plain, "{}", it.text);
+                    assert!(!n.checked && !s.checked(c), "{}", it.text);
+                }
+                check => {
+                    assert_eq!(n.kind, menus::NativeKind::Check, "{}", it.text);
+                    if !n.enabled {
+                        continue;
+                    }
+                    let before = s.checked(c);
+                    s.run(&ctx, c);
+                    let want = match check {
+                        menus::Check::Toggle => !before,
+                        _ => true,
+                    };
+                    assert_eq!(s.checked(c), want, "{}", it.text);
+                    assert_eq!(native(&s, c).checked, want, "{}", it.text);
+                }
+            }
+        }
+    }
+
+    /// The level in use is marked, alone; Custom marks none; Adjust is
+    /// plain.
+    #[test]
+    fn the_screen_levels_mark_the_level_in_use() {
+        let marked = |s: &Studio| -> Vec<Screen> {
+            Screen::ALL
+                .into_iter()
+                .filter(|l| native(s, Command::Screen(*l)).checked)
+                .collect()
+        };
+        let ctx = egui::Context::default();
+        let mut s = Studio::new(None);
+        assert_eq!(
+            native(&s, Command::ScreenAdjust).kind,
+            menus::NativeKind::Plain
+        );
+        assert_eq!(marked(&s), [s.theme.screen()]);
+        s.choose_screen(Adapter::Hardware, None, Some(Screen::Live));
+        assert_eq!(marked(&s), [Screen::Live]);
+        s.screen.strengths.bloom += 0.25;
+        assert!(s.screen_custom());
+        assert_eq!(marked(&s), []);
+        s.run(&ctx, Command::Screen(Screen::Arcade));
+        assert_eq!(marked(&s), [Screen::Arcade]);
+        // High legibility draws Off, so Off is marked.
+        s.run(&ctx, Command::HighLegibility);
+        assert_eq!(marked(&s), [Screen::Off]);
+        // A software adapter starts at Soft, reduce motion at Still.
+        let mut s = Studio::new(None);
+        s.choose_screen(Adapter::Software, None, None);
+        assert_eq!(marked(&s), [Screen::Soft]);
+        let mut s = Studio::new(None);
+        s.choose_screen(Adapter::Hardware, Some(true), None);
+        assert_eq!(marked(&s), [Screen::Still]);
+    }
 }

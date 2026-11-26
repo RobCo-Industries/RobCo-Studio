@@ -396,7 +396,8 @@ pub enum Check {
     Choice(&'static str),
 }
 
-/// The state command `c` shows in a menu.
+/// The state command `c` shows in a menu. The match names every
+/// command, as `crate::app::verdict` does.
 pub fn check(c: Command) -> Check {
     use Command as C;
     match c {
@@ -405,7 +406,60 @@ pub fn check(c: Command) -> Check {
         C::Phosphor(_) => Check::Choice("phosphor"),
         C::Screen(_) => Check::Choice("screen"),
         C::SimZoom(_) => Check::Choice("scale"),
-        _ => Check::Plain,
+        // Every other command by name, with no catch-all: a new command
+        // does not build until it says whether it has a state.
+        C::NewProject
+        | C::OpenFolder
+        | C::OpenRecent
+        | C::Save
+        | C::SaveAll
+        | C::CloseTab
+        | C::OpenInEditor
+        | C::Settings
+        | C::Quit
+        | C::Undo
+        | C::Redo
+        | C::CutCopyPaste
+        | C::Find
+        | C::FindNext
+        | C::FindPrevious
+        | C::GoToLine
+        | C::SimulatorPlace
+        | C::ResetLayout
+        | C::NextPane
+        | C::PreviousPane
+        | C::TextLarger
+        | C::TextSmaller
+        | C::TextReset
+        | C::ScreenAdjust
+        | C::ProjectSettings
+        | C::NewFile
+        | C::Export
+        | C::ShowFolder
+        | C::Build
+        | C::Run
+        | C::Debug
+        | C::Stop
+        | C::RunTests
+        | C::NextError
+        | C::PreviousError
+        | C::Breakpoint
+        | C::WriteCard
+        | C::ResetMachine
+        | C::KeyLegend
+        | C::InsertTape
+        | C::EjectTape
+        | C::Continue
+        | C::Step
+        | C::Break
+        | C::GiveKeysBack
+        | C::Connect
+        | C::SaveLog
+        | C::PushAndRun
+        | C::Documentation
+        | C::SdkCheck
+        | C::SystemReport
+        | C::About => Check::Plain,
     }
 }
 
