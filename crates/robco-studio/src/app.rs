@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The window: its regions, its pages, the panes of the Project page, focus
+//! The window: its strips, its pages, the panes of the Project page, focus
 //! from pane to pane, and the one dialog this release has.
 
 use crate::art::{Art, Icon, Mark};
@@ -69,7 +69,7 @@ pub enum Place {
     Bottom,
     /// A page other than Project: its one pane.
     Page,
-    /// The status bar.
+    /// The footer, named "Status bar" for a screen reader.
     Status,
 }
 
@@ -168,7 +168,7 @@ pub struct Studio {
     pub bottom_tab: BottomTab,
     /// The log's filters.
     pub log: LogView,
-    /// The last message, for the status bar.
+    /// The last message, for the footer.
     pub status: (Level, String),
     /// Draw the menu row in the window. False where the system shows the menus.
     pub menu_row: bool,

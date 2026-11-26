@@ -401,7 +401,7 @@ pub mod text {
     pub const CODE: f32 = 13.0;
     /// Code line height.
     pub const CODE_LINE: f32 = 19.0;
-    /// Small text: logs, hints, the status bar.
+    /// Small text: logs, hints, the footer.
     pub const SMALL: f32 = 12.0;
     /// Tiny text: column heads and the line under the device.
     pub const TINY: f32 = 11.0;
@@ -483,7 +483,7 @@ pub enum Type {
     CodeBold,
     /// Code in italic.
     CodeItalic,
-    /// Logs, hints, tags, the status bar.
+    /// Logs, hints, tags, the footer.
     Small,
     /// Column heads only.
     Tiny,

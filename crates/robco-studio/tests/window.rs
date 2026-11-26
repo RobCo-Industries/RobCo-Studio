@@ -522,11 +522,9 @@ fn tabs_past_the_header_scroll_into_view() {
 
 /// The header's one image, and its height.
 fn header_h(h: &Harness<'static, Studio>) -> f32 {
-    let n = h
-        .query_all_by_label("RobCo Studio")
+    h.query_all_by_label("RobCo Studio")
         .find(|n| n.accesskit_node().role() == Role::Image)
-        .expect("the header is an image named RobCo Studio");
-    n.rect().height()
+        .map_or(f32::NAN, |n| n.rect().height())
 }
 
 #[test]
