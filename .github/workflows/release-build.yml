@@ -81,8 +81,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      # The panic locations of the crates name their source files. Map the
+      # cargo home and the workspace to short fixed names, so the program
+      # names no folder of the runner. Only this build takes the map, so
+      # it joins the matrix flags instead of replacing them. The C of
+      # studio-sys is built without -g and names no file, so it needs no
+      # -ffile-prefix-map; the scan below would catch one.
+      - name: Map the build paths
+        run: |
+          ch="${CARGO_HOME:-$HOME/.cargo}"
+          ws="$GITHUB_WORKSPACE"
+          if [ "$RUNNER_OS" = Windows ]; then ch=$(cygpath -w "$ch"); ws=$(cygpath -w "$ws"); fi
+          case "$ch$ws" in *" "*) echo "::error::a build path holds a space: $ch, $ws"; exit 1 ;; esac
+          echo "REMAP=--remap-path-prefix=$ch=/cargo --remap-path-prefix=$ws=/robco" >> "$GITHUB_ENV"
       - name: Release build
-        run: cargo build --release --locked -p robco --target "$TARGET"
+        env:
+          RUSTFLAGS: -D warnings ${{ matrix.rustflags }} ${{ env.REMAP }}
+        run: |
+          echo "RUSTFLAGS: $RUSTFLAGS"
+          cargo build --release --locked -p robco --target "$TARGET"
       # The version line names the RobCo-Core commit of the submodule, which
       # the build script reads without git. "unknown" fails here.
       - name: Run the binary
@@ -151,6 +168,20 @@ jobs:
           cp "$BIN" "dist/robco-$NAME$EXE"
           "$py" -I tools/release/notices.py --target "$TARGET" --out "dist/robco-$NAME-NOTICES.txt"
           ls -l dist
+      # The program must name no folder of the runner: its home, the
+      # workspace or the cargo home, in any spelling. First a copy with a
+      # path of the cargo home planted in it, which must fail.
+      - name: The program names no build path
+        run: |
+          if python3 --version >/dev/null 2>&1; then py=python3; else py=python; fi
+          ch="${CARGO_HOME:-$HOME/.cargo}"
+          if [ "$RUNNER_OS" = Windows ]; then ch=$(cygpath -w "$ch"); fi
+          { cat "$BIN"; printf '%s/registry/src/x.rs' "$ch"; } > "$RUNNER_TEMP/planted"
+          if "$py" -I tools/release/scan.py "$RUNNER_TEMP/planted"; then
+            echo "::error::the scan missed a planted cargo home path"
+            exit 1
+          fi
+          "$py" -I tools/release/scan.py "dist/robco-$NAME$EXE"
       - uses: actions/upload-artifact@v4
         with:
           name: robco-${{ matrix.name }}
