@@ -571,3 +571,18 @@ fn a_long_file_name_is_cut_in_the_tree_and_given_in_full_on_hover() {
         "a cut name gives its full text in a tooltip"
     );
 }
+
+#[test]
+fn news_from_a_native_menu_command_shows_without_input() {
+    let d = sample("news").unwrap();
+    let mut h = harness(Some(&*d));
+    h.run_steps(30);
+    assert!(!h.ctx.has_requested_repaint(), "the window is idle");
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::SaveAll);
+    h.step();
+    assert!(h.ctx.has_requested_repaint());
+    h.step();
+    h.get_by_label("Nothing to save.");
+}

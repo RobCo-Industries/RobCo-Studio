@@ -435,6 +435,9 @@ impl Studio {
         }
         if let Some((level, text)) = self.editor.news.take() {
             self.status = (level, text);
+            // The status bar is drawn already: a command from the native
+            // menu brings no input, so ask for the frame that shows it.
+            ctx.request_repaint();
         }
         if self.editor.quit_allowed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
