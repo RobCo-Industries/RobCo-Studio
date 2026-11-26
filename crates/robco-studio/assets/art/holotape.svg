@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 276 180" width="276" height="180" role="img" aria-labelledby="ht-t" style="color:#5aff7f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+  <title id="ht-t">Holotape</title>
+  <!-- Original drawing of a holotape: a tape shell around a card for the holotape slot. The front face is square
+       to the eye and the depth runs up and to the right, so the label field stays an upright rectangle.
+       The drawing fills the box 0 0 260 164. The file keeps 8 units around that box for the glow.
+       The label field is at x 22, y 92 and is 176 by 40. Studio writes the tape name there with its own bitmap
+       font, so this file holds no text. The clipped corner keys the tape's direction. The pads are the card contacts.
+       Faces are fills of one colour: top 24 percent, clipped corner 16, front 10, side 6.
+       Groups: "halo" is the baked glow. "reels" may turn while a tape runs.
+       Drop "halo" with effects off.
+       Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+  <rect class="asset-ground" x="-8" y="-8" width="276" height="180" fill="#091d10"/>
+  <defs>
+    <filter id="ht-blur" x="-10%" y="-15%" width="120%" height="130%"><feGaussianBlur stdDeviation="4"/></filter>
+    <path id="ht-out" d="M8 32L30 14H226L248 36V140L226 158H8Z"/>
+  </defs>
+  <g class="halo" fill="none" stroke="currentColor" opacity=".5" filter="url(#ht-blur)"><use href="#ht-out" stroke-width="6"/></g>
+  <g fill="none" stroke="currentColor" stroke-linejoin="round" stroke-linecap="round">
+    <!-- the three faces that show the depth -->
+    <path d="M8 32L30 14H226L204 32Z" fill="currentColor" fill-opacity=".24" stroke-width="1.5"/>
+    <path d="M204 32L226 14L248 36L226 54Z" fill="currentColor" fill-opacity=".16" stroke-width="1.5"/>
+    <path d="M226 54L248 36V140L226 158Z" fill="currentColor" fill-opacity=".06" stroke-width="1.5"/>
+    <!-- front face -->
+    <path d="M8 32H204L226 54V158H8Z" fill="currentColor" fill-opacity=".1" stroke-width="2"/>
+    <use href="#ht-out" stroke-width="2.25"/>
+    <path d="M13 37H202L221 56V153H13Z" stroke-width="1" opacity=".3"/>
+    <!-- window with two reels -->
+    <rect x="24" y="44" width="172" height="38" rx="19" stroke-width="1.5" fill="#000" fill-opacity=".4"/>
+    <g class="reels" stroke-width="1.5">
+      <circle cx="45" cy="63" r="14"/><circle cx="45" cy="63" r="4.5"/>
+      <circle cx="45" cy="63" r="9" stroke-width="4" stroke-dasharray="2 7.42" opacity=".55"/>
+      <circle cx="177" cy="63" r="11"/><circle cx="177" cy="63" r="4.5"/>
+      <circle cx="177" cy="63" r="7.6" stroke-width="2.6" stroke-dasharray="2 5.96" opacity=".55"/>
+    </g>
+    <path d="M45 49H177M58 72.5L168 71" stroke-width="1" opacity=".55"/>
+    <!-- label field -->
+    <rect class="label" x="22" y="92" width="176" height="40" rx="2" stroke-width="1.5" fill="currentColor" fill-opacity=".1"/>
+    <!-- grip ridges on the side face -->
+    <path d="M232 62.6V139.6M238 57.7V134.7M244 52.8V129.8" stroke-width="1.25" opacity=".55"/>
+    <!-- card contacts -->
+    <g stroke="none" fill="currentColor" opacity=".6">
+      <rect x="24" y="140" width="9" height="11"/><rect x="38" y="140" width="9" height="11"/><rect x="52" y="140" width="9" height="11"/><rect x="66" y="140" width="9" height="11"/>
+      <rect x="80" y="140" width="9" height="11"/><rect x="94" y="140" width="9" height="11"/><rect x="108" y="140" width="9" height="11"/><rect x="122" y="140" width="9" height="11"/>
+    </g>
+    <path d="M204 120h10M204 126h10M204 132h10" stroke-width="1.25" opacity=".4"/>
+  </g>
+</svg>

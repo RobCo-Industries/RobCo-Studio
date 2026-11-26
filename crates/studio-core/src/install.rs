@@ -45,6 +45,7 @@ use crate::resolve::index::{
 };
 use crate::resolve::{self, sdk_json};
 use crate::resolve::{is_host_name, is_package_name, is_tool_version};
+use crate::templates;
 
 /// The file of "What the cache records", right under an installed folder.
 pub const RECORD: &str = ".robco-archive";
@@ -58,8 +59,22 @@ const MANIFEST: &str = "sdk.json";
 // The bounds below are this file's own: the spec does not state them yet.
 // Each read of compressed data stops one byte past its bound.
 
-/// The most bytes of `sdk.json`. The spec does not state this limit yet.
-const MAX_MANIFEST: u64 = 4 << 20;
+/// The most bytes of `sdk.json`, for the installer and for every command
+/// that reads it from the cache. The spec does not state this limit yet.
+pub const MAX_MANIFEST: u64 = 4 << 20;
+/// The most bytes of the `templates.json` of a `templates` package, for
+/// the installer and for `robco new`. The spec does not state this limit
+/// yet.
+pub const MAX_TEMPLATES_LIST: u64 = 1 << 20;
+/// The most bytes of one file of a template, for the installer and for
+/// `robco new`. The spec does not state this limit yet.
+pub const MAX_TEMPLATE_FILE: u64 = 16 << 20;
+/// The most files of one template, for the installer and for `robco new`.
+/// The spec does not state this limit yet.
+pub const MAX_TEMPLATE_FILES: u64 = 4096;
+/// The most bytes of one template, all its files together, for the
+/// installer and for `robco new`. The spec does not state this limit yet.
+pub const MAX_TEMPLATE_BYTES: u64 = 64 << 20;
 /// The most bytes a tool archive may write, all entries together, and the
 /// most bytes of the tar stream of a tar.gz once ungzipped. The spec does
 /// not state this limit yet. The pinned compiler unpacks to about 1 GiB.
@@ -80,6 +95,10 @@ struct Limits {
     tool_bytes: u64,
     tool_entries: u64,
     meta: u64,
+    templates_list: u64,
+    template_file: u64,
+    template_files: u64,
+    template_bytes: u64,
 }
 
 const LIMITS: Limits = Limits {
@@ -87,6 +106,10 @@ const LIMITS: Limits = Limits {
     tool_bytes: MAX_TOOL_BYTES,
     tool_entries: MAX_TOOL_ENTRIES,
     meta: MAX_META,
+    templates_list: MAX_TEMPLATES_LIST,
+    template_file: MAX_TEMPLATE_FILE,
+    template_files: MAX_TEMPLATE_FILES,
+    template_bytes: MAX_TEMPLATE_BYTES,
 };
 
 /// Fetches the bytes of an archive. The caller passes one in, so tests read
@@ -991,6 +1014,13 @@ fn extract_package(
             at += p + 1;
         }
     }
+    // No two paths may differ only in case in any part, folders above a
+    // file included, or a file system that folds case merges them.
+    if let Some((a, b)) = resolve::case_clash(seen.iter().map(|(n, f)| (n.as_str(), *f))) {
+        return Err(bad(format!(
+            "{b}: {a} differs from a part of it only in case"
+        )));
+    }
 
     let Some(manifest) = files.iter().find(|f| f.name == MANIFEST) else {
         return Err(bad(format!("no {MANIFEST} at the archive root")));
@@ -1045,6 +1075,12 @@ fn extract_package(
             f.path
         )));
     }
+    // After the two checks above, so an unlisted entry or a listed one
+    // that is absent keeps its own error. Before anything is extracted,
+    // so before the install is recorded as finished.
+    if entry.name == resolve::TEMPLATES {
+        check_templates(&mut zip, &sdk, &files, &dirs, bytes.len() as u64, limits)?;
+    }
 
     let outside = |n: &str| {
         bad(format!(
@@ -1089,6 +1125,75 @@ fn extract_package(
         }
     }
     Ok(())
+}
+
+/// The file of a `templates` package that lists its templates.
+pub const TEMPLATES_LIST: &str = "templates.json";
+/// The files at the root of a `templates` package, by "Layout of
+/// templates" of `docs/spec/SDK_PACKAGE.md`.
+pub const TEMPLATES_ROOT_FILES: &[&str] = &[MANIFEST, TEMPLATES_LIST];
+/// The licences folder at the root of a `templates` package.
+pub const TEMPLATES_LICENCES_DIR: &str = "LICENSES";
+/// The files of the licences folder: the layout names `LICENSES/MIT.txt`
+/// only, so it must hold that file and holds nothing else.
+pub const TEMPLATES_LICENCES: &[&str] = &["MIT.txt"];
+
+/// A `templates` package, by [`templates::validate`], the check `robco
+/// new` makes too. The entries are the archive's, each file with the size
+/// `sdk.json` lists, which the hash of each file then holds to. Fails with
+/// `package: manifest`.
+fn check_templates(
+    zip: &mut zip::ZipArchive<File>,
+    sdk: &sdk_json::SdkJson,
+    files: &[PackageFile],
+    dirs: &[String],
+    manifest_size: u64,
+    limits: Limits,
+) -> Result<(), Error> {
+    let bad = |d: String| Error::Manifest(resolve::Error::PackageManifest(d));
+    let list = match files.iter().find(|f| f.name == TEMPLATES_LIST) {
+        None => None,
+        Some(list) => {
+            let mut lf = zip.by_index(list.index).map_err(|e| {
+                Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {e}"))
+            })?;
+            let mut bytes = Vec::new();
+            let n = copy_bounded(&mut lf, &mut bytes, limits.templates_list).map_err(|e| {
+                Error::PackageArchive(format!("{TEMPLATES_LIST} cannot be read: {}", e.inner()))
+            })?;
+            if n > limits.templates_list {
+                return Err(bad(format!(
+                    "{TEMPLATES_LIST} holds more than the limit of {} bytes",
+                    limits.templates_list
+                )));
+            }
+            Some(bytes)
+        }
+    };
+    let size = |name: &str| {
+        if name == MANIFEST {
+            return manifest_size;
+        }
+        sdk.files
+            .iter()
+            .find(|f| f.path == name)
+            .map_or(0, |f| f.size)
+    };
+    let entries: Vec<templates::Entry> = files
+        .iter()
+        .map(|f| templates::Entry::file(f.name.clone(), size(&f.name)))
+        .chain(dirs.iter().map(|d| templates::Entry::folder(d.clone())))
+        .collect();
+    let tl = templates::Limits {
+        manifest: limits.manifest,
+        list: limits.templates_list,
+        file: limits.template_file,
+        files: limits.template_files,
+        bytes: limits.template_bytes,
+    };
+    templates::validate(sdk, list.as_deref(), &entries, &tl)
+        .map(|_| ())
+        .map_err(|e| bad(e.detail))
 }
 
 /// The files of "Layout of pipos" that a `pipos` package must hold, but
