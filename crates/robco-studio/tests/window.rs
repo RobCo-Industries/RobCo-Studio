@@ -580,3 +580,32 @@ fn the_toolbar_has_four_actions_of_one_width() {
         );
     }
 }
+
+#[test]
+fn the_log_filters_stand_in_the_tab_row_while_the_log_is_on() {
+    let mut h = harness(None);
+    assert!(h.query_by_label("Filter the log").is_none());
+    h.query_all_by_label("Log")
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    let tab = h
+        .query_all_by_label("Log")
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+        .unwrap()
+        .rect();
+    let field = h.get_by_label("Filter the log").rect();
+    assert!(field.center().y > tab.top() && field.center().y < tab.bottom());
+    for part in ["All", "Markers", "Text"] {
+        assert!(
+            h.query_all_by_label(part)
+                .any(|n| n.accesskit_node().role() == Role::RadioButton),
+            "{part}"
+        );
+    }
+    h.get_by_label("Markers").click();
+    h.run_steps(2);
+    assert_eq!(h.state().log.show, 1);
+    assert!(h.query_by_label("Follow").is_some());
+}

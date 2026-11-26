@@ -10,7 +10,7 @@ use crate::art::Icon;
 use crate::c_lex::{self, Class};
 use crate::document::{self, Doc};
 use crate::kit::{Button, ButtonKind, Kit};
-use crate::theme::{Theme, Type, size, stroke};
+use crate::theme::{Theme, Type, size};
 use eframe::egui::{
     self, CornerRadius, Id, Key, Rect, Sense, StrokeKind, text::CCursor, text::CCursorRange,
     text::LayoutJob, text::TextFormat,
@@ -508,7 +508,7 @@ impl Editor {
             if self.active == Some(i) {
                 active_span = Some((r.left() - origin, r.right() - origin));
             }
-            x = r.right() + stroke::FRAME;
+            x = r.right() + size::TAB_GAP;
             if out.chosen {
                 chosen = Some(i);
             }

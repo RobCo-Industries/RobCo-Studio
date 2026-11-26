@@ -319,8 +319,6 @@ pub mod size {
     pub const BOTTOM_MIN: f32 = 120.0;
     /// A divider strip, and the step of its arrow keys.
     pub const DIVIDER: f32 = 8.0;
-    /// The page margin, across: half a gap.
-    pub const PAGE_MARGIN_ACROSS: f32 = GAP_ACROSS / 2.0;
     /// The page margin at the top and the bottom.
     pub const PAGE_MARGIN_DOWN: f32 = 6.0;
     /// The page margin after the rail.

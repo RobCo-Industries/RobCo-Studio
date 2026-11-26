@@ -137,6 +137,7 @@ fn render_the_window() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
     h.run_steps(2);
     h.state_mut().editor.find.query = "game".into();
+    h.state_mut().bottom_tab = robco_studio::app::BottomTab::Log;
     shot(&mut h, &dir, "window-find.png").unwrap();
 
     let mut h = harness_at(Some(&d), 700.0);

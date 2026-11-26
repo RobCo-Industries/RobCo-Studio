@@ -153,8 +153,10 @@ pub struct PaneRects {
     pub outer: Rect,
     /// Where the content goes, inside the padding.
     pub content: Rect,
-    /// The band around the top line, where labels and tabs stand.
+    /// The strip where tabs stand, on the title row's rule.
     pub header: Rect,
+    /// The title row, above its rule. Pane buttons go at its right.
+    pub row: Rect,
 }
 
 /// The theme and the textures, which every component needs.
@@ -293,10 +295,10 @@ impl<'a> Kit<'a> {
         ));
     }
 
-    /// A pane: a frame with its top right corner clipped and its label in the
-    /// top line. The pane is a node of its own in the accessibility tree, named
-    /// `name`, and it can take focus. `header` draws in the top line in place
-    /// of the label, for tabs.
+    /// A pane: a rounded frame, then a title row closed by a rule. The
+    /// title is a lit caps label at the row's left; with `label` false the
+    /// row is left to tabs, which stand on the rule. The pane is a node of
+    /// its own in the accessibility tree, named `name`, and it can take focus.
     pub fn pane<R>(
         &self,
         ui: &mut Ui,
@@ -327,41 +329,38 @@ impl<'a> Kit<'a> {
         }
         let line = if focused { p.bright } else { p.frame };
         painter.rect(rect, pr, p.pane, self.theme.frame(line), StrokeKind::Inside);
-        let half = crate::theme::text::LABEL_CELL_H / 2.0;
-        let header = Rect::from_min_max(
-            egui::pos2(rect.left() + size::PAD_SIDE, rect.top() - half),
-            egui::pos2(rect.right() - size::PAD_SIDE, rect.top() + half),
+        let head = (rect.top() + size::PANE_HEAD_H).min(rect.bottom());
+        let row = Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.right(), (head - stroke::FRAME).max(rect.top())),
+        );
+        painter.hline(
+            rect.x_range().shrink(stroke::FRAME),
+            head - stroke::FRAME / 2.0,
+            self.theme.frame(p.frame),
         );
         if label {
-            let w = self.caps_width(&child, name);
-            let x = header.left();
-            let gap = size::UNIT;
-            painter.rect_filled(
-                Rect::from_min_max(
-                    egui::pos2(x - gap, header.top()),
-                    egui::pos2(x + w + gap, rect.top()),
-                ),
-                CornerRadius::ZERO,
-                p.ground,
-            );
-            painter.rect_filled(
-                Rect::from_min_max(
-                    egui::pos2(x - gap, rect.top() + stroke::FRAME),
-                    egui::pos2(x + w + gap, header.bottom()),
-                ),
-                CornerRadius::ZERO,
-                p.pane,
-            );
-            self.caps(
+            self.caps_styled(
                 &painter,
-                x,
-                rect.top(),
+                egui::pos2(rect.left() + size::PAD_SIDE, row.center().y),
                 name,
-                if focused { p.bright } else { p.dim },
+                p.bright,
+                0.0,
+                true,
             );
         }
+        let header = Rect::from_min_max(
+            egui::pos2(
+                rect.left() + size::TAB_INSET,
+                (row.bottom() - size::TAB_H).max(rect.top()),
+            ),
+            egui::pos2(
+                (rect.right() - size::TAB_INSET).max(rect.left()),
+                row.bottom(),
+            ),
+        );
         let content = Rect::from_min_max(
-            egui::pos2(rect.left() + size::PAD_SIDE, rect.top() + size::PAD_TOP),
+            egui::pos2(rect.left() + size::PAD_SIDE, head + size::PAD_TOP),
             egui::pos2(
                 rect.right() - size::PAD_SIDE,
                 rect.bottom() - size::PAD_BOTTOM,
@@ -373,6 +372,7 @@ impl<'a> Kit<'a> {
                 outer: rect,
                 content,
                 header,
+                row,
             },
         );
         (child.response(), r)
@@ -547,8 +547,8 @@ impl<'a> Kit<'a> {
         dirty: bool,
     ) -> (Rect, TabOut) {
         let p = self.p();
-        let pad = size::UNIT * 2.0;
-        let h = size::SMALL_H;
+        let pad = size::LABEL_PAD;
+        let h = size::TAB_H;
         let font = self.theme.font(Type::Body);
         let text_w = if caps {
             self.caps_width(ui, text)
@@ -559,7 +559,7 @@ impl<'a> Kit<'a> {
                 .x
         };
         let icon_w = if icon.is_some() {
-            size::ICON + size::UNIT
+            size::ICON + size::ICON_GAP
         } else {
             0.0
         };
@@ -576,32 +576,21 @@ impl<'a> Kit<'a> {
         let resp = ui.interact(rect, id, Sense::click());
         resp.widget_info(|| WidgetInfo::selected(Role::Tab, true, active, &name));
         let painter = ui.painter();
-        let (fill, fg) = if active {
-            (p.pane, p.bright)
-        } else {
-            (p.ground, p.dim)
-        };
-        let tr = self.theme.tab_radius();
-        painter.rect_filled(rect, tr, fill);
-        painter.rect_stroke(rect, tr, self.theme.frame(p.frame_dim), StrokeKind::Inside);
+        let (fg, icon_fg) = self.tab_shape(painter, rect, active, &resp);
         let mut x = rect.left() + pad;
         if let Some(i) = icon {
             self.art.icon(
                 painter,
                 Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(size::ICON, h)),
                 i,
-                fg,
+                icon_fg,
             );
             x += icon_w;
         }
         if caps {
             self.caps(painter, x, rect.center().y, text, fg);
         } else {
-            let g = painter.layout_no_wrap(
-                text.to_owned(),
-                font,
-                if active { p.bright } else { p.text },
-            );
+            let g = painter.layout_no_wrap(text.to_owned(), font, fg);
             painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
         }
         x += text_w;
@@ -630,9 +619,17 @@ impl<'a> Kit<'a> {
             let close_name = format!("Close {text}");
             c.widget_info(|| WidgetInfo::labeled(Role::Button, true, &close_name));
             if c.hovered() {
-                painter.rect_filled(cr, self.theme.control_radius(), p.raised);
+                painter.rect_filled(
+                    cr.shrink(stroke::FRAME),
+                    self.theme.control_radius(),
+                    if active {
+                        self.theme.hovered(p.bright)
+                    } else {
+                        p.raised
+                    },
+                );
             }
-            self.art.icon(painter, cr, Icon::Close, p.dim);
+            self.art.icon(painter, cr, Icon::Close, fg);
             if c.has_focus() {
                 self.focus_ring(painter, cr);
             }
@@ -644,6 +641,125 @@ impl<'a> Kit<'a> {
             out.chosen |= ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Space));
         }
         (rect, out)
+    }
+
+    /// The shape of a tab, a page button or a part of a segmented control:
+    /// a `bright` fill and a halo when chosen, else a `frame` outline open
+    /// at the bottom on `pane`, `raised` on hover and `select` while
+    /// pressed. Returns the label colour and the icon colour.
+    fn tab_shape(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        active: bool,
+        resp: &Response,
+    ) -> (Color32, Color32) {
+        let p = self.p();
+        let tr = self.theme.tab_radius();
+        if active {
+            if let Some(h) = self.theme.halo() {
+                painter.add(h.as_shape(rect, tr));
+            }
+            painter.rect_filled(rect, tr, p.bright);
+            return (p.ink, p.ink);
+        }
+        let fill = if resp.is_pointer_button_down_on() {
+            p.select
+        } else if resp.hovered() {
+            p.raised
+        } else {
+            p.pane
+        };
+        painter.rect_filled(rect, tr, fill);
+        // Three sides: the bottom edge lies under the clip.
+        painter.with_clip_rect(rect).rect_stroke(
+            Rect::from_min_max(
+                rect.min,
+                egui::pos2(rect.right(), rect.bottom() + size::UNIT),
+            ),
+            tr,
+            self.theme.frame(p.frame),
+            StrokeKind::Inside,
+        );
+        (p.text, p.bright)
+    }
+
+    /// A segmented control: one outlined group of caps parts with lines
+    /// between them. The chosen part is filled, with a tick. Each part is a
+    /// radio button named by its text. Returns the part chosen this frame.
+    pub fn segmented(
+        &self,
+        ui: &mut Ui,
+        key: &str,
+        parts: &[&str],
+        chosen: usize,
+    ) -> Option<usize> {
+        let p = self.p();
+        let tick = size::ICON + size::UNIT;
+        let widths: Vec<f32> = parts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                self.caps_width(ui, t)
+                    + size::LABEL_PAD * 2.0
+                    + if i == chosen { tick } else { 0.0 }
+            })
+            .collect();
+        let total: f32 = widths.iter().sum();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(total, size::SMALL_H), Sense::hover());
+        let cr = self.theme.control_radius();
+        let painter = ui.painter();
+        let mut out = None;
+        let mut x = rect.left();
+        for (i, (t, w)) in parts.iter().zip(&widths).enumerate() {
+            let r = Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(*w, rect.height()));
+            let resp = ui.interact(r, ui.scope_id().with((key, i)), Sense::click());
+            let on = i == chosen;
+            resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, on, *t));
+            let fg = if on {
+                if let Some(h) = self.theme.halo() {
+                    painter.add(h.as_shape(r, cr));
+                }
+                painter.rect_filled(r, cr, p.bright);
+                p.ink
+            } else {
+                if resp.is_pointer_button_down_on() {
+                    painter.rect_filled(r, cr, p.select);
+                } else if resp.hovered() {
+                    painter.rect_filled(r, cr, p.raised);
+                }
+                p.text
+            };
+            let mut lx = r.left() + size::LABEL_PAD;
+            if on {
+                self.art.icon(
+                    painter,
+                    Rect::from_min_size(
+                        egui::pos2(lx, r.top()),
+                        egui::vec2(size::ICON, r.height()),
+                    ),
+                    Icon::Ok,
+                    fg,
+                );
+                lx += tick;
+            }
+            self.caps(painter, lx, r.center().y, t, fg);
+            if i > 0 {
+                painter.vline(x, rect.y_range(), self.theme.frame(p.frame));
+            }
+            if resp.has_focus() {
+                self.focus_ring(painter, r);
+            }
+            if resp.clicked()
+                || (resp.has_focus()
+                    && ui.input(|k| k.key_pressed(Key::Enter) || k.key_pressed(Key::Space)))
+            {
+                out = Some(i);
+            }
+            x += w;
+        }
+        painter.rect_stroke(rect, cr, self.theme.frame(p.frame), StrokeKind::Inside);
+        out
     }
 
     /// One row of the tree: indent, chevron for a folder, icon, name.
@@ -1048,8 +1164,8 @@ impl<'a> Kit<'a> {
         child
     }
 
-    /// A page button of the rail: an icon over a caps label, a 3 px bar and
-    /// a `select` fill when it is the current page.
+    /// A page button of the rail: an icon over a caps label, in the look of
+    /// a tab. The current page is filled, with a halo.
     pub fn rail_item(
         &self,
         ui: &mut Ui,
@@ -1062,17 +1178,30 @@ impl<'a> Kit<'a> {
         let resp = ui.interact(rect, ui.scope_id().with(("rail", name)), Sense::click());
         resp.widget_info(|| WidgetInfo::selected(Role::Tab, true, current, name));
         let painter = ui.painter();
-        if current {
-            painter.rect_filled(rect, CornerRadius::ZERO, p.select);
-            painter.rect_filled(
-                Rect::from_min_size(rect.min, egui::vec2(stroke::SELECT_BAR, rect.height())),
-                CornerRadius::ZERO,
-                p.bright,
+        let cr = self.theme.control_radius();
+        let fg = if current {
+            if let Some(h) = self.theme.halo() {
+                painter.add(h.as_shape(rect, cr));
+            }
+            painter.rect_filled(rect, cr, p.bright);
+            p.ink
+        } else {
+            let fill = if resp.is_pointer_button_down_on() {
+                p.select
+            } else if resp.hovered() {
+                p.raised
+            } else {
+                p.pane
+            };
+            painter.rect(
+                rect,
+                cr,
+                fill,
+                self.theme.frame(p.frame),
+                StrokeKind::Inside,
             );
-        } else if resp.hovered() {
-            painter.rect_filled(rect, CornerRadius::ZERO, p.raised);
-        }
-        let fg = if current { p.bright } else { p.dim };
+            p.text
+        };
         let icon_rect = Rect::from_center_size(
             egui::pos2(rect.center().x, rect.top() + size::RAIL_ICON_Y),
             egui::vec2(size::ICON, size::ICON),
@@ -1087,7 +1216,7 @@ impl<'a> Kit<'a> {
             fg,
         );
         if resp.has_focus() {
-            self.focus_ring(painter, rect.shrink(stroke::FOCUS_GAP + stroke::FOCUS_RING));
+            self.focus_ring(painter, rect);
         }
         resp
     }

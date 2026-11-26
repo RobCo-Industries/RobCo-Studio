@@ -101,6 +101,30 @@ pub enum BottomTab {
     Debug,
 }
 
+/// The log's filters, in the bottom pane's tab row while the Log tab is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogView {
+    /// The part of [`LOG_SHOW`] chosen.
+    pub show: usize,
+    /// The filter field's text.
+    pub query: String,
+    /// Keep the last line in view.
+    pub follow: bool,
+}
+
+impl Default for LogView {
+    fn default() -> Self {
+        Self {
+            show: 0,
+            query: String::new(),
+            follow: true,
+        }
+    }
+}
+
+/// The parts of the log's segmented control.
+pub const LOG_SHOW: [&str; 3] = ["All", "Markers", "Text"];
+
 /// The sizes of the Project page's panes, which dividers change.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
@@ -142,6 +166,8 @@ pub struct Studio {
     pub layout: Layout,
     /// The bottom pane's tab.
     pub bottom_tab: BottomTab,
+    /// The log's filters.
+    pub log: LogView,
     /// The last message, for the status bar.
     pub status: (Level, String),
     /// Draw the menu row in the window. False where the system shows the menus.
@@ -240,6 +266,7 @@ impl Studio {
             editor: Editor::default(),
             layout: Layout::default(),
             bottom_tab: BottomTab::Build,
+            log: LogView::default(),
             status: (Level::Info, READY.to_owned()),
             menu_row: true,
             compact_header: false,
@@ -744,15 +771,11 @@ impl Studio {
             focus,
         );
         self.places.push((Place::Rail, rect));
-        r.painter().line_segment(
-            [rect.right_top(), rect.right_bottom()],
-            kit.theme.frame(p.frame_dim),
-        );
-        let mut y = rect.top() + size::UNIT * 2.0;
+        let mut y = rect.top() + size::PAGE_MARGIN_DOWN;
         for page in Page::ALL {
             let item = Rect::from_min_size(
-                egui::pos2(rect.left(), y),
-                egui::vec2(rect.width(), size::RAIL_ITEM_H),
+                egui::pos2(rect.left() + size::RAIL_INSET, y),
+                egui::vec2(size::RAIL_ITEM_W, size::RAIL_ITEM_H),
             );
             if kit
                 .rail_item(&mut r, item, page.icon(), page.name(), self.page == page)
@@ -760,7 +783,7 @@ impl Studio {
             {
                 self.page = page;
             }
-            y += size::RAIL_ITEM_H;
+            y += size::RAIL_ITEM_H + size::RAIL_GAP;
         }
         let foot = Rect::from_min_max(
             egui::pos2(
@@ -1089,6 +1112,7 @@ impl Studio {
     fn bottom_pane(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect) {
         let fr = self.focus_request == Some(Place::Bottom);
         let mut tab = self.bottom_tab;
+        let log = &mut self.log;
         kit.pane(ui, rect, Place::Bottom.name(), false, fr, |ui, r| {
             let mut x = r.header.left();
             for (t, name, icon) in [
@@ -1106,9 +1130,43 @@ impl Studio {
                     true,
                     false,
                 );
-                x = tr.right() + crate::theme::stroke::FRAME;
+                x = tr.right() + size::TAB_GAP;
                 if out.chosen {
                     tab = t;
+                }
+            }
+            if tab == BottomTab::Log {
+                // The log's filters stand in the tab row, at the right.
+                let at = Rect::from_min_max(
+                    egui::pos2(x + size::STEP_12, r.row.top()),
+                    egui::pos2(r.row.right() - size::TAB_INSET, r.row.bottom()),
+                );
+                let mut row = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(at)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                );
+                row.spacing_mut().item_spacing.x = size::UNIT * 2.0;
+                let follow = Button::quiet("Follow").small();
+                let follow = if log.follow {
+                    follow.kind(ButtonKind::Filled).icon(Icon::Ok)
+                } else {
+                    follow
+                };
+                if kit.button(&mut row, follow).clicked() {
+                    log.follow = !log.follow;
+                }
+                kit.text_field(
+                    &mut row,
+                    Id::unique("log-filter"),
+                    &mut log.query,
+                    "Filter the log",
+                    "Filter",
+                    size::FIND_W,
+                    false,
+                );
+                if let Some(i) = kit.segmented(&mut row, "log-show", &LOG_SHOW, log.show) {
+                    log.show = i;
                 }
             }
             match tab {
@@ -1151,7 +1209,7 @@ impl Studio {
     }
 
     fn later_page(&mut self, kit: &Kit<'_>, ui: &mut Ui, page: Rect, which: Page) {
-        let area = page.shrink2(egui::vec2(size::PAGE_MARGIN_ACROSS, size::PAGE_MARGIN_DOWN));
+        let area = page_area(page);
         let fr = self.focus_request == Some(Place::Page);
         kit.pane(ui, area, which.name(), true, fr, |ui, r| match which {
             Page::Card => {
@@ -1298,12 +1356,27 @@ pub struct Panes {
     pub show_bottom: bool,
 }
 
+/// The page less its margins: 6 at the top and the bottom, 4 after the
+/// rail, 8 at the right. It can come out inside out; [`panes`] mends that.
+fn page_area(page: Rect) -> Rect {
+    Rect::from_min_max(
+        egui::pos2(
+            page.left() + size::PAGE_MARGIN_LEFT,
+            page.top() + size::PAGE_MARGIN_DOWN,
+        ),
+        egui::pos2(
+            page.right() - size::PAGE_MARGIN_RIGHT,
+            page.bottom() - size::PAGE_MARGIN_DOWN,
+        ),
+    )
+}
+
 /// Lay out the project page in `page`. The window's minimum size fits
 /// every pane; given less anyway, Files is left out first, the simulator
 /// shrinks, and no rectangle gets a negative width or height.
 pub fn panes(l: &mut Layout, page: Rect) -> Panes {
     let page = Rect::from_min_size(page.min, page.size().max(egui::Vec2::ZERO));
-    let shrunk = page.shrink2(egui::vec2(size::PAGE_MARGIN_ACROSS, size::PAGE_MARGIN_DOWN));
+    let shrunk = page_area(page);
     let area = Rect::from_min_size(
         shrunk.min.min(page.max),
         shrunk.size().max(egui::Vec2::ZERO),
