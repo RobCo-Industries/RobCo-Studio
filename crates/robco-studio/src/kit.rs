@@ -1204,6 +1204,8 @@ impl<'a> Kit<'a> {
 
     /// A closed dropdown: an icon, the value, a chevron. A click opens its
     /// list; Esc and a click outside close it. Returns the row chosen.
+    /// `current` is the row of the value, or None when the value has no
+    /// row: the caller knows it, the kit never finds it by the label.
     #[allow(clippy::too_many_arguments)]
     pub fn dropdown(
         &self,
@@ -1211,11 +1213,12 @@ impl<'a> Kit<'a> {
         name: &str,
         icon: Icon,
         value: &str,
+        current: Option<usize>,
         none: bool,
         width: f32,
         rows: &[&str],
     ) -> Option<usize> {
-        self.dropdown_response(ui, name, icon, value, none, width, rows)
+        self.dropdown_response(ui, name, icon, value, current, none, width, rows)
             .1
     }
 
@@ -1228,20 +1231,22 @@ impl<'a> Kit<'a> {
         name: &str,
         icon: Icon,
         value: &str,
+        current: Option<usize>,
         none: bool,
         width: f32,
         rows: &[&str],
     ) -> (Response, Option<usize>) {
-        self.dropdown_held(ui, name, icon, value, none, width, rows, &[])
+        self.dropdown_held(ui, name, icon, value, current, none, width, rows, &[])
     }
 
     /// The dropdown of [`Kit::dropdown_response`], whose list ends with
     /// `held`: rows that cannot be picked, each with the reason it gives.
     ///
     /// The open list is as tall as the room in the window allows, below the
-    /// field or above it, and scrolls. It opens with the row of `value`
-    /// lit and in view. Up, Down, Home, End, Page Up and Page Down move the
-    /// lit row, Enter picks it and Escape closes the list. A screen reader
+    /// field or above it, and scrolls. It opens with the row `current`
+    /// lit and in view, or no row lit when `current` is None. Up, Down,
+    /// Home, End, Page Up and Page Down move the lit row, Enter picks it
+    /// and Escape closes the list. Enter with no row lit picks nothing. A screen reader
     /// hears a list box of options, the lit one selected.
     #[allow(clippy::too_many_arguments)]
     pub fn dropdown_held(
@@ -1250,6 +1255,7 @@ impl<'a> Kit<'a> {
         name: &str,
         icon: Icon,
         value: &str,
+        current: Option<usize>,
         none: bool,
         width: f32,
         rows: &[&str],
@@ -1273,7 +1279,7 @@ impl<'a> Kit<'a> {
         let page = ((room / size::ROW_TREE).floor() as usize).max(2) - 1;
         // The keys act on an open list before the field sees them, so Enter
         // picks a row and does not press the field again.
-        let mut lit = ctx.data(|d| d.get_temp::<usize>(lit_id)).unwrap_or(0);
+        let mut lit = ctx.data(|d| d.get_temp::<Option<usize>>(lit_id)).flatten();
         let mut moved = false;
         let (mut pick, mut close) = (false, false);
         if was_open && !rows.is_empty() {
@@ -1281,23 +1287,25 @@ impl<'a> Kit<'a> {
             ui.input_mut(|i| {
                 let mut key = |k: Key| i.consume_key(Modifiers::NONE, k);
                 let before = lit;
+                // With no row lit, a move starts from the top.
+                let at = lit.unwrap_or(0);
                 if key(Key::ArrowDown) {
-                    lit = (lit + 1).min(last);
+                    lit = Some(lit.map_or(0, |l| (l + 1).min(last)));
                 }
                 if key(Key::ArrowUp) {
-                    lit = lit.saturating_sub(1);
+                    lit = Some(at.saturating_sub(1));
                 }
                 if key(Key::PageDown) {
-                    lit = (lit + page).min(last);
+                    lit = Some(lit.map_or(0, |l| (l + page).min(last)));
                 }
                 if key(Key::PageUp) {
-                    lit = lit.saturating_sub(page);
+                    lit = Some(at.saturating_sub(page));
                 }
                 if key(Key::Home) {
-                    lit = 0;
+                    lit = Some(0);
                 }
                 if key(Key::End) {
-                    lit = last;
+                    lit = Some(last);
                 }
                 pick = key(Key::Enter);
                 close = key(Key::Escape);
@@ -1337,8 +1345,8 @@ impl<'a> Kit<'a> {
             egui::Popup::toggle_id(&ctx, popup_id);
         }
         let mut chosen = None;
-        if pick && lit < rows.len() {
-            chosen = Some(lit);
+        if pick && let Some(l) = lit.filter(|l| *l < rows.len()) {
+            chosen = Some(l);
             close = true;
         }
         if close {
@@ -1347,7 +1355,7 @@ impl<'a> Kit<'a> {
         let open = egui::Popup::is_id_open(&ctx, popup_id);
         let opened = open && !was_open;
         if opened {
-            lit = rows.iter().position(|r| *r == value).unwrap_or(0);
+            lit = current.filter(|c| *c < rows.len());
         }
         ctx.accesskit_node_builder(id, |n| n.set_expanded(open));
         let align = if down {
@@ -1370,13 +1378,14 @@ impl<'a> Kit<'a> {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (i, r) in rows.iter().enumerate() {
-                            let row = self.list_row(ui, r, None, width, i == lit);
+                            let on = lit == Some(i);
+                            let row = self.list_row(ui, r, None, width, on);
                             if row.clicked() {
                                 chosen = Some(i);
                             }
-                            if i == lit && opened {
+                            if on && opened {
                                 row.scroll_to_me(Some(egui::Align::Center));
-                            } else if i == lit && moved {
+                            } else if on && moved {
                                 row.scroll_to_me(None);
                             }
                         }

@@ -160,6 +160,9 @@ pub struct Studio {
     pub current: usize,
     /// The theme in use, changed and not saved, or None.
     pub changed: Option<Spec>,
+    /// The changed theme's own theme went at a reload, so the change sits
+    /// on no row of the list. A pick, a save or a delete ends it.
+    pub adrift: bool,
     /// For each theme of `themes`, its file in the themes folder, or None
     /// for a theme that ships.
     pub theme_files: Vec<Option<String>>,
@@ -380,6 +383,7 @@ impl Studio {
             themes: crate::theme::SHIPPED.to_vec(),
             current: 0,
             changed: None,
+            adrift: false,
             theme_files: vec![None; crate::theme::SHIPPED.len()],
             refused: Vec::new(),
             store: None,
@@ -586,6 +590,13 @@ impl Studio {
         }
     }
 
+    /// The row of the theme list the theme in use sits on: the theme the
+    /// change sits on for a changed theme, and None for a change that sits
+    /// on no row.
+    pub fn theme_row(&self) -> Option<usize> {
+        (!(self.adrift && self.changed.is_some())).then_some(self.current)
+    }
+
     /// The name of the theme in use, as the menu and the status line give
     /// it: "Green", or "Green, changed".
     pub fn theme_name(&self) -> String {
@@ -653,6 +664,7 @@ impl Studio {
         }
         self.current = i;
         self.changed = None;
+        self.adrift = false;
         self.chose();
         self.refresh_theme();
         self.save_settings();
@@ -699,6 +711,7 @@ impl Studio {
         if let Some(i) = asked.filter(|i| *i < self.themes.len()) {
             self.current = i;
             self.changed = None;
+            self.adrift = false;
         }
         self.refresh_theme();
         // A window with no known adapter is a test harness or has no
@@ -1367,6 +1380,7 @@ impl Studio {
             "Target",
             Icon::Wrist,
             &target,
+            Some(0),
             target == "None",
             size::TARGET_DROPDOWN_W,
             &[target.as_str()],

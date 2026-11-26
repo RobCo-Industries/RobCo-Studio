@@ -396,6 +396,7 @@ impl Studio {
             .map(|(f, why)| (crate::store::shown(f), why.clone()))
             .collect();
         let name = self.theme_name();
+        let lit_row = self.theme_row();
         let changed = self.changed.is_some();
         let tag = if changed {
             TAG_CHANGED
@@ -499,6 +500,7 @@ impl Studio {
                             crate::app::THEME_TITLE,
                             Icon::Settings,
                             &name,
+                            lit_row,
                             false,
                             body.width(),
                             &row_names,

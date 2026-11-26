@@ -317,6 +317,7 @@ impl Studio {
             Some(i) => self.current = i,
             None => {
                 self.current = 0;
+                self.adrift = self.changed.is_some();
                 self.fell_back(&key);
             }
         }
@@ -455,6 +456,7 @@ impl Studio {
         };
         self.current = i;
         self.changed = None;
+        self.adrift = false;
         self.chose();
         self.refresh_theme();
         self.save_settings();
@@ -561,6 +563,7 @@ impl Studio {
         })?;
         self.current = 0;
         self.changed = None;
+        self.adrift = false;
         self.chose();
         self.reload_themes();
         self.refresh_theme();

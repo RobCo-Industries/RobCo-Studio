@@ -1246,3 +1246,122 @@ fn a_long_name_stays_inside_the_question_and_the_status_line() {
     // the window.
     assert!(room.contains_rect(said), "{said:?} leaves the window");
 }
+
+/// One state of the theme picker, and what its open list shows.
+struct Picker {
+    row: &'static str,
+    /// Make the state, from a window on Green.
+    make: fn(&TempDir) -> Studio,
+    /// The row lit when the list opens, or none.
+    lit: Option<&'static str>,
+    /// The field's value.
+    label: &'static str,
+    /// What Enter right after opening asks to leave for, or None when it
+    /// changes nothing.
+    enter: Option<&'static str>,
+}
+
+/// The theme picker lights the row the theme in use sits on, a changed
+/// theme too, and no row when the change sits on none. Enter picks the
+/// lit row, and nothing when no row is lit.
+#[test]
+fn the_picker_lights_the_row_of_the_theme_in_use() {
+    use egui::accesskit::Role;
+    let rows = [
+        Picker {
+            row: "an unchanged theme that ships",
+            make: |d| {
+                let mut s = window(d);
+                s.pick_theme(1);
+                s
+            },
+            lit: Some("Amber"),
+            label: "Amber",
+            enter: None,
+        },
+        Picker {
+            row: "an unchanged theme of the person's own",
+            make: on_ember,
+            lit: Some("Ember"),
+            label: "Ember",
+            enter: None,
+        },
+        Picker {
+            row: "a changed theme that ships",
+            make: |d| {
+                let mut s = window(d);
+                s.pick_theme(1);
+                nudge(&mut s);
+                s
+            },
+            lit: Some("Amber"),
+            label: "Amber, changed",
+            enter: Some("Amber"),
+        },
+        Picker {
+            row: "a changed theme of the person's own",
+            make: |d| {
+                let mut s = on_ember(d);
+                nudge(&mut s);
+                s
+            },
+            lit: Some("Ember"),
+            label: "Ember, changed",
+            enter: Some("ember.toml"),
+        },
+        Picker {
+            row: "a changed theme with no row",
+            make: |d| {
+                let mut s = on_ember(d);
+                nudge(&mut s);
+                std::fs::remove_file(themes(d).join("ember.toml")).unwrap();
+                s.reload_themes();
+                s
+            },
+            lit: None,
+            label: "Ember, changed",
+            enter: None,
+        },
+    ];
+    for p in rows {
+        let row = p.row;
+        let d = TempDir::new("picker");
+        let mut s = (p.make)(&d);
+        s.theme_editor.open = true;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(smallest())
+            .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+        h.run_steps(3);
+        let field = format!("{}: {}", crate::app::THEME_TITLE, p.label);
+        assert!(
+            h.query_by_role_and_label(Role::ComboBox, &field).is_some(),
+            "{row}: the field reads {field}"
+        );
+        h.key_press(Key::Enter);
+        h.run_steps(3);
+        let selected: Vec<String> = h
+            .query_all_by_role(Role::ListBoxOption)
+            .filter(|n| n.accesskit_node().is_selected() == Some(true))
+            .map(|n| n.accesskit_node().label().unwrap_or_default())
+            .collect();
+        let want: Vec<String> = p.lit.iter().map(|l| (*l).to_owned()).collect();
+        assert_eq!(selected, want, "{row}: the lit row");
+        h.key_press(Key::Enter);
+        h.run_steps(3);
+        let st = h.state();
+        match p.enter {
+            Some(key) => assert!(
+                matches!(
+                    &st.theme_editor.question,
+                    Some(ThemeQuestion::Leave { to: Leaving::Theme(k), .. }) if k == key
+                ),
+                "{row}: Enter leaves for {key}: {:?}",
+                st.theme_editor.question
+            ),
+            None => {
+                assert!(st.theme_editor.question.is_none(), "{row}: Enter asks");
+                assert_eq!(st.theme_name(), p.label, "{row}: Enter changes the theme");
+            }
+        }
+    }
+}
