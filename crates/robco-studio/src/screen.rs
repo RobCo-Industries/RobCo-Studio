@@ -4,6 +4,31 @@
 //! starts in, which levels a person may pick, when the window asks for a
 //! frame, how persistence fades, and the curve that the pointer is mapped
 //! back through. [`crate::pass`] draws; this module decides.
+//!
+//! # When the screen asks for frames
+//!
+//! Each strength alone above zero, the other nine at zero, at a pass level:
+//!
+//! | Strength | Frames |
+//! | --- | --- |
+//! | bloom | never |
+//! | vignette | never |
+//! | scanlines | always at Live and Arcade, where they drift; never at Still |
+//! | curvature | never |
+//! | persistence | after a change of the picture, until the afterglow fades |
+//! | noise | always |
+//! | flicker | always |
+//! | band | always |
+//! | mask | never |
+//! | aberration | never |
+//!
+//! "Always" means at the frame rate while the window has focus. Persistence
+//! is afterglow: it shows only while the picture changes. A frame counts as
+//! a change unless the screen's own request was its only cause and it
+//! brought no input. After a change the screen asks for frames until what
+//! is left of the old picture is below [`AFTERGLOW_END`], then stops, so an
+//! idle window still costs nothing. The afterglow runs without focus too:
+//! it ends by itself.
 
 use crate::theme::{Screen, Strengths, crt};
 use eframe::egui::{self, Pos2, Rect};
@@ -98,11 +123,38 @@ pub fn animated(level: Screen, s: &Strengths) -> bool {
             || (level.moving() && s.scanlines > 0.0))
 }
 
+/// The afterglow stops when what is left of the old picture is below this
+/// share of it: less than one step of an 8-bit channel.
+pub const AFTERGLOW_END: f32 = 1.0 / 256.0;
+
+/// When the strengths make the screen ask for frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    /// Never: the picture is the same each time it is drawn.
+    Never,
+    /// After a change of the picture, until the afterglow fades.
+    AfterChange,
+    /// Always, at the frame rate while the window has focus.
+    Always,
+}
+
+/// When the screen asks for frames at a level and its strengths. See the
+/// table in the module's docs.
+pub fn motion(level: Screen, s: &Strengths) -> Motion {
+    if animated(level, s) {
+        Motion::Always
+    } else if level.pass() && s.persistence > 0.0 {
+        Motion::AfterChange
+    } else {
+        Motion::Never
+    }
+}
+
 /// When the window asks for its next frame: at the frame rate while the
-/// pass moves and the window has focus, otherwise never. An idle window
-/// then costs nothing.
-pub fn next_frame(animated: bool, focused: bool, rate: u32) -> Option<Duration> {
-    (animated && focused && rate > 0).then(|| Duration::from_secs(1) / rate)
+/// pass moves and the window has focus, or while an afterglow fades,
+/// otherwise never. An idle window then costs nothing.
+pub fn next_frame(animated: bool, glowing: bool, focused: bool, rate: u32) -> Option<Duration> {
+    ((animated && focused || glowing) && rate > 0).then(|| Duration::from_secs(1) / rate)
 }
 
 /// What persistence keeps of the last frame after `dt` seconds. The fade
@@ -238,8 +290,11 @@ impl Settings {
     /// by the rules. Call last in the frame.
     pub fn end_frame(&mut self, ctx: &egui::Context, level: Screen) {
         self.plug(ctx, None);
-        let (now, focused) = ctx.input(|i| (i.time, i.focused));
-        let frame = self.clock.frame(now, level, &self.strengths, focused);
+        let (now, focused, input) = ctx.input(|i| (i.time, i.focused, !i.events.is_empty()));
+        // The screen's own request for a frame is no change of the picture.
+        let causes = ctx.repaint_causes();
+        let own = !input && !causes.is_empty() && causes.iter().all(|c| c.file == file!());
+        let frame = self.clock.frame(now, level, &self.strengths, focused, !own);
         {
             let mut link = self
                 .link
@@ -252,7 +307,8 @@ impl Settings {
                 0.0
             };
         }
-        if let Some(d) = next_frame(animated(level, &self.strengths), focused, self.rate) {
+        let moving = animated(level, &self.strengths);
+        if let Some(d) = next_frame(moving, self.clock.glowing(), focused, self.rate) {
             ctx.request_repaint_after(d);
         }
     }
@@ -279,15 +335,46 @@ pub struct Clock {
     time: f32,
     /// The window's time of the last frame drawn.
     last: Option<f64>,
+    /// What is left of the picture before the last change, out of 1.
+    glow: f32,
 }
 
 impl Clock {
     /// The frame to draw at the window's time `now`, for a level and its
-    /// strengths, with or without focus.
-    pub fn frame(&mut self, now: f64, level: Screen, s: &Strengths, focused: bool) -> Frame {
+    /// strengths, with or without focus. `changed` says the picture may
+    /// differ from the last frame's.
+    pub fn frame(
+        &mut self,
+        now: f64,
+        level: Screen,
+        s: &Strengths,
+        focused: bool,
+        changed: bool,
+    ) -> Frame {
         let dt = self.last.map_or(0.0, |l| (now - l).max(0.0) as f32);
         self.last = Some(now);
         let moving = animated(level, s) && focused;
+        if !moving && level.pass() && s.persistence > 0.0 {
+            // Only the afterglow moves: the clock holds, the old picture fades.
+            let fade = persistence_keep(s.persistence, dt);
+            self.glow = if changed { fade } else { self.glow * fade };
+            if self.glow < AFTERGLOW_END {
+                self.glow = 0.0;
+            }
+            // With nothing left to fade, the still form, drawn the same.
+            let keep = if changed || self.glow > 0.0 { fade } else { 0.0 };
+            let persistence = if keep > 0.0 { s.persistence } else { 0.0 };
+            return Frame {
+                strengths: Strengths {
+                    persistence,
+                    ..s.still()
+                },
+                time: self.time,
+                scan_offset: self.scan_offset(level),
+                keep,
+            };
+        }
+        self.glow = 0.0;
         if !moving {
             // The still form: what does not move, at the clock where it stopped.
             let still = s.still();
@@ -305,6 +392,11 @@ impl Clock {
             scan_offset: self.scan_offset(level),
             keep: persistence_keep(s.persistence, dt),
         }
+    }
+
+    /// An afterglow is still fading: the screen wants another frame.
+    pub fn glowing(&self) -> bool {
+        self.glow > 0.0
     }
 
     fn scan_offset(&self, level: Screen) -> f32 {
@@ -364,15 +456,16 @@ mod tests {
     #[test]
     fn a_frame_is_asked_for_only_with_motion_and_focus() {
         assert_eq!(
-            next_frame(true, true, 30),
+            next_frame(true, false, true, 30),
             Some(Duration::from_secs(1) / 30)
         );
         assert_eq!(
-            next_frame(true, true, 15),
+            next_frame(true, false, true, 15),
             Some(Duration::from_secs(1) / 15)
         );
-        assert_eq!(next_frame(true, false, 30), None);
-        assert_eq!(next_frame(false, true, 60), None);
+        assert_eq!(next_frame(true, false, false, 30), None);
+        assert_eq!(next_frame(false, true, false, 30), Some(Duration::from_secs(1) / 30));
+        assert_eq!(next_frame(false, false, true, 60), None);
         for level in Screen::ALL {
             let a = animated(level, &level.strengths());
             assert_eq!(a, level.moving(), "{level:?}");
@@ -455,16 +548,16 @@ mod tests {
     fn the_clock_stops_without_focus() {
         let mut c = Clock::default();
         let s = Screen::Live.strengths();
-        c.frame(1.0, Screen::Live, &s, true);
-        let f = c.frame(1.5, Screen::Live, &s, true);
+        c.frame(1.0, Screen::Live, &s, true, true);
+        let f = c.frame(1.5, Screen::Live, &s, true, true);
         assert!((f.time - 0.5).abs() < 1e-6);
         assert!(f.keep > 0.0 && f.strengths.noise > 0.0);
-        let held = c.frame(9.0, Screen::Live, &s, false);
+        let held = c.frame(9.0, Screen::Live, &s, false, false);
         assert_eq!(held.time, f.time);
         assert_eq!(held.keep, 0.0);
         assert_eq!(held.strengths, s.still());
         assert_eq!(held.scan_offset, f.scan_offset);
-        let still = c.frame(10.0, Screen::Still, &Screen::Still.strengths(), true);
+        let still = c.frame(10.0, Screen::Still, &Screen::Still.strengths(), true, true);
         assert_eq!(still.scan_offset, 0.0);
     }
 
@@ -477,5 +570,77 @@ mod tests {
         assert!(!custom(Screen::Soft, &s));
         assert_eq!(news(Screen::Live, false), "Screen: Live.");
         assert_eq!(news(Screen::Live, true), "Screen: Custom.");
+    }
+
+    /// Each strength alone, at Still and at Live: the table of the module's
+    /// docs, row by row.
+    #[test]
+    fn each_strength_asks_for_frames_by_the_table() {
+        use Motion::*;
+        type Set = fn(&mut Strengths);
+        let rows: [(&str, Set, Motion, Motion); 10] = [
+            ("bloom", |s| s.bloom = 1.0, Never, Never),
+            ("vignette", |s| s.vignette = 1.0, Never, Never),
+            ("scanlines", |s| s.scanlines = 1.0, Never, Always),
+            ("curvature", |s| s.curvature = 1.0, Never, Never),
+            ("persistence", |s| s.persistence = 1.0, AfterChange, AfterChange),
+            ("noise", |s| s.noise = 1.0, Always, Always),
+            ("flicker", |s| s.flicker = 1.0, Always, Always),
+            ("band", |s| s.band = 1.0, Always, Always),
+            ("mask", |s| s.mask = 1.0, Never, Never),
+            ("aberration", |s| s.aberration = 1.0, Never, Never),
+        ];
+        for (name, set, still, live) in rows {
+            let mut s = Strengths::NONE;
+            set(&mut s);
+            assert_eq!(motion(Screen::Still, &s), still, "{name} at Still");
+            assert_eq!(motion(Screen::Live, &s), live, "{name} at Live");
+            assert_eq!(motion(Screen::Arcade, &s), live, "{name} at Arcade");
+            for level in [Screen::Off, Screen::Soft] {
+                assert_eq!(motion(level, &s), Never, "{name} at {level:?}");
+            }
+            // The clock agrees: an idle window asks for frames only when
+            // the row says always.
+            let mut c = Clock::default();
+            c.frame(0.0, Screen::Still, &s, true, false);
+            let wants = next_frame(animated(Screen::Still, &s), c.glowing(), true, 30);
+            assert_eq!(wants.is_some(), still == Always, "{name} idle at Still");
+        }
+    }
+
+    /// Persistence alone: a change starts frames, which stop once the old
+    /// picture is below the stated level, and the slider reaches the pass.
+    #[test]
+    fn persistence_alone_glows_after_a_change_then_stops() {
+        let s = Strengths {
+            persistence: 1.0,
+            ..Screen::Still.strengths()
+        };
+        let mut c = Clock::default();
+        let idle = c.frame(0.0, Screen::Still, &s, true, false);
+        assert!(!c.glowing() && idle.keep == 0.0);
+        let first = c.frame(1.0, Screen::Still, &s, true, true);
+        assert!(c.glowing(), "a change starts the afterglow");
+        assert!(first.keep > 0.0 && first.strengths.persistence == 1.0);
+        assert_eq!(first.time, idle.time, "the clock holds");
+        let mut t = 1.0;
+        let mut left = first.keep;
+        let mut frames = 1;
+        while c.glowing() {
+            t += 1.0 / 30.0;
+            let f = c.frame(t, Screen::Still, &s, false, false);
+            // Each frame fades the old picture; the last one, below the
+            // end level, draws without it.
+            assert_eq!(f.keep > 0.0, c.glowing());
+            left *= persistence_keep(s.persistence, 1.0 / 30.0);
+            frames += 1;
+            assert!(frames < 100, "the afterglow ends");
+        }
+        assert!(left < AFTERGLOW_END, "{left}");
+        // At 30 frames a second, under a second.
+        assert!(frames <= 30, "{frames}");
+        let after = c.frame(t + 1.0, Screen::Still, &s, true, false);
+        assert_eq!(after.keep, 0.0);
+        assert_eq!(next_frame(false, c.glowing(), true, 30), None);
     }
 }

@@ -1867,3 +1867,46 @@ fn only_a_focused_live_screen_asks_for_frames() {
     h.run_steps(4);
     assert_eq!(repaint_asked(&h), None);
 }
+
+/// Steps until the window asks for no frame, at most `max`.
+fn settle(h: &mut Harness<'static, Studio>, max: u32) -> u32 {
+    let mut n = 0;
+    loop {
+        h.step();
+        n += 1;
+        if !h.ctx.has_requested_repaint() || n >= max {
+            return n;
+        }
+    }
+}
+
+/// Persistence alone, at Still: a change of the picture starts frames that
+/// end once the afterglow has faded, and the screen's own frames do not
+/// count as changes. Without persistence the window settles at once.
+#[test]
+fn persistence_alone_asks_for_frames_after_a_change_then_stops() {
+    use robco_studio::screen::Adapter;
+    use robco_studio::theme::{Screen, Strengths};
+    for persistence in [0.0, 1.0] {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1280.0, 720.0))
+            .with_step_dt(1.0 / 30.0)
+            .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(None));
+        let s = h.state_mut();
+        s.choose_screen(Adapter::Hardware, Some(false), Some(Screen::Still));
+        s.screen.strengths = Strengths {
+            persistence,
+            ..Screen::Still.strengths()
+        };
+        assert!(settle(&mut h, 300) < 300, "{persistence}: settles at start");
+        h.hover_at(egui::pos2(640.0, 400.0));
+        let n = settle(&mut h, 300);
+        assert!(n < 300, "{persistence}: the afterglow ends");
+        if persistence > 0.0 {
+            // At 30 frames a second the full afterglow fades in about 28.
+            assert!(n > 20, "{persistence}: the afterglow runs, {n} frames");
+        } else {
+            assert!(n <= 3, "{persistence}: no afterglow, {n} frames");
+        }
+    }
+}
