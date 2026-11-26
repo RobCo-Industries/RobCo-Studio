@@ -1018,10 +1018,14 @@ fn put(
             || target.starts_with('/')
             || target.starts_with('\\')
             || target.as_bytes().get(1) == Some(&b':')
-            || !parts(target).iter().all(|c| *c == ".." || is_portable(c))
         {
             return Err(Error::ToolArchive(format!(
                 "{name}: the link leads outside the extraction folder"
+            )));
+        }
+        if !parts(target).iter().all(|c| *c == ".." || is_portable(c)) {
+            return Err(Error::ToolArchive(format!(
+                "{name}: the link target {target:?} holds a name that is not plain"
             )));
         }
         listed.push((name.to_owned(), entry));

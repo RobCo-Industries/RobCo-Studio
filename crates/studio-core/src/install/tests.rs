@@ -322,9 +322,10 @@ fn install_refuses_a_drive_in_a_component() {
     let d = Dir::new("drive");
     let mut put = files();
     put.push(("holotape-c/C:payload", b"x"));
+    // Listed in `sdk.json` too, so only the name rule refuses it.
     let msg = refused(
         &d,
-        install_zip(&d, &package_zip(&files(), &put)),
+        install_zip(&d, &package_zip(&put, &put)),
         "package: archive",
     );
     assert!(msg.contains("holotape-c/C:payload"), "{msg}");
@@ -932,17 +933,22 @@ fn install_refuses_tool_names_that_are_not_plain() {
         tool_tgz(&[T::Dir("bin/"), T::File("bin/C:payload", b"x")]),
         tool_tgz(&[T::Dir("bin/"), T::File("bin/nul", b"x")]),
         tool_tgz(&[T::Dir("bin/"), T::Dir("a /"), T::File("a /x", b"x")]),
-        tool_tgz(&[
-            T::Dir("bin/"),
-            T::File("bin/y", b"x"),
-            T::Link("bin/l", "nul/../y"),
-        ]),
         tool_zip(&[("bin/", b""), ("bin/a:b", b"x")]),
     ];
     for bytes in cases {
         let d = Dir::new("tool-plain");
         tool_refused(&d, install_tool(&d, &bytes, ""), "tool: archive");
     }
+    // The system would refuse this link only because `nul` is missing
+    // here: the rule refuses it by its name, as Windows needs.
+    let d = Dir::new("tool-plain-link");
+    let bytes = tool_tgz(&[
+        T::Dir("bin/"),
+        T::File("bin/y", b"x"),
+        T::Link("bin/l", "nul/../y"),
+    ]);
+    let msg = tool_refused(&d, install_tool(&d, &bytes, ""), "tool: archive");
+    assert!(msg.contains("not plain"), "{msg}");
 }
 
 #[test]
