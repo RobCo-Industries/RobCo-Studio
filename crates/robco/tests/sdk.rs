@@ -680,3 +680,30 @@ fn sdk_refuses_a_pipos_package_without_flags_json() {
     f.replace_package(&z.finish().unwrap().into_inner());
     refused(&f, INSTALL, "package: manifest", None);
 }
+
+/// A cache where no temporary folder can be made fails inside `download`,
+/// the first step of the item: its `start` line has no `done`.
+#[cfg(unix)]
+#[test]
+fn sdk_install_fails_in_the_download_step_on_a_read_only_cache() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("read-only");
+    fs::create_dir_all(f.cache()).unwrap();
+    fs::set_permissions(f.cache(), fs::Permissions::from_mode(0o555)).unwrap();
+    let out = install_json(&f);
+    fs::set_permissions(f.cache(), fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(out.status.code(), Some(9));
+    let stdout = text(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    let want = [
+        r#"{"v":1,"kind":"step","step":"resolve","item":"","state":"start"}"#,
+        r#"{"v":1,"kind":"step","step":"resolve","item":"","state":"done"}"#,
+        r#"{"v":1,"kind":"step","step":"download","item":"pipos@1.4.0","state":"start"}"#,
+    ];
+    assert_eq!(lines[..lines.len() - 2], want, "{stdout}");
+    let error: Value = serde_json::from_str(lines[lines.len() - 2]).unwrap();
+    assert_eq!(error["code"], "io: write", "{stdout}");
+    assert_eq!(error["exit"], 9, "{stdout}");
+    let result: Value = serde_json::from_str(lines[lines.len() - 1]).unwrap();
+    assert_eq!(result["ok"], false, "{stdout}");
+}
