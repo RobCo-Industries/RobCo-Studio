@@ -9,10 +9,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import notices  # noqa: E402
+import scan  # noqa: E402
 
 # Only what bash needs: the tests never pass the caller's environment.
 BASE_ENV = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"}
@@ -144,6 +146,61 @@ class NoticesTest(unittest.TestCase):
                              "--registry", str(self.reg), "--core", str(self.core)])
         self.assertEqual(code, 0)
         self.assertTrue(out.read_text().startswith("Third-party notices for robco\n"))
+
+
+class ScanTest(unittest.TestCase):
+    HOME = "/home/builder"
+    WS = "/work/robco-studio"
+    CARGO = "/opt/cargo-home"
+    WIN = "C:\\Users\\builder"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = pathlib.Path(self.tmp.name)
+        self.forbid = scan.forbidden(self.WS, home=self.HOME, cargo_home=self.CARGO) + [self.WIN]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def prog(self, name, data):
+        f = self.d / name
+        f.write_bytes(b"\x7fELF\0\0" + data + b"\0tail")
+        return str(f)
+
+    def test_cargo_home(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(scan.forbidden("/w/s", home="/h/me"), ["/h/me", "/w/s", "/h/me/.cargo"])
+        with mock.patch.dict(os.environ, {"CARGO_HOME": "/c/home/"}, clear=True):
+            self.assertEqual(scan.forbidden("/w/s", home="/h/me"), ["/h/me", "/w/s", "/c/home"])
+
+    def test_each_spelling_is_a_hit(self):
+        planted = {
+            "home": b"/home/builder/x.rs",
+            "home-backslash": b"\\home\\builder\\x.rs",
+            "workspace": b"/work/robco-studio/crates/robco/src/main.rs",
+            "cargo": b"/opt/cargo-home/registry/src/x/serde-1.0.0/src/lib.rs",
+            "cargo-utf16": "/opt/cargo-home/registry".encode("utf-16-le"),
+            "win": b"C:\\Users\\builder\\.cargo",
+            "win-slash": b"c:/users/BUILDER/.cargo",
+            "win-msys": b"/c/Users/builder/.cargo",
+            "win-utf16": "C:\\Users\\builder".encode("utf-16-le"),
+        }
+        for name, data in planted.items():
+            f = self.prog(name, data)
+            self.assertEqual(len(scan.scan([f], self.forbid)), 1, name)
+
+    def test_clean_program_passes(self):
+        f = self.prog("clean", b"/cargo/registry/src/x/serde-1.0.0/src/lib.rs /robco/crates/robco "
+                               b"/rustc/0123/library/std/src/lib.rs builder home")
+        self.assertEqual(scan.scan([f], self.forbid), [])
+
+    def test_command_line(self):
+        bad = self.prog("bad", b"/opt/cargo-home/registry")
+        good = self.prog("good", b"/cargo/registry")
+        args = ["--workspace", self.WS, "--forbid", self.CARGO]
+        self.assertEqual(scan.main([good] + args), 0)
+        self.assertEqual(scan.main([good, bad] + args), 1)
+        self.assertEqual(scan.main([good, "--workspace", "/w"]), 1)
 
 
 if __name__ == "__main__":
