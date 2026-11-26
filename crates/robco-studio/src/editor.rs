@@ -152,8 +152,34 @@ struct LeaveRun {
     todo: std::collections::VecDeque<u64>,
     /// Every document asked about: they go once the run ends.
     asked: Vec<u64>,
-    /// Documents whose answer was Save.
+    /// Documents whose answer was Save and that are not written yet.
     save: Vec<u64>,
+    /// The answers are all in and the saves have begun.
+    saving: bool,
+    /// How many of `save` were written so far, and the last one's name.
+    saved: usize,
+    last: Option<String>,
+}
+
+/// What the save gate did.
+#[derive(Debug)]
+enum Gate {
+    /// The file was written.
+    Saved,
+    /// The file changed on disk, was removed or cannot be read: nothing
+    /// was written, the Overwrite question decides.
+    Changed,
+    /// The write failed; the file was left as it was.
+    Failed(String),
+}
+
+/// "1 document", "3 documents".
+fn count(k: usize) -> String {
+    if k == 1 {
+        "1 document".to_owned()
+    } else {
+        format!("{k} documents")
+    }
 }
 
 const TEXT_ID: &str = "editor-text";
@@ -208,11 +234,29 @@ impl Editor {
         if !d.is_dirty() {
             let s = format!("Nothing to save in {}.", d.shown);
             self.news = Some((crate::kit::Level::Info, s));
-        } else if d.changed_on_disk() {
-            self.question = Some(Question::Overwrite { doc: d.id });
         } else {
-            let r = d.save().map(|()| format!("Saved {}.", d.shown));
-            self.report(r);
+            let (id, shown) = (d.id, d.shown.clone());
+            let Some(i) = self.active else { return };
+            match self.write(i, false) {
+                Gate::Saved => self.report(Ok(format!("Saved {shown}."))),
+                Gate::Changed => self.question = Some(Question::Overwrite { doc: id }),
+                Gate::Failed(e) => self.report(Err(e)),
+            }
+        }
+    }
+
+    /// The save gate: every write of a document goes through here. Unless
+    /// `overwrite`, the file is first checked against what the document
+    /// last read or wrote, by bytes, right before the write; a file that
+    /// changed, went or cannot be read is not written.
+    fn write(&mut self, i: usize, overwrite: bool) -> Gate {
+        let d = &mut self.docs[i];
+        if !overwrite && d.changed_on_disk() {
+            return Gate::Changed;
+        }
+        match d.save() {
+            Ok(()) => Gate::Saved,
+            Err(e) => Gate::Failed(e),
         }
     }
 
@@ -247,31 +291,24 @@ impl Editor {
         };
         while let Some(id) = run.todo.pop_front() {
             let Some(i) = self.index_of(id) else { continue };
-            let d = &mut self.docs[i];
-            if !d.is_dirty() {
+            if !self.docs[i].is_dirty() {
                 continue;
             }
-            if d.changed_on_disk() {
-                self.question = Some(Question::Overwrite { doc: id });
-                self.active = Some(i);
-                self.run = Some(run);
-                return;
-            }
-            match d.save() {
-                Ok(()) => run.saved += 1,
-                Err(e) => {
+            match self.write(i, false) {
+                Gate::Saved => run.saved += 1,
+                Gate::Changed => {
+                    self.question = Some(Question::Overwrite { doc: id });
+                    self.active = Some(i);
+                    self.run = Some(run);
+                    return;
+                }
+                Gate::Failed(e) => {
                     run.kept += 1;
                     run.error.get_or_insert(e);
                 }
             }
         }
-        let n = |k: usize| {
-            if k == 1 {
-                "1 document".to_owned()
-            } else {
-                format!("{k} documents")
-            }
-        };
+        let n = count;
         self.news = Some(match (run.kept, run.error) {
             (0, _) => (
                 crate::kit::Level::Success,
@@ -359,6 +396,9 @@ impl Editor {
             asked: todo.iter().copied().collect(),
             todo,
             save: Vec::new(),
+            saving: false,
+            saved: 0,
+            last: None,
         });
         self.ask_next()
     }
@@ -382,27 +422,55 @@ impl Editor {
         self.end_leave()
     }
 
-    /// Every answer is in: save what was to be saved, then drop the rest
-    /// and go on. A failed save stops the run and drops nothing.
+    /// Every answer is in: save what was to be saved, each through the
+    /// gate, then drop the rest and go on. A file changed on disk stops the
+    /// run at that file and asks Overwrite; the answer goes on or keeps
+    /// everything. A failed save stops the run and drops nothing. Files
+    /// saved before a stop stay saved.
     fn end_leave(&mut self) -> bool {
-        let Some(run) = self.leave.take() else {
+        let Some(mut run) = self.leave.take() else {
             return false;
         };
-        for id in &run.save {
-            let Some(i) = self.index_of(*id) else {
+        run.saving = true;
+        while let Some(&id) = run.save.first() {
+            let Some(i) = self.index_of(id) else {
+                run.save.remove(0);
                 continue;
             };
-            if let Err(e) = self.docs[i].save() {
-                self.switching = false;
-                self.active = Some(i);
-                self.report(Err(e));
-                return false;
+            match self.write(i, false) {
+                Gate::Saved => {
+                    run.save.remove(0);
+                    run.saved += 1;
+                    run.last = Some(self.docs[i].shown.clone());
+                }
+                Gate::Changed => {
+                    let s = format!(
+                        "Saved {}. {} changed on disk; nothing else was saved or closed.",
+                        count(run.saved),
+                        self.docs[i].shown
+                    );
+                    self.news = Some((crate::kit::Level::Warning, s));
+                    self.question = Some(Question::Overwrite { doc: id });
+                    self.active = Some(i);
+                    self.leave = Some(run);
+                    return false;
+                }
+                Gate::Failed(e) => {
+                    self.switching = false;
+                    self.active = Some(i);
+                    let e = match run.saved {
+                        0 => e,
+                        k => format!("Saved {}. {e}", count(k)),
+                    };
+                    self.report(Err(e));
+                    return false;
+                }
             }
         }
-        if let [id] = run.save.as_slice()
-            && let Some(i) = self.index_of(*id)
-        {
-            self.report(Ok(format!("Saved {}.", self.docs[i].shown)));
+        match (run.saved, run.last.take()) {
+            (0, _) => {}
+            (1, Some(shown)) => self.report(Ok(format!("Saved {shown}."))),
+            (k, _) => self.report(Ok(format!("Saved {}.", count(k)))),
         }
         for id in run.asked {
             if let Some(i) = self.index_of(id) {
@@ -420,6 +488,23 @@ impl Editor {
         true
     }
 
+    /// A quit, close or switch stopped while saving: Cancel at the
+    /// Overwrite question, or a failed write. Nothing more is saved or
+    /// dropped; files saved before the stop stay saved.
+    fn leave_stopped(&mut self, error: Option<String>) {
+        let Some(run) = self.leave.take() else { return };
+        self.switching = false;
+        let mut s = format!("Saved {}. Nothing was closed.", count(run.saved));
+        let level = match error {
+            Some(e) => {
+                s = format!("{s} {e}");
+                crate::kit::Level::Error
+            }
+            None => crate::kit::Level::Warning,
+        };
+        self.news = Some((level, s));
+    }
+
     /// Answer the open question about `doc`. An answer about another
     /// document changes nothing.
     pub fn answer(&mut self, doc: u64, a: Answer) {
@@ -431,12 +516,33 @@ impl Editor {
             self.question = None;
             return;
         };
+        if let Question::Overwrite { .. } = q
+            && self.leave.as_ref().is_some_and(|r| r.saving)
+        {
+            self.question = None;
+            if a == Answer::Save {
+                match self.write(i, true) {
+                    Gate::Saved => {
+                        if let Some(run) = self.leave.as_mut() {
+                            run.save.retain(|d| *d != doc);
+                            run.saved += 1;
+                            run.last = Some(self.docs[i].shown.clone());
+                        }
+                        self.end_leave();
+                    }
+                    Gate::Failed(e) => self.leave_stopped(Some(e)),
+                    Gate::Changed => self.leave_stopped(None),
+                }
+            } else {
+                self.leave_stopped(None);
+            }
+            return;
+        }
         if let Question::Overwrite { .. } = q {
             self.question = None;
-            let r = (a == Answer::Save).then(|| {
-                self.docs[i]
-                    .save()
-                    .map(|()| format!("Saved {}.", self.docs[i].shown))
+            let r = (a == Answer::Save).then(|| match self.write(i, true) {
+                Gate::Failed(e) => Err(e),
+                _ => Ok(format!("Saved {}.", self.docs[i].shown)),
             });
             match (self.run.as_mut(), r) {
                 (Some(run), Some(Ok(_))) => run.saved += 1,
@@ -1412,7 +1518,93 @@ mod replace_tests {
         assert!(e.docs.iter().all(|d| d.is_dirty()));
     }
 
-    /// A save that fails at the end stops the run and drops nothing.
+    /// Two edited documents, a leave, Save for the first, then the first
+    /// file changes or goes, then the last answer. Nothing is written over
+    /// the change, nothing is closed, and Overwrite is asked for it.
+    fn stopped(tag: &str, quit: bool, remove: bool) -> (Gone, super::Editor, Vec<u64>) {
+        use super::{Answer, Question};
+        let (g, mut e, ids) = three(tag);
+        e.docs.pop();
+        assert!(!if quit {
+            e.request_quit()
+        } else {
+            e.request_switch()
+        });
+        e.answer(ids[0], Answer::Save);
+        if remove {
+            std::fs::remove_file(g.0.join("a.txt")).unwrap();
+        } else {
+            std::fs::write(g.0.join("a.txt"), b"theirs, longer\n").unwrap();
+        }
+        e.answer(ids[1], Answer::Save);
+        let on_disk = std::fs::read(g.0.join("a.txt")).ok();
+        let want: Option<&[u8]> = (!remove).then_some(b"theirs, longer\n");
+        assert_eq!(on_disk.as_deref(), want, "no write over the change");
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"one\n");
+        assert!(!e.quit_allowed && !e.switch_allowed);
+        assert_eq!(e.docs.len(), 2);
+        assert!(e.docs.iter().all(|d| d.text == "mine\n" && d.is_dirty()));
+        assert_eq!(e.question, Some(Question::Overwrite { doc: ids[0] }));
+        assert!(
+            e.news
+                .as_ref()
+                .is_some_and(|(_, s)| s.starts_with("Saved 0 documents. a.txt changed on disk"))
+        );
+        (g, e, ids)
+    }
+
+    #[test]
+    fn a_changed_file_stops_the_quit_and_overwrite_finishes_it() {
+        let (g, mut e, ids) = stopped("stop-quit", true, false);
+        e.answer(ids[0], super::Answer::Save);
+        assert!(e.quit_allowed && e.docs.is_empty());
+        assert_eq!(std::fs::read(g.0.join("a.txt")).unwrap(), b"mine\n");
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"mine\n");
+    }
+
+    #[test]
+    fn a_changed_file_stops_the_switch_and_cancel_keeps_everything() {
+        let (g, mut e, ids) = stopped("stop-switch", false, false);
+        e.answer(ids[0], super::Answer::Cancel);
+        assert!(!e.switch_allowed && !e.switching && e.question.is_none());
+        assert_eq!(e.docs.len(), 2);
+        assert!(e.docs.iter().all(|d| d.is_dirty()));
+        assert_eq!(
+            std::fs::read(g.0.join("a.txt")).unwrap(),
+            b"theirs, longer\n"
+        );
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"one\n");
+    }
+
+    #[test]
+    fn a_removed_file_stops_the_switch_and_overwrite_finishes_it() {
+        let (g, mut e, ids) = stopped("stop-gone", false, true);
+        e.answer(ids[0], super::Answer::Save);
+        assert!(e.switch_allowed && e.docs.is_empty());
+        assert_eq!(std::fs::read(g.0.join("a.txt")).unwrap(), b"mine\n");
+    }
+
+    /// Files saved before the stop stay saved, and the status line says so.
+    #[test]
+    fn files_saved_before_the_stop_stay_saved() {
+        use super::{Answer, Question};
+        let (g, mut e, ids) = three("stop-later");
+        assert!(!e.request_quit());
+        e.answer(ids[0], Answer::Save);
+        e.answer(ids[1], Answer::Save);
+        std::fs::write(g.0.join("b.txt"), b"theirs, longer\n").unwrap();
+        e.answer(ids[2], Answer::DoNotSave);
+        assert_eq!(std::fs::read(g.0.join("a.txt")).unwrap(), b"mine\n");
+        assert_eq!(e.question, Some(Question::Overwrite { doc: ids[1] }));
+        assert_eq!(e.docs.len(), 3);
+        assert!(
+            e.news
+                .as_ref()
+                .is_some_and(|(_, s)| s.starts_with("Saved 1 document. b.txt changed"))
+        );
+    }
+
+    /// A write that fails after Overwrite stops the run and drops nothing.
     #[test]
     fn a_failed_save_stops_the_switch() {
         use super::Answer;
@@ -1420,9 +1612,11 @@ mod replace_tests {
         assert!(!e.request_switch());
         e.answer(ids[0], Answer::DoNotSave);
         e.answer(ids[1], Answer::Save);
-        // The folder goes before the last answer: the save then fails.
+        // The folder goes before the last answer: the gate asks, the
+        // write then fails.
         std::fs::remove_dir_all(&g.0).unwrap();
         e.answer(ids[2], Answer::DoNotSave);
+        e.answer(ids[1], Answer::Save);
         assert!(!e.switch_allowed && !e.switching);
         assert_eq!(e.docs.len(), 3);
         assert!(
