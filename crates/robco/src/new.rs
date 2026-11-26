@@ -760,14 +760,24 @@ fn target_state(target: &Path, name: &str) -> Result<bool, Failure> {
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
         Err(e) => Err(read_failure(target, &e)),
         Ok(md) if md.file_type().is_dir() => {
-            let mut it = fs::read_dir(target).map_err(|e| read_failure(target, &e))?;
-            if it.next().is_some() {
-                Err(exists("is a folder that is not empty"))
-            } else {
-                Ok(true)
+            let it = fs::read_dir(target).map_err(|e| read_failure(target, &e))?;
+            match is_empty(it) {
+                Ok(true) => Ok(true),
+                Ok(false) => Err(exists("is a folder that is not empty")),
+                Err(e) => Err(read_failure(target, &e)),
             }
         }
         Ok(_) => Err(exists("exists and is not a folder")),
+    }
+}
+
+/// Whether a folder listing holds no entry, by its first item. An item the
+/// system fails to read is an error, never an entry.
+fn is_empty<T>(mut items: impl Iterator<Item = std::io::Result<T>>) -> std::io::Result<bool> {
+    match items.next() {
+        None => Ok(true),
+        Some(Ok(_)) => Ok(false),
+        Some(Err(e)) => Err(e),
     }
 }
 
@@ -869,6 +879,18 @@ fn fill(root: &Path, files: &[(&str, Vec<u8>)]) -> Result<(), Failure> {
     reason = "a test; a failed unwrap is a failed test"
 )]
 mod tests {
+    #[test]
+    fn is_empty_tells_an_error_from_an_entry() {
+        use std::io::{Error, ErrorKind::PermissionDenied};
+        let err = || Error::from(PermissionDenied);
+        assert!(is_empty(Vec::<std::io::Result<()>>::new().into_iter()).unwrap());
+        assert!(!is_empty(vec![Ok(())].into_iter()).unwrap());
+        let e = is_empty(vec![Err::<(), _>(err())].into_iter()).unwrap_err();
+        assert_eq!(e.kind(), PermissionDenied);
+        let e = is_empty(vec![Err(err()), Ok(())].into_iter()).unwrap_err();
+        assert_eq!(e.kind(), PermissionDenied);
+    }
+
     use super::*;
 
     #[test]
