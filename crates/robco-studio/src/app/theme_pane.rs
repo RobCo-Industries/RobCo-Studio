@@ -65,16 +65,40 @@ pub struct Naming {
 /// A question about a theme. Each comes in front of the editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThemeQuestion {
-    /// Keep the changes before the theme `to`, by its settings key, takes
-    /// their place? `name` is the Name field, for a theme that ships.
+    /// Keep the changes before `to` takes their place? `name` is the Name
+    /// field, for a theme that ships.
     Leave {
-        /// The theme picked.
-        to: String,
+        /// What takes the place of the changed theme.
+        to: Leaving,
         /// The name to save a theme that ships as.
         name: String,
     },
     /// Delete the theme in use?
     Delete,
+}
+
+/// What takes the place of the theme in use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leaving {
+    /// A theme of the list, by its settings key: a pick from the menu or
+    /// the editor's dropdown.
+    Theme(String),
+    /// A theme file to add, and the name it gives.
+    File {
+        /// The file the person chose.
+        path: std::path::PathBuf,
+        /// The theme's name, cleaned.
+        name: String,
+    },
+}
+
+/// What the check before leaving the theme in use decides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Gate {
+    /// Nothing is lost: go.
+    Go,
+    /// A change is not saved: ask this first.
+    Ask(ThemeQuestion),
 }
 
 impl ThemeEditor {
@@ -246,6 +270,8 @@ struct Asked {
     moves: Option<bool>,
     rate: Option<u32>,
     pick: Option<usize>,
+    /// A tab picked. It changes after the tab shown reported its fields.
+    tab: Option<ThemeTab>,
     revert: bool,
     close: bool,
     save: bool,
@@ -256,6 +282,73 @@ struct Asked {
     named: bool,
     /// The name row's Cancel, or Escape in it.
     unnamed: bool,
+}
+
+/// The edits of one frame: what the fields and controls hold.
+#[derive(Debug, Default)]
+struct Edit {
+    base: Option<Color32>,
+    strengths: Option<Strengths>,
+    moves: Option<bool>,
+    rate: Option<u32>,
+}
+
+/// The actions of one frame, done after its edits.
+#[derive(Debug, Default)]
+struct Act {
+    pick: Option<usize>,
+    tab: Option<ThemeTab>,
+    revert: bool,
+    close: bool,
+    save: bool,
+    save_as: bool,
+    rename: bool,
+    delete: bool,
+    named: bool,
+    unnamed: bool,
+}
+
+impl Asked {
+    /// The edits and the actions apart. Every field goes to one side, so
+    /// a new field does not compile until it says which.
+    fn split(self) -> (Edit, Act) {
+        let Asked {
+            base,
+            strengths,
+            moves,
+            rate,
+            pick,
+            tab,
+            revert,
+            close,
+            save,
+            save_as,
+            rename,
+            delete,
+            named,
+            unnamed,
+        } = self;
+        (
+            Edit {
+                base,
+                strengths,
+                moves,
+                rate,
+            },
+            Act {
+                pick,
+                tab,
+                revert,
+                close,
+                save,
+                save_as,
+                rename,
+                delete,
+                named,
+                unnamed,
+            },
+        )
+    }
 }
 
 impl Studio {
@@ -424,11 +517,11 @@ impl Studio {
                         if let Some(k) =
                             kit.segmented_tabs_wide(&mut ui, TABS, &TAB_NAMES, at, body.width())
                         {
-                            self.theme_editor.tab = if k == 0 {
+                            asked.tab = Some(if k == 0 {
                                 ThemeTab::Colour
                             } else {
                                 ThemeTab::Screen
-                            };
+                            });
                         }
                         ui.add_space(size::UNIT);
                         egui::ScrollArea::vertical()
@@ -673,9 +766,42 @@ impl Studio {
         ui.add(hint);
     }
 
-    /// Change the theme as the pane asked, through `edit_theme`.
+    /// Act on what the pane asked in one frame: the edits first, then the
+    /// one action. A field commits its text as it loses focus, in the same
+    /// frame as the click that took the focus, so an action always sees
+    /// what the fields hold.
     fn apply(&mut self, ctx: &egui::Context, a: Asked) {
         let before = self.spec().clone();
+        let (edit, act) = a.split();
+        self.apply_edit(&edit);
+        self.apply_act(&act);
+        // The pass runs at what drew this frame: a change applies from the
+        // next frame, so ask for it.
+        if *self.spec() != before {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Change the theme by the edits of a frame, through `edit_theme`.
+    fn apply_edit(&mut self, e: &Edit) {
+        self.edit_theme(|t| {
+            if let Some(c) = e.base {
+                t.base = c;
+            }
+            if let Some(s) = e.strengths {
+                t.strengths = s;
+            }
+            if let Some(m) = e.moves {
+                t.moves = m;
+            }
+            if let Some(r) = e.rate {
+                t.rate = r;
+            }
+        });
+    }
+
+    /// Do the action of a frame, after its edits.
+    fn apply_act(&mut self, a: &Act) {
         if a.unnamed {
             self.theme_editor.naming = None;
         } else if a.named {
@@ -691,31 +817,15 @@ impl Studio {
                 self.theme_editor.question = Some(ThemeQuestion::Delete);
             }
         } else if let Some(i) = a.pick {
-            self.ask_pick(i);
+            self.pick_theme(i);
         } else if a.revert {
+            // Revert drops the change: the person asked for exactly that.
             if self.changed.is_some() {
-                self.pick_theme(self.current);
+                self.take_theme(self.current);
             }
-        } else {
-            self.edit_theme(|t| {
-                if let Some(c) = a.base {
-                    t.base = c;
-                }
-                if let Some(s) = a.strengths {
-                    t.strengths = s;
-                }
-                if let Some(m) = a.moves {
-                    t.moves = m;
-                }
-                if let Some(r) = a.rate {
-                    t.rate = r;
-                }
-            });
         }
-        // The pass runs at what drew this frame: a change applies from the
-        // next frame, so ask for it.
-        if *self.spec() != before {
-            ctx.request_repaint();
+        if let Some(t) = a.tab {
+            self.theme_editor.tab = t;
         }
         if a.close {
             self.theme_editor.open = false;
@@ -731,26 +841,49 @@ impl Studio {
         self.theme_files.get(self.current).cloned().flatten()
     }
 
-    /// Take the theme at place `i`, from the menu or the editor's
-    /// dropdown. While a changed theme is not saved, ask first.
-    pub fn ask_pick(&mut self, i: usize) {
-        if i >= self.themes.len() {
-            return;
-        }
+    /// The one check before something else takes the place of the theme
+    /// in use. Nothing is lost: go. A change is not saved: ask whether to
+    /// keep it. Delete and Revert drop a change on purpose and do not pass
+    /// here; Save, Save as, Replace and Rename keep it.
+    pub(super) fn gate(&self, to: &Leaving) -> Gate {
         if self.changed.is_none() {
-            self.pick_theme(i);
-            return;
+            return Gate::Go;
         }
         let name = if self.own_file().is_some() {
             String::new()
         } else {
             self.next_name(&self.own_name(self.current))
         };
-        self.theme_editor.naming = None;
-        self.theme_editor.question = Some(ThemeQuestion::Leave {
-            to: self.key(i),
+        Gate::Ask(ThemeQuestion::Leave {
+            to: to.clone(),
             name,
-        });
+        })
+    }
+
+    /// Let `to` take the place of the theme in use, after [`Studio::gate`].
+    /// Gives the line said, or `None` when a question is open.
+    pub fn leave_for(&mut self, to: Leaving) -> Result<Option<String>, ThemeFault> {
+        match self.gate(&to) {
+            Gate::Go => self.go(&to).map(Some),
+            Gate::Ask(q) => {
+                self.theme_editor.naming = None;
+                self.theme_editor.question = Some(q);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Take `to` now. A changed theme goes.
+    fn go(&mut self, to: &Leaving) -> Result<String, ThemeFault> {
+        match to {
+            Leaving::Theme(key) => {
+                if let Some(i) = self.find_key(key) {
+                    self.take_theme(i);
+                }
+                Ok(self.status.1.clone())
+            }
+            Leaving::File { path, .. } => self.take_file(path),
+        }
     }
 
     /// Open the name row of Save as, with the next free name, or of
@@ -820,22 +953,25 @@ impl Studio {
     /// On leaving a changed theme, Do not save drops the changes and Save
     /// keeps them first, then the theme picked takes their place. On
     /// Delete, Save is Delete theme.
-    pub fn answer_theme(&mut self, a: Answer) {
-        let Some(q) = self.theme_editor.question.clone() else {
-            return;
-        };
+    ///
+    /// Gives what the answer did: `None` when nothing was done.
+    pub fn answer_theme(&mut self, a: Answer) -> Option<Result<String, ThemeFault>> {
+        let q = self.theme_editor.question.clone()?;
         if a == Answer::Cancel {
             self.theme_editor.question = None;
-            return;
+            return None;
         }
         match q {
             ThemeQuestion::Delete => {
                 self.theme_editor.question = None;
-                if a == Answer::Save
-                    && let Err(f) = self.delete_theme()
-                {
+                if a != Answer::Save {
+                    return None;
+                }
+                let done = self.delete_theme();
+                if let Err(f) = &done {
                     self.say(Level::Error, f.message());
                 }
+                Some(done)
             }
             ThemeQuestion::Leave { to, name } => {
                 if a == Answer::Save {
@@ -848,13 +984,15 @@ impl Studio {
                     };
                     if let Err(f) = kept {
                         self.say_fault(&f);
-                        return;
+                        return Some(Err(f));
                     }
                 }
                 self.theme_editor.question = None;
-                if let Some(i) = self.find_key(&to) {
-                    self.pick_theme(i);
+                let done = self.go(&to);
+                if let Err(f) = &done {
+                    self.say(Level::Error, f.message());
                 }
+                Some(done)
             }
         }
     }
@@ -877,10 +1015,13 @@ impl Studio {
                 )
             }
             ThemeQuestion::Leave { to, .. } => {
-                let to = self
-                    .find_key(to)
-                    .and_then(|i| self.themes.get(i))
-                    .map_or_else(String::new, |t| t.name.to_string());
+                let to = match to {
+                    Leaving::Theme(key) => self
+                        .find_key(key)
+                        .and_then(|i| self.themes.get(i))
+                        .map_or_else(String::new, |t| t.name.to_string()),
+                    Leaving::File { name, .. } => name.clone(),
+                };
                 (leave_title(&own), leave_text(&own, &to), false)
             }
         };
@@ -1006,7 +1147,7 @@ impl Studio {
             answer = Some(Answer::Cancel);
         }
         if let Some(a) = answer {
-            self.answer_theme(a);
+            let _ = self.answer_theme(a);
         }
     }
 }

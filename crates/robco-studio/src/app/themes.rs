@@ -462,11 +462,9 @@ impl Studio {
         Ok(line)
     }
 
-    /// Add the theme file at `path`: read it as untrusted text and, when it
-    /// is a theme, write a new clean file from the values understood, under
-    /// a new file name, and take it. It never writes over a file.
-    pub fn add_theme_file(&mut self, path: &Path) -> Result<String, ThemeFault> {
-        let dir = self.folder_or_fault()?;
+    /// Read the theme file at `path` as untrusted text: the theme it gives,
+    /// with its name cleaned, when it is one.
+    pub(super) fn read_theme_file(&mut self, path: &Path) -> Result<Spec, ThemeFault> {
         let file = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -480,11 +478,32 @@ impl Studio {
         if name.is_empty() {
             name = "Theme".to_owned();
         }
-        let file = Self::new_file(&dir, &name);
-        let spec = Spec {
+        Ok(Spec {
             name: Cow::Owned(name),
             ..loaded.spec
-        };
+        })
+    }
+
+    /// Add the theme file at `path` and take it. A file that is not a theme
+    /// is refused first. While a changed theme is not saved, this asks the
+    /// question of a pick and gives `None`; the file is added after Save or
+    /// Do not save. Otherwise it gives the line for the status line.
+    pub fn add_theme_file(&mut self, path: &Path) -> Result<Option<String>, ThemeFault> {
+        self.folder_or_fault()?;
+        let spec = self.read_theme_file(path)?;
+        self.leave_for(super::Leaving::File {
+            path: path.to_owned(),
+            name: spec.name.into_owned(),
+        })
+    }
+
+    /// Write the theme file at `path` as a new clean file from the values
+    /// understood, under a new file name, and take it. It never writes over
+    /// a file. Only [`Studio::leave_for`] calls this, after its check.
+    pub(super) fn take_file(&mut self, path: &Path) -> Result<String, ThemeFault> {
+        let dir = self.folder_or_fault()?;
+        let spec = self.read_theme_file(path)?;
+        let file = Self::new_file(&dir, &spec.name);
         let line = self.keep(&dir, &file, &spec)?;
         self.say(Level::Success, line.clone());
         Ok(line)

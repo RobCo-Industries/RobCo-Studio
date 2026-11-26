@@ -297,7 +297,10 @@ fn every_write_lists_the_theme_or_keeps_the_change() {
             Act::Add => {
                 let text = format!("version = 1\nname = \"{name}\"\nbase = \"#ff7a1a\"\n");
                 std::fs::write(&src, text).unwrap();
-                s.add_theme_file(&src)
+                // A change not saved: Add asks first, as a pick does.
+                assert_eq!(s.add_theme_file(&src), Ok(None), "{row}");
+                assert!(s.theme_editor.question.is_some(), "{row}");
+                s.answer_theme(crate::editor::Answer::DoNotSave).unwrap()
             }
         };
         match after {

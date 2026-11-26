@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 mod theme_pane;
 mod themes;
-pub use theme_pane::{Naming, ThemeEditor, ThemeQuestion, ThemeTab};
+pub use theme_pane::{Leaving, Naming, ThemeEditor, ThemeQuestion, ThemeTab};
 pub use themes::ThemeFault;
 
 /// The window's pages, chosen in the toolbar.
@@ -632,8 +632,21 @@ impl Studio {
         self.refresh_theme();
     }
 
-    /// Take the theme at place `i` of the list. A changed theme goes.
+    /// Pick the theme at place `i` of the list, from the menu or the
+    /// editor's dropdown. While a changed theme is not saved, this asks
+    /// first, through [`Studio::leave_for`].
     pub fn pick_theme(&mut self, i: usize) {
+        if i >= self.themes.len() {
+            return;
+        }
+        let to = Leaving::Theme(self.key(i));
+        // A pick of a listed theme cannot fail.
+        let _ = self.leave_for(to);
+    }
+
+    /// Take the theme at place `i` of the list. A changed theme goes. Only
+    /// [`Studio::leave_for`] and Revert call this.
+    fn take_theme(&mut self, i: usize) {
         if i >= self.themes.len() {
             return;
         }
@@ -882,7 +895,7 @@ impl Studio {
             },
             Command::NextPane => self.move_focus(ctx, true),
             Command::PreviousPane => self.move_focus(ctx, false),
-            Command::Theme(ThemeId::At(i)) => self.ask_pick(i),
+            Command::Theme(ThemeId::At(i)) => self.pick_theme(i),
             Command::ThemeEdit => self.theme_editor.open = true,
             Command::HighLegibility => {
                 self.theme.high_legibility = !self.theme.high_legibility;

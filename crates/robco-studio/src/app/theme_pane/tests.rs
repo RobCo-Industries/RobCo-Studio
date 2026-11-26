@@ -328,7 +328,7 @@ fn leaving_a_changed_theme_asks() {
         assert_eq!(
             s.theme_editor.question,
             Some(ThemeQuestion::Leave {
-                to: "Amber".into(),
+                to: Leaving::Theme("Amber".into()),
                 name: "Green 2".into()
             })
         );
@@ -364,7 +364,7 @@ fn leaving_your_changed_theme_saves_it() {
     let d = TempDir::new("leave-own");
     let mut s = on_ember(&d);
     nudge(&mut s);
-    s.ask_pick(1);
+    s.pick_theme(1);
     assert!(matches!(
         &s.theme_editor.question,
         Some(ThemeQuestion::Leave { name, .. }) if name.is_empty()
@@ -376,7 +376,7 @@ fn leaving_your_changed_theme_saves_it() {
 
     s.pick_theme(0);
     nudge(&mut s);
-    s.ask_pick(1);
+    s.pick_theme(1);
     if let Some(ThemeQuestion::Leave { name, .. }) = &mut s.theme_editor.question {
         "green".clone_into(name);
     }
@@ -438,7 +438,7 @@ fn the_front_table_holds_for_the_theme_questions() {
         let mut s = on_ember(&d);
         nudge(&mut s);
         s.theme_editor.open = true;
-        s.ask_pick(0);
+        s.pick_theme(0);
         assert_eq!(s.front(), Front::Question);
         assert_eq!(
             verdict(it.command, Front::Question),
@@ -550,4 +550,223 @@ fn an_added_file_comes_out_clean() {
     assert!(!file.contains("sparkle") && !file.contains("rm"), "{file}");
     assert!(!file.contains('\u{202e}') && !file.contains('\0'), "{file}");
     assert!(file.contains("bloom = 1.00"), "{file}");
+}
+
+/// What happens to a change not saved when the theme in use may stop
+/// being current.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Then {
+    /// The leave question is open.
+    Ask,
+    /// No question, and the change is kept: still changed, or saved.
+    Keep,
+    /// No question, and the change is gone: the person asked for that.
+    Drop,
+    /// No question, and there was no change to lose.
+    Go,
+}
+
+/// Every way the theme in use can stop being current, or its change can
+/// be dropped, with a changed theme and without one.
+#[test]
+fn every_way_to_leave_a_theme_passes_one_check() {
+    type Way = fn(&mut Studio, &TempDir);
+    let ways: [(&str, Way); 15] = [
+        ("menu pick", |s, _| {
+            s.run(&egui::Context::default(), Command::Theme(ThemeId::At(1)));
+        }),
+        ("dropdown pick", |s, _| {
+            ask(
+                s,
+                Asked {
+                    pick: Some(1),
+                    ..Asked::default()
+                },
+            );
+        }),
+        ("add a theme file", |s, d| {
+            let src = d.0.join("from.toml");
+            std::fs::write(&src, DUSK).unwrap();
+            let _ = s.add_theme_file(&src);
+        }),
+        ("add through the chooser", |s, d| {
+            let src = d.0.join("from.toml");
+            std::fs::write(&src, DUSK).unwrap();
+            let ctx = egui::Context::default();
+            s.chooser = Box::new(OneFile(Some(src)));
+            s.run(&ctx, Command::ThemeAdd);
+            s.choose_folder(&ctx);
+        }),
+        ("delete", |s, _| {
+            ask(
+                s,
+                Asked {
+                    delete: true,
+                    ..Asked::default()
+                },
+            );
+            s.answer_theme(Answer::Save);
+        }),
+        ("rename", |s, _| {
+            s.start_naming(true);
+            s.theme_editor.naming.as_mut().unwrap().text = "Dusk".into();
+            s.finish_naming();
+        }),
+        ("save as", |s, _| {
+            s.start_naming(false);
+            s.finish_naming();
+        }),
+        ("replace", |s, d| {
+            std::fs::write(themes(d).join("dusk.toml"), DUSK).unwrap();
+            s.reload_themes();
+            s.start_naming(false);
+            s.theme_editor.naming.as_mut().unwrap().text = "Dusk".into();
+            s.finish_naming();
+        }),
+        ("save", |s, _| {
+            let _ = s.save_theme();
+        }),
+        ("revert", |s, _| {
+            ask(
+                s,
+                Asked {
+                    revert: true,
+                    ..Asked::default()
+                },
+            );
+        }),
+        ("reload the folder", |s, _| s.reload_themes()),
+        ("close the editor", |s, _| {
+            ask(
+                s,
+                Asked {
+                    close: true,
+                    ..Asked::default()
+                },
+            );
+        }),
+        ("open another folder", |s, d| {
+            let p = d.0.join("project");
+            std::fs::create_dir_all(&p).unwrap();
+            s.use_project(crate::project::Project::open(&p).unwrap());
+        }),
+        ("quit", |s, d| {
+            s.run(&egui::Context::default(), Command::Quit);
+            s.save_settings();
+            *s = Studio::new(None).with_settings(d.0.clone());
+        }),
+        ("a tab", |s, _| {
+            ask(
+                s,
+                Asked {
+                    tab: Some(ThemeTab::Screen),
+                    ..Asked::default()
+                },
+            );
+        }),
+    ];
+    let leaves = [
+        "menu pick",
+        "dropdown pick",
+        "add a theme file",
+        "add through the chooser",
+    ];
+    let drops = ["delete", "revert"];
+    let mut rows = 0;
+    for (way, run) in ways {
+        for changed in [true, false] {
+            let want = match (leaves.contains(&way), drops.contains(&way), changed) {
+                (_, _, false) => Then::Go,
+                (true, _, true) => Then::Ask,
+                (_, true, true) => Then::Drop,
+                _ => Then::Keep,
+            };
+            let row = format!("{way}, changed {changed}");
+            let d = TempDir::new(&format!("way-{rows}"));
+            let mut s = on_ember(&d);
+            let noise = s.spec().strengths.noise;
+            if changed {
+                nudge(&mut s);
+            }
+            run(&mut s, &d);
+            rows += 1;
+            let asked = matches!(s.theme_editor.question, Some(ThemeQuestion::Leave { .. }));
+            let kept = (s.spec().strengths.noise - noise - 0.05).abs() < 1e-4;
+            let got = if asked {
+                Then::Ask
+            } else if !changed {
+                Then::Go
+            } else if kept {
+                Then::Keep
+            } else {
+                Then::Drop
+            };
+            assert_eq!(got, want, "{row}");
+            if !changed {
+                assert!(s.theme_editor.question.is_none(), "{row}");
+                assert!(s.changed.is_none(), "{row}");
+            }
+            if got == Then::Ask {
+                // Cancel keeps the change on screen and adds nothing.
+                let files = store::toml_files(&themes(&d));
+                assert_eq!(s.answer_theme(Answer::Cancel), None, "{row}");
+                assert_eq!(s.theme_name(), "Ember, changed", "{row}");
+                assert_eq!(store::toml_files(&themes(&d)), files, "{row}");
+            }
+        }
+    }
+    assert_eq!(rows, 30);
+}
+
+/// Add a theme file over a change not saved asks the question of a pick.
+/// Cancel adds nothing; Do not save adds the file and drops the change;
+/// Save keeps the change in its file first, then adds the file.
+#[test]
+fn adding_a_file_over_a_change_asks_like_a_pick() {
+    for (k, a) in [Answer::Cancel, Answer::DoNotSave, Answer::Save]
+        .into_iter()
+        .enumerate()
+    {
+        let d = TempDir::new(&format!("add-ask-{k}"));
+        let src = d.0.join("from.toml");
+        std::fs::write(&src, DUSK).unwrap();
+        let mut s = on_ember(&d);
+        nudge(&mut s);
+        assert_eq!(s.add_theme_file(&src), Ok(None));
+        assert_eq!(
+            s.theme_editor.question,
+            Some(ThemeQuestion::Leave {
+                to: Leaving::File {
+                    path: src.clone(),
+                    name: "Dusk".into()
+                },
+                name: String::new(),
+            })
+        );
+        assert_eq!(s.front(), Front::Question);
+        s.answer_theme(a);
+        assert!(s.theme_editor.question.is_none(), "{a:?}");
+        let added = themes(&d).join("dusk.toml").exists();
+        let ember = std::fs::read_to_string(themes(&d).join("ember.toml")).unwrap();
+        match a {
+            Answer::Cancel => {
+                assert!(!added);
+                assert_eq!(s.theme_name(), "Ember, changed");
+            }
+            Answer::DoNotSave => {
+                assert!(added);
+                assert_eq!(s.theme_name(), "Dusk");
+                assert!(!ember.contains("noise = 0.05"), "{ember}");
+            }
+            _ => {
+                assert!(added);
+                assert_eq!(s.theme_name(), "Dusk");
+                assert!(ember.contains("noise = 0.05"), "{ember}");
+            }
+        }
+        // The settings keep no change that was dropped or saved.
+        s.save_settings();
+        let text = std::fs::read_to_string(d.0.join(store::SETTINGS)).unwrap();
+        assert_eq!(text.contains("[unsaved]"), a == Answer::Cancel, "{text}");
+    }
 }
