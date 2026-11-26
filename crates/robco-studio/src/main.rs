@@ -53,7 +53,7 @@ struct Window {
 impl Window {
     #[cfg(target_os = "macos")]
     fn new(mut studio: Studio, ctx: &eframe::egui::Context) -> Self {
-        let menu = match robco_studio::native_menu::NativeMenu::install(ctx.clone()) {
+        let menu = match robco_studio::native_menu::NativeMenu::install(ctx.clone(), &studio) {
             Ok(m) => {
                 studio.menu_row = false;
                 Some(m)
