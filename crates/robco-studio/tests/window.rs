@@ -1438,3 +1438,55 @@ fn an_open_chooser_takes_no_other_command() {
         2
     );
 }
+
+/// Opens main.c and notes.txt and edits both.
+fn edit_two(h: &mut Harness<'static, Studio>) {
+    open_main(h);
+    h.get_by_label("notes.txt").click();
+    h.run_steps(2);
+    for d in &mut h.state_mut().editor.docs {
+        d.text.insert(0, 'x');
+    }
+    h.run_steps(2);
+    assert_eq!(h.state().editor.docs.len(), 2);
+}
+
+#[test]
+fn cancel_on_the_second_question_keeps_both_edits_in_a_switch() {
+    let a = sample("chooser-two-from").unwrap();
+    let b = pipes("chooser-two-to").unwrap();
+    let (mut h, _) = with_fake(Some(&*a), Some(Choice::Chosen(b.to_path_buf())));
+    edit_two(&mut h);
+    press_open(&mut h);
+    h.get_by_label("Do not save").click();
+    h.run_steps(3);
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(tree_root(&h, &folder_name(&a)).is_some());
+    let docs = &h.state().editor.docs;
+    assert_eq!(docs.len(), 2, "no document dropped");
+    assert!(
+        docs.iter().all(|d| d.text.starts_with('x')),
+        "no edit dropped"
+    );
+}
+
+#[test]
+fn cancel_on_the_second_question_keeps_both_edits_in_a_quit() {
+    let a = sample("quit-two").unwrap();
+    let mut h = harness(Some(&*a));
+    edit_two(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Q);
+    h.run_steps(3);
+    h.get_by_label("Do not save").click();
+    h.run_steps(3);
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(!h.state().editor.quit_allowed);
+    let docs = &h.state().editor.docs;
+    assert_eq!(docs.len(), 2, "no document dropped");
+    assert!(
+        docs.iter().all(|d| d.text.starts_with('x')),
+        "no edit dropped"
+    );
+}

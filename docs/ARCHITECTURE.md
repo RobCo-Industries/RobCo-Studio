@@ -182,7 +182,7 @@ flowchart TB
 Rules, each with a test:
 
 - No colour, float size or font outside `theme`. `tests/tokens.rs` searches the source.
-- Text is never dropped without asking. Closing a tab or quitting with edits opens one question, which names its document.
+- Text is never dropped without asking. Closing a tab, quitting or opening another project with edits asks one question per edited document, in turn, each naming its document. The answers are only collected: nothing is saved or dropped until the last one is in. Cancel at any question changes nothing. Once every answer is in, the documents answered Save are saved; if one save fails, Studio stops there and drops nothing.
 - A control that cannot act is marked disabled in the accessibility tree and says why.
 - F6 moves through the toolbar, the page's panes left to right and top to bottom, then the footer.
 

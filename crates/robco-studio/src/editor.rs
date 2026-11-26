@@ -102,6 +102,8 @@ pub struct Editor {
     tab_seen: Option<u64>,
     /// A Save all that waits on an answer, then goes on.
     run: Option<SaveRun>,
+    /// A close, quit or switch that collects an answer per edited document.
+    leave: Option<LeaveRun>,
     /// The tabs did not fit the header in the last frame.
     tab_overflow: bool,
     /// The gutter as last drawn.
@@ -128,6 +130,30 @@ struct SaveRun {
     saved: usize,
     kept: usize,
     error: Option<String>,
+}
+
+/// What waits on the answers about edited documents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leave {
+    /// Close one tab.
+    Close,
+    /// Close the window.
+    Quit,
+    /// Open another project.
+    Switch,
+}
+
+/// A close, quit or switch in progress. Answers are only collected here;
+/// nothing is saved or dropped until the last one is in.
+#[derive(Debug)]
+struct LeaveRun {
+    why: Leave,
+    /// Documents still to ask about.
+    todo: std::collections::VecDeque<u64>,
+    /// Every document asked about: they go once the run ends.
+    asked: Vec<u64>,
+    /// Documents whose answer was Save.
+    save: Vec<u64>,
 }
 
 const TEXT_ID: &str = "editor-text";
@@ -274,7 +300,9 @@ impl Editor {
             return;
         }
         match self.index_of(doc) {
-            Some(i) if self.docs[i].is_dirty() => self.question = Some(Question::CloseTab { doc }),
+            Some(i) if self.docs[i].is_dirty() => {
+                self.begin_leave(Leave::Close, [doc].into());
+            }
             Some(i) => self.remove(i),
             None => {}
         }
@@ -289,6 +317,14 @@ impl Editor {
         };
     }
 
+    fn dirty_ids(&self) -> std::collections::VecDeque<u64> {
+        self.docs
+            .iter()
+            .filter(|d| d.is_dirty())
+            .map(|d| d.id)
+            .collect()
+    }
+
     /// The window was asked to close. True if it may close now; otherwise
     /// a question is open about the first document with edits.
     pub fn request_quit(&mut self) -> bool {
@@ -298,17 +334,8 @@ impl Editor {
         if self.question.is_some() {
             return false;
         }
-        match self.docs.iter().find(|d| d.is_dirty()) {
-            Some(d) => {
-                self.question = Some(Question::Quit { doc: d.id });
-                self.active = self.index_of(d.id);
-                false
-            }
-            None => {
-                self.quit_allowed = true;
-                true
-            }
-        }
+        let todo = self.dirty_ids();
+        self.begin_leave(Leave::Quit, todo)
     }
 
     /// Another project is to open. True if it may open now; otherwise a
@@ -318,19 +345,79 @@ impl Editor {
         if self.question.is_some() {
             return false;
         }
-        match self.docs.iter().find(|d| d.is_dirty()) {
-            Some(d) => {
-                self.question = Some(Question::Quit { doc: d.id });
-                self.active = self.index_of(d.id);
-                self.switching = true;
-                false
-            }
-            None => {
-                self.switching = false;
-                self.switch_allowed = true;
-                true
+        self.switch_allowed = false;
+        self.switching = true;
+        let todo = self.dirty_ids();
+        self.begin_leave(Leave::Switch, todo)
+    }
+
+    /// Ask about each of `todo` in turn. Nothing is saved or dropped until
+    /// the last answer is in. True if there was nothing to ask.
+    fn begin_leave(&mut self, why: Leave, todo: std::collections::VecDeque<u64>) -> bool {
+        self.leave = Some(LeaveRun {
+            why,
+            asked: todo.iter().copied().collect(),
+            todo,
+            save: Vec::new(),
+        });
+        self.ask_next()
+    }
+
+    /// Ask the next question of the run, or end the run when every answer
+    /// is in. True if the run ended and went on.
+    fn ask_next(&mut self) -> bool {
+        let Some(run) = self.leave.as_mut() else {
+            return false;
+        };
+        while let Some(doc) = run.todo.pop_front() {
+            if let Some(i) = self.docs.iter().position(|d| d.id == doc) {
+                self.question = Some(match run.why {
+                    Leave::Close => Question::CloseTab { doc },
+                    Leave::Quit | Leave::Switch => Question::Quit { doc },
+                });
+                self.active = Some(i);
+                return false;
             }
         }
+        self.end_leave()
+    }
+
+    /// Every answer is in: save what was to be saved, then drop the rest
+    /// and go on. A failed save stops the run and drops nothing.
+    fn end_leave(&mut self) -> bool {
+        let Some(run) = self.leave.take() else {
+            return false;
+        };
+        for id in &run.save {
+            let Some(i) = self.index_of(*id) else {
+                continue;
+            };
+            if let Err(e) = self.docs[i].save() {
+                self.switching = false;
+                self.active = Some(i);
+                self.report(Err(e));
+                return false;
+            }
+        }
+        if let [id] = run.save.as_slice()
+            && let Some(i) = self.index_of(*id)
+        {
+            self.report(Ok(format!("Saved {}.", self.docs[i].shown)));
+        }
+        for id in run.asked {
+            if let Some(i) = self.index_of(id) {
+                self.remove(i);
+            }
+        }
+        match run.why {
+            Leave::Close => {}
+            Leave::Quit => self.quit_allowed = true,
+            Leave::Switch => {
+                self.switching = false;
+                self.switch_allowed = true;
+            }
+        }
+        true
     }
 
     /// Answer the open question about `doc`. An answer about another
@@ -366,6 +453,7 @@ impl Editor {
         }
         if a == Answer::Cancel {
             self.question = None;
+            self.leave = None;
             self.switching = false;
             return;
         }
@@ -377,25 +465,13 @@ impl Editor {
             self.news = Some((crate::kit::Level::Error, s));
             return;
         }
-        if a == Answer::Save {
-            let r = self.docs[i]
-                .save()
-                .map(|()| format!("Saved {}.", self.docs[i].shown));
-            let failed = r.is_err();
-            self.report(r);
-            if failed {
-                return;
-            }
-        }
         self.question = None;
-        self.remove(i);
-        if let Question::Quit { .. } = q {
-            if self.switching {
-                self.request_switch();
-            } else {
-                self.request_quit();
-            }
+        if a == Answer::Save
+            && let Some(run) = self.leave.as_mut()
+        {
+            run.save.push(doc);
         }
+        self.ask_next();
     }
 
     /// The question's sentence, in the design's words.
@@ -1278,13 +1354,10 @@ mod replace_tests {
         );
     }
 
-    /// Quit with several edited documents asks about each in turn; every
-    /// document ends saved, dropped or kept open by its own answer.
-    #[test]
-    fn quit_asks_about_each_document_in_turn() {
-        use super::{Answer, Editor, Question};
-        let g = folder("quit");
-        let mut e = Editor::default();
+    /// Three edited documents, each with its own text.
+    fn three(tag: &str) -> (Gone, super::Editor, Vec<u64>) {
+        let g = folder(tag);
+        let mut e = super::Editor::default();
         for n in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(g.0.join(n), b"one\n").unwrap();
             e.open(&g.0.join(n), n.into());
@@ -1292,7 +1365,17 @@ mod replace_tests {
         for d in &mut e.docs {
             d.text = "mine\n".into();
         }
-        let ids: Vec<u64> = e.docs.iter().map(|d| d.id).collect();
+        let ids = e.docs.iter().map(|d| d.id).collect();
+        (g, e, ids)
+    }
+
+    /// Quit with several edited documents asks about each in turn. Cancel
+    /// at any question changes nothing: no file written, no edit dropped.
+    /// Once the last answer is in, the saves happen and the window may go.
+    #[test]
+    fn quit_asks_about_each_document_in_turn() {
+        use super::{Answer, Question};
+        let (g, mut e, ids) = three("quit");
         assert!(!e.request_quit());
         e.answer(ids[0], Answer::Save);
         assert_eq!(e.question, Some(Question::Quit { doc: ids[1] }));
@@ -1301,13 +1384,52 @@ mod replace_tests {
         e.answer(ids[2], Answer::Cancel);
         assert_eq!(e.question, None);
         assert!(!e.quit_allowed);
-        assert_eq!(e.docs.len(), 1, "c.txt stays open");
-        assert_eq!(std::fs::read(g.0.join("a.txt")).unwrap(), b"mine\n");
-        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"one\n");
+        assert_eq!(e.docs.len(), 3, "every document stays open");
+        assert!(e.docs.iter().all(|d| d.text == "mine\n" && d.is_dirty()));
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            assert_eq!(std::fs::read(g.0.join(n)).unwrap(), b"one\n", "{n}");
+        }
         assert!(!e.request_quit());
+        e.answer(ids[0], Answer::Save);
+        e.answer(ids[1], Answer::DoNotSave);
         e.answer(ids[2], Answer::DoNotSave);
         assert!(e.quit_allowed);
+        assert_eq!(std::fs::read(g.0.join("a.txt")).unwrap(), b"mine\n");
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"one\n");
         assert_eq!(std::fs::read(g.0.join("c.txt")).unwrap(), b"one\n");
+    }
+
+    /// A switch asks as quit does: Do not save, then Cancel, drops nothing.
+    #[test]
+    fn cancel_late_in_a_switch_drops_nothing() {
+        use super::Answer;
+        let (_g, mut e, ids) = three("switch");
+        assert!(!e.request_switch());
+        e.answer(ids[0], Answer::DoNotSave);
+        e.answer(ids[1], Answer::Cancel);
+        assert!(!e.switching && !e.switch_allowed);
+        assert_eq!(e.docs.len(), 3);
+        assert!(e.docs.iter().all(|d| d.is_dirty()));
+    }
+
+    /// A save that fails at the end stops the run and drops nothing.
+    #[test]
+    fn a_failed_save_stops_the_switch() {
+        use super::Answer;
+        let (g, mut e, ids) = three("switch-fail");
+        assert!(!e.request_switch());
+        e.answer(ids[0], Answer::DoNotSave);
+        e.answer(ids[1], Answer::Save);
+        // The folder goes before the last answer: the save then fails.
+        std::fs::remove_dir_all(&g.0).unwrap();
+        e.answer(ids[2], Answer::DoNotSave);
+        assert!(!e.switch_allowed && !e.switching);
+        assert_eq!(e.docs.len(), 3);
+        assert!(
+            e.news
+                .as_ref()
+                .is_some_and(|(l, _)| *l == crate::kit::Level::Error)
+        );
     }
 
     /// The active tab is brought into view from either side, and the
