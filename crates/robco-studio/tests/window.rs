@@ -421,3 +421,34 @@ fn the_find_bar_fits_the_editor() {
         }
     }
 }
+
+/// A project folder that is there but cannot be listed is reported at
+/// open, as the tree reports it, and the status line does not say opened.
+#[cfg(unix)]
+#[test]
+fn an_unlistable_folder_says_so_at_open() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Locked(PathBuf);
+    impl Drop for Locked {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let d = Locked(
+        std::env::temp_dir().join(format!("robco-studio-test-locked-{}", std::process::id())),
+    );
+    let _ = std::fs::remove_dir_all(&d.0);
+    std::fs::create_dir_all(&d.0).unwrap();
+    std::fs::set_permissions(&d.0, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&d.0).is_ok() {
+        eprintln!("skipped: this user can list a mode 000 folder, likely root");
+        return;
+    }
+    let h = harness(Some(&d.0));
+    let (level, text) = &h.state().status;
+    assert_eq!(*level, robco_studio::kit::Level::Error);
+    assert!(text.starts_with("Studio could not read"), "{text}");
+    assert!(!text.contains("Opened"), "{text}");
+    h.get_by_label(text);
+}

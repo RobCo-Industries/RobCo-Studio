@@ -183,7 +183,12 @@ impl Studio {
         if let Some(f) = folder {
             match Project::open(f) {
                 Ok(p) => {
-                    s.status = (Level::Info, format!("Opened {}.", p.root.display()));
+                    // A folder that is there but cannot be listed is told
+                    // the way the tree tells it, not reported as opened.
+                    s.status = match &p.error {
+                        Some(e) => (Level::Error, e.clone()),
+                        None => (Level::Info, format!("Opened {}.", p.root.display())),
+                    };
                     s.project = Some(p);
                 }
                 Err(e) => s.status = (Level::Error, e),
