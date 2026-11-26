@@ -14,6 +14,7 @@ use crate::theme::{Screen, Strengths, Theme, Type, crt, effect, size};
 use eframe::egui::{
     self, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, UiBuilder, accesskit::Role,
 };
+use egui::text_edit::TextEditState;
 use std::path::{Path, PathBuf};
 
 /// The window's pages, chosen in the toolbar.
@@ -187,6 +188,11 @@ pub struct Studio {
     styled: Option<Theme>,
     fonts: bool,
     focus_request: Option<Place>,
+    /// The widget that had keyboard focus when a dialog came to the
+    /// front, and a text field's caret and selection, kept to give them
+    /// back when the window is in front again. None while nothing is in
+    /// front.
+    behind_focus: Option<Option<(Id, Option<TextEditState>)>>,
     places: Vec<(Place, Rect)>,
     /// The tape's label field and the name drawn on it, last frame.
     tape_label: Option<(Rect, Rect)>,
@@ -365,6 +371,7 @@ impl Studio {
             styled: None,
             fonts: false,
             focus_request: None,
+            behind_focus: None,
             places: Vec::new(),
             tape_label: None,
             page_rect: Rect::NOTHING,
@@ -551,6 +558,28 @@ impl Studio {
             Front::Chooser
         } else {
             self.dialog_shown()
+        }
+    }
+
+    /// Take keyboard focus from the window when something comes to the
+    /// front, and give it back, caret and selection as they were, when
+    /// the window is in front again.
+    fn hold_focus(&mut self, ctx: &egui::Context, front: Front) {
+        if front == Front::Nothing {
+            if let Some(Some((id, field))) = self.behind_focus.take() {
+                ctx.memory_mut(|m| m.request_focus(id));
+                if let Some(st) = field {
+                    st.store(ctx, id);
+                }
+            }
+        } else if self.behind_focus.is_none() {
+            // A text field without focus drops its selection, and its undo
+            // history records that: keep the field's state as it was.
+            let had = ctx.memory(|m| m.focused());
+            if let Some(id) = had {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            self.behind_focus = Some(had.map(|id| (id, TextEditState::load(ctx, id))));
         }
     }
 
@@ -845,12 +874,22 @@ impl Studio {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.keys(&ctx);
-        // While the chooser is open nothing in the window acts: its input
-        // is held, see the end of this function, and the whole frame is
-        // drawn disabled, under the scrim of the window's dialogs.
-        let choosing = self.choosing();
-        if choosing {
+        // Whatever is in front, the window behind is inert, to the pointer
+        // and to the keyboard alike: it is drawn disabled, so none of its
+        // widgets takes a click or joins the Tab order, and the widget
+        // that had keyboard focus gives it up until the window is in
+        // front again. Under the chooser the input is held too, see the
+        // end of this function.
+        let front = self.front();
+        self.hold_focus(&ctx, front);
+        if front != Front::Nothing {
+            let opacity = ui.opacity();
             ui.disable();
+            // Under the window's own dialogs the window keeps its look:
+            // the scrim alone shades it. Under the chooser it is dimmed.
+            if front != Front::Chooser {
+                ui.set_opacity(opacity);
+            }
         }
         let Some(art) = self.art.take() else {
             return;
@@ -893,8 +932,9 @@ impl Studio {
             Front::Adjust => self.adjust(&kit, &ctx),
             Front::Chooser | Front::Nothing => {}
         }
-        if front == Front::Question && self.front() == Front::Adjust {
-            // Adjust comes back on the next frame: ask for it.
+        if self.front() != front {
+            // Adjust comes back, or the focus goes back to the window, on
+            // the next frame: ask for it.
             ctx.request_repaint();
         }
         self.finish_switch();
@@ -2068,7 +2108,8 @@ impl Studio {
         let mut s = self.screen.strengths;
         let mut rate = self.screen.rate;
         let w = size::DIALOG_W;
-        egui::Area::new(Id::unique("adjust"))
+        let mut first = None;
+        let area = egui::Area::new(Id::unique("adjust"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .accessible_name(ADJUST_TITLE)
@@ -2103,14 +2144,16 @@ impl Studio {
                         v.widgets.inactive.bg_fill = p.frame_dim;
                         for (n, name) in Strengths::NAMES.iter().enumerate() {
                             if let Some(v) = s.get_mut(n) {
-                                ui.add(
+                                let r = ui.add(
                                     egui::Slider::new(v, 0.0..=1.0)
                                         .step_by(crt::SLIDER_STEP)
                                         .fixed_decimals(2)
                                         .text(*name),
                                 );
+                                first.get_or_insert(r);
                             }
                         }
+
                         ui.add_space(size::UNIT);
                         ui.horizontal(|ui| {
                             kit.text(ui, RATE_LABEL, Type::Body, p.text);
@@ -2138,6 +2181,15 @@ impl Studio {
                         });
                     });
             });
+        // Focus stays in the dialog: when it is elsewhere, the first
+        // slider takes it.
+        let inside = ctx
+            .memory(|m| m.focused())
+            .and_then(|f| ctx.read_response(f))
+            .is_some_and(|r| area.response.rect.contains(r.rect.center()));
+        if !inside && let Some(r) = first {
+            r.request_focus();
+        }
         let custom_before = self.screen_custom();
         let before = (self.screen.strengths, self.screen.rate);
         self.screen.strengths = if reset { level.strengths() } else { s };
@@ -2171,6 +2223,9 @@ fn scrim(kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
         .show(ctx, |ui| {
             ui.painter()
                 .rect_filled(full, CornerRadius::ZERO, kit.theme.scrim());
+            // Disabled, after its fill: it still covers every layer
+            // behind from the pointer, and it takes no keyboard focus.
+            ui.disable();
             ui.allocate_rect(full, Sense::click());
         });
 }

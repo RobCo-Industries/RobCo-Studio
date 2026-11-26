@@ -2466,3 +2466,129 @@ fn the_chooser_beats_a_question_and_adjust() {
     h.run_steps(3);
     assert_eq!(h.state().front(), Front::Question);
 }
+
+/// What is in front of the window: how a test brings it and sends it away.
+#[derive(Clone, Copy, Debug)]
+enum Dialog {
+    Adjust,
+    Question,
+    Chooser,
+}
+
+/// The editor's text, caret and selection, and undo history.
+fn editor_state(h: &Harness<'static, Studio>) -> Option<(String, String, String)> {
+    use robco_studio::editor::Editor;
+    let doc = h.state().editor.current()?;
+    let st = egui::text_edit::TextEditState::load(&h.ctx, Editor::text_id(doc.id))?;
+    Some((
+        doc.text.clone(),
+        format!("{:?}", st.cursor.char_range()),
+        format!("{:?}", st.undoer()),
+    ))
+}
+
+/// While a dialog is in front, the editor that had focus takes no key,
+/// text, paste or IME commit, Tab stays in front, and when the dialog goes
+/// the editor has focus again with its caret and selection.
+#[test]
+fn the_window_behind_a_dialog_takes_no_keys_and_gets_its_focus_back() {
+    use egui::text::{CCursor, CCursorRange};
+    use robco_studio::editor::{Editor, Question};
+    use robco_studio::screen::Adapter;
+    use robco_studio::theme::Screen;
+    for dialog in [Dialog::Adjust, Dialog::Question, Dialog::Chooser] {
+        let d = pipes(&format!("inert-{dialog:?}").to_lowercase()).unwrap();
+        let (mut h, fake) = with_fake(Some(&*d), None);
+        h.state_mut()
+            .choose_screen(Adapter::Hardware, Some(false), Some(Screen::Still));
+        open_main(&mut h);
+        let doc = h.state().editor.current().unwrap().id;
+        let id = Editor::text_id(doc);
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run_steps(2);
+        // An edit, so that closing the tab asks.
+        h.event(Event::Text("// ".into()));
+        h.run_steps(2);
+        let mut st = egui::text_edit::TextEditState::load(&h.ctx, id).unwrap();
+        st.cursor
+            .set_char_range(Some(CCursorRange::two(CCursor::new(5), CCursor::new(9))));
+        st.store(&h.ctx, id);
+        // Two seconds: egui's undo history takes the new selection as a
+        // point of its own after a pause.
+        h.run_steps(120);
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(id), "{dialog:?}");
+        let before = editor_state(&h).unwrap();
+        match dialog {
+            Dialog::Adjust => h.state_mut().screen.adjusting = true,
+            Dialog::Question => h.state_mut().editor.question = Some(Question::CloseTab { doc }),
+            Dialog::Chooser => press_open(&mut h),
+        }
+        h.run_steps(2);
+        assert_ne!(h.state().front(), Front::Nothing, "{dialog:?}");
+        if matches!(dialog, Dialog::Question) {
+            assert!(h.state().editor.question_text().is_some());
+        }
+        h.event(Event::Text("typed".into()));
+        h.event(Event::Paste("pasted".into()));
+        h.event(Event::Ime(egui::ImeEvent::Commit("ime".into())));
+        h.run_steps(1);
+        h.key_press(Key::Backspace);
+        // Enter belongs to the question: it presses its focused button.
+        if !matches!(dialog, Dialog::Question) {
+            h.key_press(Key::Enter);
+        }
+        h.run_steps(1);
+        assert_ne!(h.state().front(), Front::Nothing, "{dialog:?}");
+        for _ in 0..4 {
+            h.key_press(Key::Tab);
+            h.run_steps(1);
+            let f = h.ctx.memory(|m| m.focused());
+            assert_ne!(f, Some(id), "{dialog:?}: Tab left the dialog");
+            if !matches!(dialog, Dialog::Chooser) {
+                assert!(f.is_some(), "{dialog:?}: a control of the dialog has focus");
+            }
+        }
+        h.run_steps(2);
+        // egui draws a field without focus with no selection; the text
+        // and the undo history stay.
+        let (text, _, undo) = editor_state(&h).unwrap();
+        assert_eq!(
+            (text, undo),
+            (before.0.clone(), before.2.clone()),
+            "{dialog:?}: the document changed"
+        );
+        match dialog {
+            Dialog::Adjust | Dialog::Question => h.key_press(Key::Escape),
+            Dialog::Chooser => {
+                fake.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .answer = Some(Choice::Cancelled);
+            }
+        }
+        h.run_steps(3);
+        assert_eq!(h.state().front(), Front::Nothing, "{dialog:?}");
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(id), "{dialog:?}");
+        assert_eq!(editor_state(&h).unwrap(), before, "{dialog:?}");
+        h.event(Event::Text("Z".into()));
+        h.run_steps(2);
+        let text = &h.state().editor.current().unwrap().text;
+        assert_ne!(text, &before.0, "{dialog:?}: typing works again");
+        assert_eq!(text.chars().nth(5), Some('Z'), "{dialog:?}");
+    }
+}
+
+/// The arrow keys move the focused slider of Adjust.
+#[test]
+fn the_arrow_keys_move_a_slider_of_adjust() {
+    use robco_studio::screen::Adapter;
+    use robco_studio::theme::Screen;
+    let mut h = harness(None);
+    h.state_mut()
+        .choose_screen(Adapter::Hardware, Some(false), Some(Screen::Still));
+    h.state_mut().screen.adjusting = true;
+    h.run_steps(3);
+    let before = h.state().screen.strengths;
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert_ne!(h.state().screen.strengths, before);
+}

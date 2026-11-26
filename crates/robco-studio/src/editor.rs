@@ -839,7 +839,10 @@ impl Editor {
         if self.find.open {
             area.min.y = self.find_bar(kit, ui, rect) + size::UNIT;
         }
-        let locked = self.question.is_some();
+        // Under a dialog the window draws this disabled and the field has
+        // given up its focus: a pending selection waits, since asking for
+        // focus now would take it from the dialog.
+        let behind = !ui.is_enabled();
         let doc = &mut self.docs[idx];
         let id = Self::text_id(doc.id);
         let focused = ui.memory(|m| m.has_focus(id));
@@ -847,7 +850,7 @@ impl Editor {
         // first, and set the selection once it has it.
         let mut scroll_to = None;
         if let Some((a, b)) = doc.pending_sel
-            && !locked
+            && !behind
         {
             if focused {
                 doc.pending_sel = None;
@@ -879,7 +882,6 @@ impl Editor {
             });
         }
         let mut text = std::mem::take(&mut doc.text);
-        let before = locked.then(|| text.clone());
         let doc_id = doc.id;
         let is_c = is_c(&doc.path);
         let shown = doc.shown.clone();
@@ -917,7 +919,6 @@ impl Editor {
                     .id(id)
                     .code_editor()
                     .lock_focus(true)
-                    .interactive(!locked)
                     .desired_width(f32::INFINITY)
                     .frame(egui::Frame::NONE)
                     .layouter(&mut layouter)
@@ -1030,7 +1031,7 @@ impl Editor {
             text = document::to_lf(&text).into_owned();
         }
         let doc = &mut self.docs[idx];
-        doc.text = before.unwrap_or(text);
+        doc.text = text;
         doc.caret = caret;
     }
 
