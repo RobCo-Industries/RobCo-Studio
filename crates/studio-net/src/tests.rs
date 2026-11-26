@@ -429,7 +429,8 @@ fn a_content_length_that_is_not_a_plain_number_fails() {
 #[test]
 fn header_names_match_without_regard_to_case() {
     assert_eq!(
-        answer(b"HTTP/1.1 200 OK\r\ncOnTeNt-LeNgTh: 2\r\n\r\nok").unwrap(),
+        answer(b"HTTP/1.1 200 OK\r\nTRANSFER-encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n")
+            .unwrap(),
         b"ok"
     );
 }

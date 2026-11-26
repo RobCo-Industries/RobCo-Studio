@@ -421,7 +421,7 @@ impl Head {
 /// Reads the status line and the headers, up to the empty line, by RFC
 /// 9112 section 2. Each line ends in CRLF; a bare LF, a bare CR, a NUL or
 /// another control byte but HTAB, and a line folded onto the next are
-/// refused. At most [`MAX_HEAD_BYTES`] and [`MAX_HEADERS`] fields.
+/// refused. At most [`MAX_HEAD_BYTES`]; [`Head::parse`] counts the fields.
 fn read_head(r: &mut impl BufRead, at: &str, stall: Duration) -> Result<Vec<u8>, String> {
     let mut head = Vec::new();
     let mut lines = 0usize;
@@ -461,9 +461,6 @@ fn read_head(r: &mut impl BufRead, at: &str, stall: Duration) -> Result<Vec<u8>,
             return Err(format!("{at}: a header line holds a control character"));
         }
         lines += 1;
-        if lines > MAX_HEADERS + 1 {
-            return Err(format!("{at}: more than {MAX_HEADERS} header fields"));
-        }
     }
 }
 
