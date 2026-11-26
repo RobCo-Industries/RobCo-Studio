@@ -948,3 +948,33 @@ fn a_matched_source_that_is_a_link_loop_is_manifest_path() {
     link(&f, "loop.c", "proj/src/loop.c");
     fails_with(&f, "manifest: path");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_project_folder_that_is_not_utf8_fails_before_anything_changes() {
+    use std::os::unix::ffi::OsStrExt;
+    let f = Fixture::new("non-utf8");
+    warm_cache(&f, "");
+    f.older_tape();
+    let odd = f.dir.join(std::ffi::OsStr::from_bytes(b"p\xffq"));
+    if fs::create_dir(&odd).is_err() {
+        println!("skipped: this file system refuses a name that is not UTF-8");
+        return;
+    }
+    fs::remove_dir(&odd).unwrap();
+    fs::rename(f.proj(), &odd).unwrap();
+    // The command runs in `proj`, a link, so its current folder is `odd`.
+    std::os::unix::fs::symlink(&odd, f.proj()).unwrap();
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("manifest: path".to_owned(), 3));
+    let detail = lines(&o)
+        .into_iter()
+        .find(|l| l["kind"] == "error")
+        .unwrap()["detail"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(detail.contains("must be valid UTF-8"), "{detail}");
+    assert!(steps(&o).is_empty(), "{:?}", steps(&o));
+    assert!(odd.join("build/TINY.HTP").is_file());
+}

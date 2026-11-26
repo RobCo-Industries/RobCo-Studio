@@ -128,6 +128,9 @@ pub fn run(out: &mut Out<'_>, cache: &Path, net: &Net, req: &Request<'_>) -> Res
     let root = req.project;
     let host = req.host.unwrap_or("unknown");
 
+    // Before step 2: every folder a command names must be text.
+    check_folders(root, cache)?;
+
     // Step 2.
     let project = read_project(root)?;
     let m = &project.manifest;
@@ -534,10 +537,48 @@ fn install_gcc(
     Ok(dir)
 }
 
+/// The first component of `p` that is not valid UTF-8, shown lossily.
+fn non_utf8_part(p: &Path) -> Option<String> {
+    p.components()
+        .map(Component::as_os_str)
+        .find(|c| c.to_str().is_none())
+        .map(|c| c.to_string_lossy().into_owned())
+}
+
+/// Refuses a cache or project folder whose path is not valid UTF-8, before
+/// anything is deleted or installed. The plan, its path maps and the error
+/// details carry paths as text, and the maps must spell the folder exactly
+/// as the compiler sees it, so such a folder cannot be built in. The cache
+/// is checked first, as STUDIO_CLI.md checks it before any file is read,
+/// and with it every package and tool folder, whose names under it are
+/// checked text. The spec has no code for a project folder the tool cannot
+/// use: `manifest: path` is the closest, since every manifest path lies
+/// under that folder.
+fn check_folders(root: &Path, cache: &Path) -> Result<(), Failure> {
+    let refuse = |code, what: &str, p: &Path, part: String| {
+        Err(Failure::new(
+            code,
+            format!(
+                "{}: the {what} folder's path must be valid UTF-8, and {part} is not",
+                p.display()
+            ),
+        ))
+    };
+    if let Some(part) = non_utf8_part(cache) {
+        return refuse("cache: path", "cache", cache, part);
+    }
+    if let Some(part) = non_utf8_part(root) {
+        return refuse("manifest: path", "project", root, part);
+    }
+    Ok(())
+}
+
+/// A folder as text. [`check_folders`] ran first, so a failure here is a
+/// fault of the tool.
 fn path_text(p: &Path) -> Result<String, Failure> {
     p.to_str()
         .map(str::to_owned)
-        .ok_or_else(|| Failure::new("io: read", format!("{}: not a UTF-8 path", p.display())))
+        .ok_or_else(|| Failure::new("internal", format!("{}: not a UTF-8 path", p.display())))
 }
 
 /// Step 11: compiles, links, seals, validates and writes the tape. Returns
@@ -1084,6 +1125,26 @@ mod tests {
         let (gone, kept) = (fs::symlink_metadata(&elf).is_err(), o.join("keep").exists());
         fs::remove_dir_all(&o).unwrap();
         assert!(gone && kept);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_path_that_is_not_utf8_is_refused_and_named() {
+        use std::os::unix::ffi::OsStrExt;
+        let bad = Path::new("/x").join(std::ffi::OsStr::from_bytes(b"p\xffq"));
+        let good = Path::new("/x/cache");
+        assert!(check_folders(Path::new("/x/proj"), good).is_ok());
+        let e = check_folders(&bad.join("proj"), good).unwrap_err();
+        assert_eq!(e.code, "manifest: path");
+        assert!(
+            e.detail
+                .contains("project folder's path must be valid UTF-8, and p\u{fffd}q is not"),
+            "{}",
+            e.detail
+        );
+        let e = check_folders(Path::new("/x/proj"), &bad).unwrap_err();
+        assert_eq!(e.code, "cache: path");
+        assert!(e.detail.contains("cache folder"), "{}", e.detail);
     }
 
     #[test]
