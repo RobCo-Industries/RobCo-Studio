@@ -402,7 +402,7 @@ impl Studio {
             egui::pos2(full.right(), y + size::TOOLBAR_H),
         );
         let status = Rect::from_min_max(
-            egui::pos2(full.left(), full.bottom() - size::STATUS_H),
+            egui::pos2(full.left(), full.bottom() - size::FOOTER_H),
             full.right_bottom(),
         );
         let rail = Rect::from_min_max(

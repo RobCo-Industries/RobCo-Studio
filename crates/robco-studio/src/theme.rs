@@ -253,8 +253,6 @@ pub mod size {
     pub const RAIL_ITEM_W: f32 = 60.0;
     /// The footer.
     pub const FOOTER_H: f32 = 28.0;
-    /// The old name of [`FOOTER_H`], for the window until it moves to it.
-    pub const STATUS_H: f32 = FOOTER_H;
     /// The Industries wordmark in the footer.
     pub const FOOTER_MARK_H: f32 = 22.0;
     /// The narrowest status line of the footer before it hides segments.
@@ -329,14 +327,46 @@ pub mod size {
     pub const PAGE_MARGIN_LEFT: f32 = 4.0;
     /// The page margin at the right.
     pub const PAGE_MARGIN_RIGHT: f32 = 8.0;
+    /// The space between the header's marks, and between the skyline and
+    /// the window's right edge.
+    pub const HEADER_MARK_GAP: f32 = 8.0;
+    /// The space between the two caps lines of the header.
+    pub const HEADER_LINE_GAP: f32 = 3.0;
+    /// The skyline hides when less than this would stay before it.
+    pub const SKYLINE_ROOM: f32 = 24.0;
+    /// A menu name's shape in the menu row.
+    pub const MENU_ITEM_H: f32 = 22.0;
+    /// The padding at each side of a menu name, a tab and a button.
+    pub const LABEL_PAD: f32 = 10.0;
+    /// The space between an icon and the label after it.
+    pub const ICON_GAP: f32 = 7.0;
+    /// The toolbar's four actions: their space from the edge and apart.
+    pub const TOOLBAR_GAP: f32 = 8.0;
+    /// Tabs start this far in from the pane's left edge.
+    pub const TAB_INSET: f32 = 6.0;
+    /// The space between two tabs.
+    pub const TAB_GAP: f32 = 4.0;
+    /// The rail's page buttons, from the rail's sides.
+    pub const RAIL_INSET: f32 = 4.0;
+    /// The space between two page buttons of the rail.
+    pub const RAIL_GAP: f32 = 6.0;
+    /// The padding of a footer segment.
+    pub const FOOTER_SEG_PAD: f32 = 9.0;
+    /// The middle part of the zoom group, which names the step.
+    pub const ZOOM_NAME_W: f32 = 36.0;
+    /// The space between the device and the honest line, and between the
+    /// line and the row under it.
+    pub const SIM_ROW_GAP: f32 = 4.0;
+    /// The meter after the slot fact of the Tape pane.
+    pub const METER_W: f32 = 56.0;
+    /// The space between the tape drawing and its facts.
+    pub const TAPE_FACTS_GAP: f32 = 16.0;
 }
 
 /// Radii and strokes.
 pub mod stroke {
-    /// The clipped top right corner of a pane.
-    pub const PANE_CLIP: f32 = 9.0;
     /// The radius of a control.
-    pub const CONTROL_RADIUS: u8 = 2;
+    pub const CONTROL_RADIUS: u8 = 3;
     /// The radius of a pane.
     pub const PANE_RADIUS: u8 = 4;
     /// A frame.
@@ -347,8 +377,6 @@ pub mod stroke {
     pub const FOCUS_GAP: f32 = 2.0;
     /// The bar at the left edge of a selected row.
     pub const SELECT_BAR: f32 = 3.0;
-    /// The bar on top of the active tab.
-    pub const TAB_BAR: f32 = 2.0;
     /// The editor caret.
     pub const CARET: f32 = 2.0;
     /// An icon's stroke on its 16 px grid.
@@ -412,6 +440,10 @@ pub mod effect {
     pub const LABEL_HALO_PAD: usize = 4;
     /// Corner shading at Full, at the far corner, out of 1, black.
     pub const CORNER_SHADE_MAX: f32 = 0.18;
+    /// The device with no machine running, out of 1, of `bright`.
+    pub const DEVICE_IDLE: f32 = 0.62;
+    /// A tape that is not built, out of 1, of `bright`.
+    pub const TAPE_IDLE: f32 = 0.5;
     /// The scrim under a dialog, out of 1, black.
     pub const SCRIM: f32 = 0.62;
     /// A hovered filled button gets this much lighter.
@@ -539,6 +571,21 @@ impl Theme {
         CornerRadius::same(stroke::CONTROL_RADIUS)
     }
 
+    /// The radius of a pane.
+    pub fn pane_radius(&self) -> CornerRadius {
+        CornerRadius::same(stroke::PANE_RADIUS)
+    }
+
+    /// The radius of a tab: its two top corners.
+    pub fn tab_radius(&self) -> CornerRadius {
+        CornerRadius {
+            nw: stroke::CONTROL_RADIUS,
+            ne: stroke::CONTROL_RADIUS,
+            sw: 0,
+            se: 0,
+        }
+    }
+
     /// The halo under a lit thing, or None with effects off.
     pub fn halo(&self) -> Option<Shadow> {
         (self.effects() == Effects::Soft).then(|| Shadow {
@@ -632,8 +679,8 @@ impl Theme {
             v.faint_bg_color = p.raised;
             v.code_bg_color = p.pane;
             v.window_stroke = me.frame(p.frame);
-            v.window_corner_radius = CornerRadius::ZERO;
-            v.menu_corner_radius = CornerRadius::ZERO;
+            v.window_corner_radius = me.pane_radius();
+            v.menu_corner_radius = me.control_radius();
             v.window_shadow = Shadow::NONE;
             v.popup_shadow = Shadow::NONE;
             v.selection.bg_fill = p.select;

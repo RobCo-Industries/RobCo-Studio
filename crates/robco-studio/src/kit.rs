@@ -303,25 +303,17 @@ impl<'a> Kit<'a> {
             child.memory_mut(|m| m.request_focus(id));
         }
         let focused = self.contains_focus(&child, rect);
-        let c = stroke::PANE_CLIP;
-        let pts = vec![
-            rect.left_top(),
-            egui::pos2(rect.right() - c, rect.top()),
-            egui::pos2(rect.right(), rect.top() + c),
-            rect.right_bottom(),
-            rect.left_bottom(),
-        ];
         let painter = child.painter().clone();
-        if focused && let Some(h) = self.theme.halo() {
-            painter.add(h.as_shape(rect, CornerRadius::ZERO));
+        let pr = self.theme.pane_radius();
+        if focused && let Some(h) = self.theme.pane_halo() {
+            painter.add(h.as_shape(rect, pr));
         }
-        painter.add(Shape::convex_polygon(pts.clone(), p.pane, Stroke::NONE));
         let line = if focused { p.bright } else { p.frame };
-        painter.add(Shape::closed_line(pts, self.theme.frame(line)));
+        painter.rect(rect, pr, p.pane, self.theme.frame(line), StrokeKind::Inside);
         let half = crate::theme::text::LABEL_CELL_H / 2.0;
         let header = Rect::from_min_max(
             egui::pos2(rect.left() + size::PAD_SIDE, rect.top() - half),
-            egui::pos2(rect.right() - c - size::PAD_SIDE, rect.top() + half),
+            egui::pos2(rect.right() - size::PAD_SIDE, rect.top() + half),
         );
         if label {
             let w = self.caps_width(&child, name);
@@ -564,20 +556,9 @@ impl<'a> Kit<'a> {
         } else {
             (p.ground, p.dim)
         };
-        painter.rect_filled(rect, CornerRadius::ZERO, fill);
-        painter.rect_stroke(
-            rect,
-            CornerRadius::ZERO,
-            self.theme.frame(p.frame_dim),
-            StrokeKind::Inside,
-        );
-        if active {
-            painter.rect_filled(
-                Rect::from_min_size(rect.min, egui::vec2(w, stroke::TAB_BAR)),
-                CornerRadius::ZERO,
-                p.bright,
-            );
-        }
+        let tr = self.theme.tab_radius();
+        painter.rect_filled(rect, tr, fill);
+        painter.rect_stroke(rect, tr, self.theme.frame(p.frame_dim), StrokeKind::Inside);
         let mut x = rect.left() + pad;
         if let Some(i) = icon {
             self.art.icon(
