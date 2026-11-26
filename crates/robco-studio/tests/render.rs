@@ -620,8 +620,10 @@ fn the_pass_at_zero_draws_what_egui_draws() {
         differ += usize::from(d > 2);
     }
     assert!(differ < 50, "{differ} pixels differ, by up to {worst}");
-    // Live: the corner is outside the curve, black.
-    pass.state_mut().pick_theme(0);
+    // Live: the corner is outside the curve, black. A pick would ask
+    // first, so put the saved values back to end the change.
+    let saved = pass.state().themes()[0].clone();
+    pass.state_mut().edit_theme(|t| *t = saved);
     pass.run_steps(2);
     let live = pass.render().unwrap();
     for (x, y) in [(0, 0), (1279, 0), (0, 719), (1279, 719)] {
@@ -834,7 +836,7 @@ fn a_frame_is_shaded_by_the_theme_that_drew_it() {
     };
     let harness_at = |theme: usize| {
         let mut h = screen_harness(None, 1.0, Look::Live);
-        h.state_mut().themes.push(still_live.clone());
+        h.state_mut().list_theme(still_live.clone(), "calm.toml");
         h.state_mut().pick_theme(theme);
         h.run_steps(3);
         h
