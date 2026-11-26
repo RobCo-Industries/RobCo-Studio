@@ -774,6 +774,12 @@ impl<'a> Kit<'a> {
         if resp.has_focus() {
             self.focus_ring(painter, rect);
         }
+        // Toggle before the popup reads its state, so the click's own
+        // frame lays the list out.
+        let popup_id = egui::Popup::default_response_id(&resp);
+        if resp.clicked() {
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
+        }
         let mut chosen = None;
         egui::Popup::from_response(&resp)
             .open_memory(None)
@@ -786,11 +792,8 @@ impl<'a> Kit<'a> {
                     }
                 }
             });
-        if resp.clicked() {
-            egui::Popup::toggle_id(ui.ctx(), egui::Popup::default_response_id(&resp));
-        }
         if chosen.is_some() {
-            egui::Popup::close_id(ui.ctx(), egui::Popup::default_response_id(&resp));
+            egui::Popup::close_id(ui.ctx(), popup_id);
         }
         chosen
     }

@@ -511,3 +511,28 @@ fn tabs_past_the_header_scroll_into_view() {
             .any(|n| n.accesskit_node().role() == Role::MenuItem)
     );
 }
+
+/// The folder name the Project dropdown shows for a sample.
+fn folder_name(d: &Path) -> String {
+    d.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_dropdown_shows_its_list_on_the_click_that_opens_it() {
+    let d = sample("dropdown").unwrap();
+    let name = folder_name(&d);
+    let mut h = harness(Some(&*d));
+    h.get_by_label(&format!("Project: {name}")).click();
+    // The click's frame lays the new list out unseen, as egui does for
+    // every new popup, and asks itself for the frame that shows it.
+    h.step();
+    assert!(h.ctx.has_requested_repaint());
+    h.step();
+    assert!(
+        h.query_all_by_label(&name)
+            .any(|n| n.accesskit_node().role() == Role::MenuItem),
+        "the list shows in the frame after the click, with no new input"
+    );
+}
