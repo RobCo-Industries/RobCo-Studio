@@ -368,8 +368,10 @@ impl Studio {
         let rect = self.theme_pane_rect();
         let base = self.spec().base;
         self.theme_editor.follow(base);
-        // Escape leaves the name row first, then the editor.
-        let escape = enabled && ctx.input(|i| i.key_pressed(Key::Escape));
+        // Escape closes an open dropdown list first, then leaves the name
+        // row, then the editor.
+        let escape =
+            enabled && !egui::Popup::is_any_open(ctx) && ctx.input(|i| i.key_pressed(Key::Escape));
         let naming = self.theme_editor.naming.is_some();
         let mut asked = Asked {
             close: escape && !naming,

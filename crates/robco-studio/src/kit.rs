@@ -12,8 +12,8 @@ pub use controls::{Rail, Slider};
 use crate::art::{Art, Icon, LabelFont};
 use crate::theme::{Palette, Theme, Type, size, stroke};
 use eframe::egui::{
-    self, Color32, CornerRadius, Id, Key, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind,
-    Ui, UiBuilder, WidgetInfo, accesskit::Role,
+    self, Color32, CornerRadius, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Shape, Stroke,
+    StrokeKind, Ui, UiBuilder, WidgetInfo, accesskit::Role,
 };
 
 /// The level of a message: each has an icon, a word and a colour.
@@ -1237,6 +1237,12 @@ impl<'a> Kit<'a> {
 
     /// The dropdown of [`Kit::dropdown_response`], whose list ends with
     /// `held`: rows that cannot be picked, each with the reason it gives.
+    ///
+    /// The open list is as tall as the room in the window allows, below the
+    /// field or above it, and scrolls. It opens with the row of `value`
+    /// lit and in view. Up, Down, Home, End, Page Up and Page Down move the
+    /// lit row, Enter picks it and Escape closes the list. A screen reader
+    /// hears a list box of options, the lit one selected.
     #[allow(clippy::too_many_arguments)]
     pub fn dropdown_held(
         &self,
@@ -1250,7 +1256,57 @@ impl<'a> Kit<'a> {
         held: &[(&str, &str)],
     ) -> (Response, Option<usize>) {
         let p = self.p();
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::FIELD_H), Sense::click());
+        let (id, rect) = ui.allocate_space(egui::vec2(width, size::FIELD_H));
+        let ctx = ui.ctx().clone();
+        let popup_id = id.with("popup");
+        let lit_id = id.with("lit");
+        let was_open = egui::Popup::is_id_open(&ctx, popup_id);
+        // The room for the list: the larger of below and above the field,
+        // less the list's frame and a unit of air at the window's edge.
+        let window = ctx.content_rect();
+        let pad = ui.style().spacing.menu_margin.sum().y + size::UNIT * 2.0;
+        let below = window.bottom() - rect.bottom() - pad;
+        let above = rect.top() - window.top() - pad;
+        let tall = (rows.len() + held.len()) as f32 * size::ROW_TREE;
+        let down = below >= tall || below >= above;
+        let room = if down { below } else { above }.max(size::ROW_TREE);
+        let page = ((room / size::ROW_TREE).floor() as usize).max(2) - 1;
+        // The keys act on an open list before the field sees them, so Enter
+        // picks a row and does not press the field again.
+        let mut lit = ctx.data(|d| d.get_temp::<usize>(lit_id)).unwrap_or(0);
+        let mut moved = false;
+        let (mut pick, mut close) = (false, false);
+        if was_open && !rows.is_empty() {
+            let last = rows.len() - 1;
+            ui.input_mut(|i| {
+                let mut key = |k: Key| i.consume_key(Modifiers::NONE, k);
+                let before = lit;
+                if key(Key::ArrowDown) {
+                    lit = (lit + 1).min(last);
+                }
+                if key(Key::ArrowUp) {
+                    lit = lit.saturating_sub(1);
+                }
+                if key(Key::PageDown) {
+                    lit = (lit + page).min(last);
+                }
+                if key(Key::PageUp) {
+                    lit = lit.saturating_sub(page);
+                }
+                if key(Key::Home) {
+                    lit = 0;
+                }
+                if key(Key::End) {
+                    lit = last;
+                }
+                pick = key(Key::Enter);
+                close = key(Key::Escape);
+                moved = lit != before;
+            });
+        } else if was_open {
+            close = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        }
+        let resp = ui.interact(rect, id, Sense::click());
         let shown = format!("{name}: {value}");
         resp.widget_info(|| WidgetInfo::labeled(Role::ComboBox, true, &shown));
         let painter = ui.painter();
@@ -1277,29 +1333,93 @@ impl<'a> Kit<'a> {
         let resp = if cut { resp.on_hover_text(value) } else { resp };
         // Toggle before the popup reads its state, so the click's own
         // frame lays the list out.
-        let popup_id = egui::Popup::default_response_id(&resp);
         if resp.clicked() {
-            egui::Popup::toggle_id(ui.ctx(), popup_id);
+            egui::Popup::toggle_id(&ctx, popup_id);
         }
         let mut chosen = None;
-        egui::Popup::from_response(&resp)
+        if pick && lit < rows.len() {
+            chosen = Some(lit);
+            close = true;
+        }
+        if close {
+            egui::Popup::close_id(&ctx, popup_id);
+        }
+        let open = egui::Popup::is_id_open(&ctx, popup_id);
+        let opened = open && !was_open;
+        if opened {
+            lit = rows.iter().position(|r| *r == value).unwrap_or(0);
+        }
+        ctx.accesskit_node_builder(id, |n| n.set_expanded(open));
+        let align = if down {
+            egui::RectAlign::BOTTOM_START
+        } else {
+            egui::RectAlign::TOP_START
+        };
+        let list = egui::Popup::from_response(&resp)
             .open_memory(None)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .align(align)
+            .align_alternatives(&[])
             .width(width)
+            .accessible_name(name.to_owned())
             .show(|ui| {
-                for (i, r) in rows.iter().enumerate() {
-                    if self.menu_row(ui, r, "", None, width).clicked() {
-                        chosen = Some(i);
-                    }
-                }
-                for (r, why) in held {
-                    self.menu_row(ui, r, "", Some(why), width);
-                }
+                egui::ScrollArea::vertical()
+                    .id_salt(id.with("scroll"))
+                    .max_height(room)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (i, r) in rows.iter().enumerate() {
+                            let row = self.list_row(ui, r, None, width, i == lit);
+                            if row.clicked() {
+                                chosen = Some(i);
+                            }
+                            if i == lit && opened {
+                                row.scroll_to_me(Some(egui::Align::Center));
+                            } else if i == lit && moved {
+                                row.scroll_to_me(None);
+                            }
+                        }
+                        for (r, why) in held {
+                            self.list_row(ui, r, Some(why), width, false);
+                        }
+                    });
             });
+        if let Some(l) = list {
+            let r = l.response.rect;
+            ctx.accesskit_node_builder(popup_id, |n| {
+                n.set_role(Role::ListBox);
+                n.set_bounds(egui::accesskit::Rect::new(
+                    f64::from(r.left()),
+                    f64::from(r.top()),
+                    f64::from(r.right()),
+                    f64::from(r.bottom()),
+                ));
+            });
+        }
+        ctx.data_mut(|d| d.insert_temp(lit_id, lit));
         if chosen.is_some() {
-            egui::Popup::close_id(ui.ctx(), popup_id);
+            egui::Popup::close_id(&ctx, popup_id);
         }
         (resp, chosen)
+    }
+
+    /// A row of a dropdown's list: a menu row that a screen reader hears
+    /// as an option, selected when `lit`, and that shows the lit look.
+    fn list_row(
+        &self,
+        ui: &mut Ui,
+        text: &str,
+        unavailable: Option<&str>,
+        width: f32,
+        lit: bool,
+    ) -> Response {
+        let resp = self.row(ui, text, "", MenuMark::None, unavailable, width, false, lit);
+        let on = unavailable.is_none();
+        resp.widget_info(|| WidgetInfo::labeled(Role::ListBoxOption, on, text));
+        ui.ctx()
+            .accesskit_node_builder(resp.id, |n| n.set_selected(lit));
+        resp
     }
 
     /// A row of a list or a menu: text, a note at the right such as a
@@ -1345,6 +1465,23 @@ impl<'a> Kit<'a> {
         width: f32,
         unsaved: bool,
     ) -> Response {
+        self.row(ui, text, note, mark, unavailable, width, unsaved, false)
+    }
+
+    /// A menu row as [`Kit::menu_choice_unsaved`]. A `lit` row shows the
+    /// look of a hovered one: the row a dropdown's keys stand on.
+    #[allow(clippy::too_many_arguments)]
+    fn row(
+        &self,
+        ui: &mut Ui,
+        text: &str,
+        note: &str,
+        mark: MenuMark,
+        unavailable: Option<&str>,
+        width: f32,
+        unsaved: bool,
+        lit: bool,
+    ) -> Response {
         let p = self.p();
         let name = if unsaved {
             format!("{text}, not saved")
@@ -1370,7 +1507,7 @@ impl<'a> Kit<'a> {
             });
         }
         let painter = ui.painter();
-        if unavailable.is_none() && (resp.hovered() || resp.has_focus()) {
+        if unavailable.is_none() && (lit || resp.hovered() || resp.has_focus()) {
             painter.rect_filled(rect, CornerRadius::ZERO, p.raised);
         }
         let fg = if unavailable.is_some() { p.dim } else { p.text };

@@ -885,7 +885,7 @@ fn a_dropdown_shows_its_list_on_the_click_that_opens_it() {
     h.step();
     assert!(
         h.query_all_by_label(name)
-            .any(|n| n.accesskit_node().role() == Role::MenuItem),
+            .any(|n| n.accesskit_node().role() == Role::ListBoxOption),
         "the list shows in the frame after the click, with no new input"
     );
 }
@@ -2637,7 +2637,15 @@ fn the_window_behind_a_dialog_takes_no_keys_and_gets_its_focus_back() {
             "{dialog:?}: the document changed"
         );
         match dialog {
-            Dialog::Adjust | Dialog::Question => h.key_press(Key::Escape),
+            // Enter opened the Theme list: the first Escape closes it,
+            // the second the editor.
+            Dialog::Adjust => {
+                h.key_press(Key::Escape);
+                h.run_steps(2);
+                assert_eq!(h.state().front(), Front::Theme, "the list goes first");
+                h.key_press(Key::Escape);
+            }
+            Dialog::Question => h.key_press(Key::Escape),
             Dialog::Chooser => {
                 fake.lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)

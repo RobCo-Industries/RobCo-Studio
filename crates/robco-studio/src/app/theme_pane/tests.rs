@@ -8,7 +8,7 @@ use crate::app::{ASKING, Command, Front, Verdict, verdict};
 use crate::chooser::{Ask, Choice, FolderChooser};
 use crate::menus::{self, ThemeId};
 use crate::store::{self, tests::TempDir};
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::path::{Path, PathBuf};
 
 const EMBER: &str = "version = 1\nname = \"Ember\"\nbase = \"#ff7a1a\"\n";
@@ -1004,4 +1004,245 @@ fn three_digits_then_save_writes_the_typed_colour() {
         "f80",
         "the field keeps what was typed"
     );
+}
+
+/// How a test reaches the last theme of a long list.
+#[derive(Debug, Clone, Copy)]
+enum Reach {
+    /// Enter opens the list, End then Enter picks.
+    Keys,
+    /// A click opens the list, the wheel scrolls it, a click picks.
+    Pointer,
+}
+
+/// A themes folder with `n` themes, "Theme 00" on, and `bad` files that
+/// are not themes, which sort first.
+fn many(d: &TempDir, n: usize, bad: usize) {
+    let t = themes(d);
+    for i in 0..bad {
+        std::fs::write(t.join(format!("a{i:02}.toml")), "version = 1\n").unwrap();
+    }
+    for i in 0..n {
+        std::fs::write(
+            t.join(format!("t{i:02}.toml")),
+            format!("version = 1\nname = \"Theme {i:02}\"\nbase = \"#5aff7f\"\n"),
+        )
+        .unwrap();
+    }
+}
+
+fn press_at(h: &egui_kittest::Harness<'_, Studio>, at: egui::Pos2) {
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+}
+
+/// The window at the smallest size the app allows.
+fn smallest() -> egui::Vec2 {
+    egui::vec2(crate::theme::size::WINDOW[0], crate::theme::size::WINDOW[1])
+}
+
+/// The rect of the option `label` of the open list.
+fn option(h: &egui_kittest::Harness<'_, Studio>, label: &str) -> egui::Rect {
+    use egui::accesskit::Role;
+    h.get_by_role_and_label(Role::ListBoxOption, label).rect()
+}
+
+/// The editor's Theme list is as tall as the window allows and scrolls,
+/// and the last theme of a full folder can be picked with the keys and
+/// with the pointer, in a window of the smallest size.
+#[test]
+fn the_last_of_a_long_list_of_themes_can_be_picked() {
+    use egui::accesskit::Role;
+    let rows = [
+        (64, 0, Reach::Keys),
+        (64, 0, Reach::Pointer),
+        (56, 8, Reach::Keys),
+        (56, 8, Reach::Pointer),
+    ];
+    let room = egui::Rect::from_min_size(egui::Pos2::ZERO, smallest());
+    for (n, bad, reach) in rows {
+        let row = format!("{n} themes, {bad} refused, {reach:?}");
+        let d = TempDir::new("long-list");
+        many(&d, n, bad);
+        let mut s = window(&d);
+        assert_eq!(s.themes.len(), 6 + n, "{row}");
+        assert_eq!(s.refused.len(), bad, "{row}");
+        s.theme_editor.open = true;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(smallest())
+            .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+        h.run_steps(3);
+        let field = h
+            .get_by_role_and_label(Role::ComboBox, "Theme: Green")
+            .rect();
+        match reach {
+            Reach::Keys => h.key_press(Key::Enter),
+            Reach::Pointer => press_at(&h, field.center()),
+        }
+        h.run_steps(3);
+        let list = h.get_by_role(Role::ListBox).rect();
+        assert!(
+            room.contains_rect(list),
+            "{row}: the list {list:?} leaves the window"
+        );
+        let last = format!("Theme {:02}", n - 1);
+        match reach {
+            Reach::Keys => {
+                h.key_press(Key::End);
+                h.run_steps(3);
+                assert!(
+                    room.contains_rect(option(&h, &last)),
+                    "{row}: End shows the row"
+                );
+                h.key_press(Key::Enter);
+            }
+            Reach::Pointer => {
+                for _ in 0..40 {
+                    h.event(egui::Event::PointerMoved(list.center()));
+                    h.event(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -200.0),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                    h.run_steps(1);
+                }
+                h.run_steps(10);
+                let r = option(&h, &last);
+                assert!(
+                    list.contains(r.center()),
+                    "{row}: the wheel shows the row {r:?} in {list:?}"
+                );
+                press_at(&h, r.center());
+            }
+        }
+        h.run_steps(3);
+        assert_eq!(h.state().theme_name(), last, "{row}");
+        // Opened again, the list shows the theme in use.
+        h.key_press(Key::Enter);
+        h.run_steps(4);
+        let list = h.get_by_role(Role::ListBox).rect();
+        assert!(
+            list.contains(option(&h, &last).center()),
+            "{row}: opens on the row in use"
+        );
+        // Escape closes the list and leaves the editor open.
+        h.key_press(Key::Escape);
+        h.run_steps(3);
+        assert!(h.query_by_role(Role::ListBox).is_none(), "{row}");
+        assert!(h.state().theme_editor.open, "{row}");
+    }
+}
+
+/// The keys of an open list: Down, Up, Page Down, Page Up, Home and End
+/// move the selected option, as a screen reader hears it.
+#[test]
+fn the_keys_move_the_selected_option() {
+    use egui::accesskit::Role;
+    let d = TempDir::new("list-keys");
+    many(&d, 64, 0);
+    let mut s = window(&d);
+    s.theme_editor.open = true;
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(smallest())
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.run_steps(3);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    let selected = |h: &egui_kittest::Harness<'_, Studio>| {
+        h.query_all_by_role(Role::ListBoxOption)
+            .filter(|n| n.accesskit_node().is_selected() == Some(true))
+            .map(|n| n.accesskit_node().label().unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(selected(&h), ["Green"]);
+    for (key, want) in [
+        (Key::ArrowDown, "Amber"),
+        (Key::ArrowUp, "Green"),
+        (Key::ArrowUp, "Green"),
+        (Key::End, "Theme 63"),
+        (Key::ArrowDown, "Theme 63"),
+        (Key::Home, "Green"),
+    ] {
+        h.key_press(key);
+        h.run_steps(3);
+        assert_eq!(selected(&h), [want], "{key:?}");
+    }
+    h.key_press(Key::PageDown);
+    h.run_steps(3);
+    let down = selected(&h);
+    assert_ne!(down, ["Green"]);
+    h.key_press(Key::PageUp);
+    h.run_steps(3);
+    assert_eq!(selected(&h), ["Green"]);
+    // A key does not leak to the window: the theme is as it was.
+    assert_eq!(h.state().theme_name(), "Green");
+}
+
+/// A name of 32 wide letters stays inside the question that names it and
+/// inside the status line, in a window of the smallest size.
+#[test]
+fn a_long_name_stays_inside_the_question_and_the_status_line() {
+    use egui::accesskit::Role;
+    let name = "W".repeat(store::NAME_MAX);
+    let d = TempDir::new("long-name");
+    std::fs::write(
+        themes(&d).join("w.toml"),
+        format!("version = 1\nname = \"{name}\"\nbase = \"#5aff7f\"\n"),
+    )
+    .unwrap();
+    let mut s = window(&d);
+    let i = s.theme_index(&name).unwrap();
+    s.pick_theme(i);
+    nudge(&mut s);
+    s.theme_editor.open = true;
+    s.pick_theme(1);
+    assert!(s.theme_editor.question.is_some());
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(smallest())
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.run_steps(4);
+    let room = egui::Rect::from_min_size(egui::Pos2::ZERO, smallest());
+    // The question is a fixed width, centred. Each line that names the
+    // theme stays inside it and above its buttons.
+    let half = crate::theme::size::DIALOG_W / 2.0;
+    let across = room.center().x - half..=room.center().x + half;
+    let cancel = h.get_by_role_and_label(Role::Button, "Cancel").rect();
+    let lines: Vec<egui::Rect> = h
+        .query_all_by(|n| {
+            matches!(n.role(), Role::Label | Role::TextRun)
+                && n.value().is_some_and(|v| v.contains(&name))
+                && !n.value().is_some_and(|v| v.starts_with("Theme:"))
+        })
+        .map(|n| n.rect())
+        .collect();
+    assert!(lines.len() >= 2, "the title and the text: {lines:?}");
+    for r in lines {
+        assert!(
+            across.contains(&r.left()) && across.contains(&r.right()),
+            "{r:?}"
+        );
+        assert!(
+            r.bottom() <= cancel.top(),
+            "{r:?} runs into the buttons at {cancel:?}"
+        );
+    }
+    let said = h
+        .query_all_by(|n| {
+            n.role() == Role::Label && n.value().is_some_and(|v| v.starts_with("Theme:"))
+        })
+        .next()
+        .unwrap()
+        .rect();
+    // The status line cuts a long line with an ellipsis and keeps it in
+    // the window.
+    assert!(room.contains_rect(said), "{said:?} leaves the window");
 }

@@ -1127,3 +1127,93 @@ fn measure_the_bloom_halo() {
         "bloom halo: {glyphs} glyph pixels, brightest halo pixel {most:.3} of bright, {most_less:.3} above the ground"
     );
 }
+
+/// A settings folder with 64 themes, "Theme 00" on, removed when the test
+/// ends.
+fn many_themes(tag: &str) -> std::io::Result<Sample> {
+    let settings = Sample(
+        std::env::temp_dir().join(format!("robco-studio-shots-{tag}-{}", std::process::id())),
+    );
+    let themes = settings.join("themes");
+    let _ = std::fs::remove_dir_all(&*settings);
+    std::fs::create_dir_all(&themes)?;
+    for i in 0..64 {
+        std::fs::write(
+            themes.join(format!("t{i:02}.toml")),
+            format!("version = 1\nname = \"Theme {i:02}\"\nbase = \"#5aff7f\"\n"),
+        )?;
+    }
+    Ok(settings)
+}
+
+/// Open the theme editor's Theme list with a click where it is drawn.
+fn open_theme_list(h: &mut Harness<'static, Studio>) -> Option<egui::Rect> {
+    use egui::accesskit::Role;
+    h.state_mut().theme_editor.open = true;
+    h.run_steps(3);
+    let field = h
+        .query_all_by_role(Role::ComboBox)
+        .find(|n| {
+            n.accesskit_node()
+                .label()
+                .is_some_and(|l| l.starts_with("Theme:"))
+        })?
+        .rect();
+    click_at(h, field.center());
+    h.run_steps(4);
+    h.query_by_role(Role::ListBox).map(|n| n.rect())
+}
+
+fn click_at(h: &mut Harness<'static, Studio>, at: egui::Pos2) {
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run_steps(1);
+}
+
+/// The theme editor's Theme list open over 64 themes, into `STUDIO_SHOTS`
+/// as `theme-list-64.png`.
+#[test]
+#[ignore = "writes PNG files; needs a wgpu adapter"]
+fn render_the_long_theme_list() {
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = sample("theme-list").unwrap();
+    let settings = many_themes("theme-list-settings").unwrap();
+    let (mut h, _) = screen_harness_gpu(Some(&d), 1.0, Look::Live, Some(&settings));
+    open_main(&mut h);
+    open_theme_list(&mut h).unwrap();
+    h.key_press(egui::Key::End);
+    h.event(egui::Event::PointerGone);
+    shot(&mut h, &dir, "theme-list-64.png").unwrap();
+}
+
+/// Under Arcade's curvature, a click on the last row the open list shows
+/// picks that row: the pass maps the pointer back through the curve.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_click_on_the_last_shown_row_picks_it_under_arcade() {
+    use egui::accesskit::Role;
+    let d = sample("theme-list-arcade").unwrap();
+    let settings = many_themes("theme-list-arcade-settings").unwrap();
+    let (mut h, _) = screen_harness_gpu(Some(&d), 1.0, Look::Arcade, Some(&settings));
+    let list = open_theme_list(&mut h).unwrap();
+    let (label, r) = h
+        .query_all_by_role(Role::ListBoxOption)
+        .map(|n| (n.accesskit_node().label().unwrap_or_default(), n.rect()))
+        .filter(|(_, r)| list.contains_rect(*r))
+        .max_by(|a, b| a.1.bottom().total_cmp(&b.1.bottom()))
+        .unwrap();
+    assert!(label.starts_with("Theme "), "{label}");
+    click_at(&mut h, r.center());
+    h.run_steps(3);
+    assert_eq!(h.state().theme_name(), label);
+}
