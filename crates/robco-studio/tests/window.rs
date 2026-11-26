@@ -209,7 +209,11 @@ fn the_arrow_keys_move_between_pages_in_one_tab_stop() {
     h.key_press(Key::ArrowLeft);
     h.run_steps(2);
     assert_eq!(h.state().page, Page::Sdk, "the left arrow wraps");
-    // One stop: Tab leaves the control, it does not walk its parts.
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert_eq!(h.state().page, Page::Project, "the right arrow wraps");
+    // One stop: Tab from the first part leaves the control, it does not
+    // walk its parts.
     h.key_press(Key::Tab);
     h.run_steps(2);
     assert!(h.ctx.memory(|m| m.focused()).is_some());
@@ -219,7 +223,7 @@ fn the_arrow_keys_move_between_pages_in_one_tab_stop() {
             "{p}"
         );
     }
-    assert_eq!(h.state().page, Page::Sdk);
+    assert_eq!(h.state().page, Page::Project);
 }
 
 #[test]
