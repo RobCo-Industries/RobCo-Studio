@@ -96,8 +96,19 @@ pub struct Editor {
     tab_scroll: f32,
     /// The document whose tab was last brought into view.
     tab_seen: Option<u64>,
+    /// A Save all that waits on an answer, then goes on.
+    run: Option<SaveRun>,
     /// The tabs did not fit the header in the last frame.
     tab_overflow: bool,
+}
+
+/// A Save all in progress: the documents still to save, and the count so far.
+#[derive(Debug, Default)]
+struct SaveRun {
+    todo: std::collections::VecDeque<u64>,
+    saved: usize,
+    kept: usize,
+    error: Option<String>,
 }
 
 const TEXT_ID: &str = "editor-text";
@@ -160,36 +171,75 @@ impl Editor {
         }
     }
 
-    /// Save every document with edits. Stops at the first that fails, or
-    /// whose file changed on disk: that one is shown and asks.
+    /// Save every document with edits. One whose file changed on disk is
+    /// shown and asks; after the answer the others are saved too. The
+    /// status line then says how many were saved and how many were not.
     pub fn save_all(&mut self) {
         if self.question.is_some() {
             return;
         }
-        let mut last = Some(Ok("Nothing to save.".to_owned()));
-        for i in 0..self.docs.len() {
+        let todo: std::collections::VecDeque<u64> = self
+            .docs
+            .iter()
+            .filter(|d| d.is_dirty())
+            .map(|d| d.id)
+            .collect();
+        if todo.is_empty() {
+            self.news = Some((crate::kit::Level::Info, "Nothing to save.".to_owned()));
+            return;
+        }
+        self.run = Some(SaveRun {
+            todo,
+            ..SaveRun::default()
+        });
+        self.go_on_saving();
+    }
+
+    /// Save the rest of a Save all, up to the next question.
+    fn go_on_saving(&mut self) {
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        while let Some(id) = run.todo.pop_front() {
+            let Some(i) = self.index_of(id) else { continue };
             let d = &mut self.docs[i];
             if !d.is_dirty() {
                 continue;
             }
             if d.changed_on_disk() {
-                self.question = Some(Question::Overwrite { doc: d.id });
+                self.question = Some(Question::Overwrite { doc: id });
                 self.active = Some(i);
-                last = None;
-                break;
+                self.run = Some(run);
+                return;
             }
-            last = Some(d.save().map(|()| format!("Saved {}.", d.shown)));
-            if matches!(last, Some(Err(_))) {
-                break;
+            match d.save() {
+                Ok(()) => run.saved += 1,
+                Err(e) => {
+                    run.kept += 1;
+                    run.error.get_or_insert(e);
+                }
             }
         }
-        match last {
-            Some(Ok(s)) if s == "Nothing to save." => {
-                self.news = Some((crate::kit::Level::Info, s));
+        let n = |k: usize| {
+            if k == 1 {
+                "1 document".to_owned()
+            } else {
+                format!("{k} documents")
             }
-            Some(r) => self.report(r),
-            None => {}
-        }
+        };
+        self.news = Some(match (run.kept, run.error) {
+            (0, _) => (
+                crate::kit::Level::Success,
+                format!("Saved {}.", n(run.saved)),
+            ),
+            (k, e) => {
+                let mut s = format!("Saved {}. {} not saved.", n(run.saved), n(k));
+                if let Some(e) = e {
+                    s = format!("{s} {e}");
+                }
+                (crate::kit::Level::Warning, s)
+            }
+        });
     }
 
     fn report(&mut self, r: Result<String, String>) {
@@ -253,17 +303,27 @@ impl Editor {
             self.question = None;
             return;
         };
-        if a == Answer::Cancel
-            || (a == Answer::DoNotSave && matches!(q, Question::Overwrite { .. }))
-        {
+        if let Question::Overwrite { .. } = q {
             self.question = None;
+            let r = (a == Answer::Save).then(|| {
+                self.docs[i]
+                    .save()
+                    .map(|()| format!("Saved {}.", self.docs[i].shown))
+            });
+            match (self.run.as_mut(), r) {
+                (Some(run), Some(Ok(_))) => run.saved += 1,
+                (Some(run), Some(Err(e))) => {
+                    run.kept += 1;
+                    run.error.get_or_insert(e);
+                }
+                (Some(run), None) => run.kept += 1,
+                (None, Some(r)) => self.report(r),
+                (None, None) => {}
+            }
+            self.go_on_saving();
             return;
         }
-        if let Question::Overwrite { .. } = q {
-            let r = self.docs[i]
-                .save()
-                .map(|()| format!("Saved {}.", self.docs[i].shown));
-            self.report(r);
+        if a == Answer::Cancel {
             self.question = None;
             return;
         }
@@ -1046,6 +1106,77 @@ mod replace_tests {
         e.save();
         assert_eq!(e.question, None);
         assert_eq!(std::fs::read(&f).unwrap(), b"again\n");
+    }
+
+    /// Save all asks about each document changed on disk in turn and
+    /// goes on after each answer, then counts what it saved.
+    #[test]
+    fn save_all_goes_on_after_each_question() {
+        use super::{Answer, Editor, Question};
+        let g = folder("all");
+        let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+        let mut e = Editor::default();
+        for n in names {
+            std::fs::write(g.0.join(n), b"one\n").unwrap();
+            e.open(&g.0.join(n), n.into());
+        }
+        for d in &mut e.docs {
+            d.text = "mine\n".into();
+        }
+        let ids: Vec<u64> = e.docs.iter().map(|d| d.id).collect();
+        std::fs::write(g.0.join("a.txt"), b"theirs, longer\n").unwrap();
+        std::fs::write(g.0.join("c.txt"), b"theirs, longer\n").unwrap();
+        e.save_all();
+        assert_eq!(e.question, Some(Question::Overwrite { doc: ids[0] }));
+        e.answer(ids[0], Answer::Save);
+        assert_eq!(e.question, Some(Question::Overwrite { doc: ids[2] }));
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"mine\n");
+        e.answer(ids[2], Answer::Cancel);
+        assert_eq!(e.question, None);
+        for (n, want) in [
+            ("a.txt", &b"mine\n"[..]),
+            ("b.txt", b"mine\n"),
+            ("c.txt", b"theirs, longer\n"),
+            ("d.txt", b"mine\n"),
+        ] {
+            assert_eq!(std::fs::read(g.0.join(n)).unwrap(), want, "{n}");
+        }
+        assert_eq!(
+            e.news.as_ref().map(|(_, s)| s.as_str()),
+            Some("Saved 3 documents. 1 document not saved.")
+        );
+    }
+
+    /// Quit with several edited documents asks about each in turn; every
+    /// document ends saved, dropped or kept open by its own answer.
+    #[test]
+    fn quit_asks_about_each_document_in_turn() {
+        use super::{Answer, Editor, Question};
+        let g = folder("quit");
+        let mut e = Editor::default();
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(g.0.join(n), b"one\n").unwrap();
+            e.open(&g.0.join(n), n.into());
+        }
+        for d in &mut e.docs {
+            d.text = "mine\n".into();
+        }
+        let ids: Vec<u64> = e.docs.iter().map(|d| d.id).collect();
+        assert!(!e.request_quit());
+        e.answer(ids[0], Answer::Save);
+        assert_eq!(e.question, Some(Question::Quit { doc: ids[1] }));
+        e.answer(ids[1], Answer::DoNotSave);
+        assert_eq!(e.question, Some(Question::Quit { doc: ids[2] }));
+        e.answer(ids[2], Answer::Cancel);
+        assert_eq!(e.question, None);
+        assert!(!e.quit_allowed);
+        assert_eq!(e.docs.len(), 1, "c.txt stays open");
+        assert_eq!(std::fs::read(g.0.join("a.txt")).unwrap(), b"mine\n");
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"one\n");
+        assert!(!e.request_quit());
+        e.answer(ids[2], Answer::DoNotSave);
+        assert!(e.quit_allowed);
+        assert_eq!(std::fs::read(g.0.join("c.txt")).unwrap(), b"one\n");
     }
 
     /// The active tab is brought into view from either side, and the
