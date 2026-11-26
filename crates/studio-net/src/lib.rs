@@ -52,6 +52,10 @@ pub const MAX_REDIRECTS: usize = 5;
 /// with `index: read`.
 pub const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
 
+/// How many informational `1xx` answers may come before the final one.
+/// A server sends one or two, such as `103 Early Hints`.
+pub const MAX_INFORMATIONAL: usize = 4;
+
 /// The longest status line and headers of a response, together.
 const MAX_HEAD_BYTES: u64 = 64 * 1024;
 
@@ -191,52 +195,51 @@ impl Https {
             .and_then(|()| tls.flush())
             .map_err(|e| io_text(&at, &e, self.stall))?;
         let mut r = BufReader::with_capacity(BUF, tls);
-        let head = read_head(&mut r).map_err(|e| io_text(&at, &e, self.stall))?;
-        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-        let mut resp = httparse::Response::new(&mut headers);
-        match resp.parse(&head) {
-            Ok(httparse::Status::Complete(_)) => {}
-            _ => return Err(format!("{at}: the answer is not HTTP/1.1")),
-        }
-        let code = resp.code.unwrap_or(0);
-        let one = |name: &str| -> Result<Option<String>, String> {
-            let mut found: Option<String> = None;
-            for h in resp
-                .headers
-                .iter()
-                .filter(|h| h.name.eq_ignore_ascii_case(name))
-            {
-                let v = std::str::from_utf8(h.value)
-                    .map_err(|_| format!("{at}: a {name} header is not text"))?
-                    .trim()
-                    .to_owned();
-                if found.as_ref().is_some_and(|f| *f != v) {
-                    return Err(format!("{at}: two {name} headers differ"));
+        let mut informational = 0;
+        let head = loop {
+            let bytes = read_head(&mut r).map_err(|e| io_text(&at, &e, self.stall))?;
+            let head = Head::parse(&bytes, &at)?;
+            match head.code {
+                // RFC 9110 15.2.2: the client asked for no upgrade.
+                101 => {
+                    return Err(format!(
+                        "{at}: status 101, a protocol switch nobody asked for"
+                    ));
                 }
-                found = Some(v);
+                // RFC 9110 15.2: an informational answer comes before the
+                // final one and has no body.
+                100..=199 => {
+                    informational += 1;
+                    if informational > MAX_INFORMATIONAL {
+                        return Err(format!(
+                            "{at}: more than {MAX_INFORMATIONAL} informational answers"
+                        ));
+                    }
+                }
+                _ => break head,
             }
-            Ok(found)
         };
-        match code {
+        match head.code {
             200 => {}
             301 | 302 | 303 | 307 | 308 => {
-                let loc =
-                    one("location")?.ok_or_else(|| format!("{at}: a redirect with no Location"))?;
+                let loc = head
+                    .one("location", &at)?
+                    .ok_or_else(|| format!("{at}: a redirect with no Location"))?;
                 return Ok(Answer::Redirect(loc));
             }
             c => return Err(format!("{at}: the server answered with status {c}")),
         }
-        if let Some(enc) = one("content-encoding")?
+        if let Some(enc) = head.one("content-encoding", &at)?
             && !enc.eq_ignore_ascii_case("identity")
         {
             return Err(format!("{at}: the body is encoded, {enc}"));
         }
-        let chunked = match one("transfer-encoding")? {
+        let chunked = match head.one("transfer-encoding", &at)? {
             None => false,
             Some(te) if te.eq_ignore_ascii_case("chunked") => true,
             Some(te) => return Err(format!("{at}: transfer encoding {te} is not chunked")),
         };
-        let length = match one("content-length")? {
+        let length = match head.one("content-length", &at)? {
             None => None,
             Some(v) => Some(
                 v.parse::<u64>()
@@ -309,6 +312,51 @@ fn io_text(at: &str, e: &io::Error, stall: Duration) -> String {
         }
         io::ErrorKind::UnexpectedEof => format!("{at}: the server closed the connection early"),
         _ => format!("{at}: {e}"),
+    }
+}
+
+/// A parsed status line and header fields.
+struct Head {
+    code: u16,
+    fields: Vec<(String, Vec<u8>)>,
+}
+
+impl Head {
+    fn parse(bytes: &[u8], at: &str) -> Result<Self, String> {
+        let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+        let mut resp = httparse::Response::new(&mut headers);
+        match resp.parse(bytes) {
+            Ok(httparse::Status::Complete(_)) => {}
+            _ => return Err(format!("{at}: the answer is not HTTP/1.1")),
+        }
+        Ok(Self {
+            code: resp.code.unwrap_or(0),
+            fields: resp
+                .headers
+                .iter()
+                .map(|h| (h.name.to_owned(), h.value.to_vec()))
+                .collect(),
+        })
+    }
+
+    /// The value of a field the client reads, which may appear once.
+    fn one(&self, name: &str, at: &str) -> Result<Option<String>, String> {
+        let mut found: Option<String> = None;
+        for (_, value) in self
+            .fields
+            .iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            let v = std::str::from_utf8(value)
+                .map_err(|_| format!("{at}: a {name} header is not text"))?
+                .trim()
+                .to_owned();
+            if found.as_ref().is_some_and(|f| *f != v) {
+                return Err(format!("{at}: two {name} headers differ"));
+            }
+            found = Some(v);
+        }
+        Ok(found)
     }
 }
 

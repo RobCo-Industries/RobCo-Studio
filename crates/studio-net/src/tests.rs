@@ -17,7 +17,7 @@ use std::time::Duration;
 use studio_core::install::Transport;
 
 use super::*;
-use crate::testing::{Handler, Pki, Server, ok, redirect};
+use crate::testing::{Handler, Pki, Server, ok, raw, redirect};
 
 const UA: &str = "robco/0.0.0";
 
@@ -296,4 +296,44 @@ fn urls_split_as_expected() {
     let base = Target::parse("https://a/b/c").unwrap();
     assert_eq!(base.follow("//d/e").unwrap().authority, "d");
     assert_eq!(base.follow("/e").unwrap().path, "/e");
+}
+
+fn answer(bytes: &'static [u8]) -> Result<Vec<u8>, String> {
+    let pki = Pki::new();
+    let s = Server::start(&pki, vec![raw(bytes)]);
+    let got = fetch(&client(&pki), &s.url("/"));
+    s.finish();
+    got
+}
+
+fn refused(bytes: &'static [u8], rule: &str) {
+    let e = answer(bytes).unwrap_err();
+    assert!(e.contains(rule), "wanted {rule:?}, got {e}");
+}
+
+#[test]
+fn informational_answers_are_read_past() {
+    let got = answer(
+        b"HTTP/1.1 103 Early Hints\r\nLink: </a>; rel=preload\r\n\r\n\
+          HTTP/1.1 100 Continue\r\n\r\n\
+          HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    );
+    assert_eq!(got.unwrap(), b"ok");
+}
+
+#[test]
+fn too_many_informational_answers_fail() {
+    refused(
+        b"HTTP/1.1 103 A\r\n\r\nHTTP/1.1 103 B\r\n\r\nHTTP/1.1 103 C\r\n\r\n\
+          HTTP/1.1 103 D\r\n\r\nHTTP/1.1 103 E\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        "more than 4 informational answers",
+    );
+}
+
+#[test]
+fn a_protocol_switch_fails() {
+    refused(
+        b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: h2c\r\n\r\n",
+        "status 101",
+    );
 }

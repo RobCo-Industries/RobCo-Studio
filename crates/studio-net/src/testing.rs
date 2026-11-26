@@ -151,6 +151,11 @@ pub fn ok(body: Vec<u8>) -> Handler {
     })
 }
 
+/// A handler that writes exactly these bytes.
+pub fn raw(bytes: &'static [u8]) -> Handler {
+    Box::new(move |_, w| w.write_all(bytes))
+}
+
 /// A handler that redirects with this status and `Location`.
 pub fn redirect(status: u16, location: String) -> Handler {
     Box::new(move |_, w| {
