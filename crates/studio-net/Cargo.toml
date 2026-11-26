@@ -1,0 +1,33 @@
+[package]
+name = "studio-net"
+description = "The https transport of RobCo Studio: downloads an index and the archives it names."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Adds `Https::trusting_only`, which trusts one certificate a test made,
+# and `testing`, a TLS server for tests on 127.0.0.1. Only dev-dependencies
+# turn it on: no program build has it.
+test-trust = ["dep:rcgen"]
+
+[dependencies]
+studio-core.workspace = true
+# TLS in Rust. Only the `ring` provider, no aws-lc. Apache-2.0, ISC or MIT.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Checks certificates with the system's own verifier and trust store. MIT or Apache-2.0.
+rustls-platform-verifier = "0.7.1"
+# Parses the status line and headers of a response. MIT or Apache-2.0.
+httparse = "1.10.1"
+# Makes the certificates of the test server, with the `test-trust` feature only. MIT or Apache-2.0.
+rcgen = { version = "0.14.10", optional = true, default-features = false, features = ["crypto", "ring"] }
+
+[dev-dependencies]
+# Makes the certificate of the test server. MIT or Apache-2.0.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
+
+[lints]
+workspace = true

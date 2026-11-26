@@ -14,9 +14,10 @@ use std::path::Path;
 use studio_core::install::{self, LocalFiles, Phase, Pin, Progress, State};
 use studio_core::resolve::{self, InstallPick, PIPOS, Root};
 
-use crate::Failure;
-use crate::index::{self, Location};
+use crate::index;
 use crate::lines::{Out, Val};
+use crate::net::Archives;
+use crate::{Failure, Net};
 
 /// What `robco sdk install` was asked for.
 pub struct Request<'a> {
@@ -67,18 +68,15 @@ fn state_word(s: State) -> &'static str {
 
 /// Runs the command, writing every line but the error and the failed
 /// `result` line, which the caller writes from the returned failure.
-pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Failure> {
+pub fn run(out: &mut Out<'_>, cache: &Path, net: &Net, req: &Request<'_>) -> Result<(), Failure> {
     // Step 1: the location comes before the read. `resolve` covers reading
     // the index and the picks, steps 1 to 3.
     let location = index::locate(req.index)?;
     out.step("resolve", "", "start");
-    let (idx, base) = index::read(&location)?;
-    let transport = match &location {
-        Location::Local(_) => LocalFiles { base },
-        // `index::read` already refused it.
-        Location::Https(_) => {
-            return Err(Failure::new("internal", "an https index was read"));
-        }
+    let (idx, base) = index::read(&location, net)?;
+    let transport = Archives {
+        local: base.map(|base| LocalFiles { base }),
+        net,
     };
 
     // Step 2.
