@@ -1,0 +1,465 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use super::*;
+use crate::theme::SHIPPED;
+
+/// A folder under the system's temp folder, removed when dropped, so a
+/// failing test cleans up too.
+pub(crate) struct TempDir(pub PathBuf);
+
+impl TempDir {
+    pub(crate) fn new(tag: &str) -> TempDir {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "robco-studio-store-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        TempDir(p)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn with(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+    move |name| {
+        pairs
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| OsString::from(v))
+    }
+}
+
+#[cfg(not(windows))]
+const ABS: &str = "/c";
+#[cfg(windows)]
+const ABS: &str = "C:\\c";
+
+#[test]
+fn the_variable_is_the_folder_itself() {
+    assert_eq!(
+        folder(with(&[("ROBCO_STUDIO_SETTINGS", ABS)])).unwrap(),
+        PathBuf::from(ABS)
+    );
+}
+
+#[test]
+fn a_relative_variable_is_refused() {
+    assert!(folder(with(&[("ROBCO_STUDIO_SETTINGS", "rel/s")])).is_err());
+}
+
+#[test]
+fn an_empty_variable_counts_as_unset() {
+    let got = folder(with(&[
+        ("ROBCO_STUDIO_SETTINGS", ""),
+        ("HOME", ABS),
+        ("APPDATA", ABS),
+    ]))
+    .unwrap();
+    assert!(got.starts_with(ABS), "{got:?}");
+    assert!(got.ends_with(Path::new("robco").join("studio")), "{got:?}");
+}
+
+#[test]
+fn no_home_is_refused() {
+    assert!(folder(with(&[])).is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_takes_application_support() {
+    assert_eq!(
+        folder(with(&[("HOME", "/h")])).unwrap(),
+        Path::new("/h")
+            .join("Library")
+            .join("Application Support")
+            .join("robco")
+            .join("studio")
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_takes_an_absolute_xdg_config_home() {
+    assert_eq!(
+        folder(with(&[("XDG_CONFIG_HOME", "/x"), ("HOME", "/h")])).unwrap(),
+        PathBuf::from("/x/robco/studio")
+    );
+    assert_eq!(
+        folder(with(&[("XDG_CONFIG_HOME", "x"), ("HOME", "/h")])).unwrap(),
+        PathBuf::from("/h/.config/robco/studio")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_takes_appdata() {
+    assert_eq!(
+        folder(with(&[("APPDATA", "C:\\a")])).unwrap(),
+        Path::new("C:\\a").join("robco").join("studio")
+    );
+}
+
+/// The TOML escape of every character outside printable ASCII.
+fn esc(raw: &str) -> String {
+    raw.chars()
+        .map(|c| match c {
+            ' '..='~' => c.to_string(),
+            c if (c as u32) < 0x10000 => format!("\\u{:04X}", c as u32),
+            c => format!("\\U{:08X}", c as u32),
+        })
+        .collect()
+}
+
+fn read(text: &str) -> Result<Loaded, Note> {
+    read_theme("ember.toml", text.as_bytes())
+}
+
+const MIN: &str = "version = 1\nbase = \"#FF7A1A\"\n";
+
+#[test]
+fn version_and_base_are_a_whole_theme() {
+    let l = read(MIN).unwrap();
+    assert!(l.notes.is_empty());
+    assert_eq!(l.spec.name, "ember");
+    assert_eq!(l.spec.base, Color32::from_rgb(0xff, 0x7a, 0x1a));
+    assert_eq!(l.spec.strengths, Strengths::NONE);
+    assert!(!l.spec.moves);
+    assert_eq!(l.spec.rate, 30);
+}
+
+#[test]
+fn an_unknown_key_is_ignored() {
+    let l = read(&format!("{MIN}sparkle = 3\n[screen]\nglow = 1\n")).unwrap();
+    let texts: Vec<&str> = l.notes.iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "%STUDIO-W-THEMEKEY, ember.toml has a key Studio does not know: sparkle. The key is ignored.",
+            "%STUDIO-W-THEMEKEY, ember.toml has a key Studio does not know: screen.glow. The key is ignored.",
+        ]
+    );
+}
+
+#[test]
+fn a_missing_version_or_base_is_not_a_theme() {
+    assert_eq!(
+        read("base = \"#ffffff\"").unwrap_err().text,
+        "%STUDIO-E-NOTTHEME, ember.toml is not a theme: no version. The file is not listed and is untouched."
+    );
+    let e = read("version = 1").unwrap_err();
+    assert_eq!(e.level, Level::Error);
+    assert_eq!(
+        e.text,
+        "%STUDIO-E-NOTTHEME, ember.toml is not a theme: no base colour. The file is not listed and is untouched."
+    );
+}
+
+#[test]
+fn a_strength_out_of_range_is_clamped() {
+    let l = read(&format!("{MIN}[screen]\nbloom = 7\nnoise = -0.5\n")).unwrap();
+    assert_eq!(l.spec.strengths.bloom, 1.0);
+    assert_eq!(l.spec.strengths.noise, 0.0);
+    assert_eq!(
+        l.notes[0].text,
+        "%STUDIO-W-THEMERANGE, ember.toml asks for bloom 7, the most is 1. Studio uses 1. The file is untouched."
+    );
+    assert_eq!(
+        l.notes[1].text,
+        "%STUDIO-W-THEMERANGE, ember.toml asks for noise -0.5, the least is 0. Studio uses 0. The file is untouched."
+    );
+}
+
+#[test]
+fn a_rate_takes_the_nearest() {
+    let l = read(&format!("{MIN}[screen]\nrate = 144\n")).unwrap();
+    assert_eq!(l.spec.rate, 60);
+    assert_eq!(
+        l.notes[0].text,
+        "%STUDIO-W-THEMERANGE, ember.toml asks for rate 144, Studio has 15, 30 and 60. Studio uses 60."
+    );
+    assert_eq!(
+        read(&format!("{MIN}[screen]\nrate = 20\n"))
+            .unwrap()
+            .spec
+            .rate,
+        15
+    );
+}
+
+#[test]
+fn a_wrong_kind_is_not_a_theme() {
+    for (text, why) in [
+        ("[screen]\nbloom = \"x\"", "bloom is not a number"),
+        ("[screen]\nbloom = nan", "bloom is not a number"),
+        ("[screen]\nvignette = inf", "vignette is not a number"),
+        ("[screen]\nnoise = -inf", "noise is not a number"),
+        ("[screen]\nmoves = 1", "moves is not true or false"),
+        ("[screen]\nrate = 30.5", "rate is not a whole number"),
+        ("name = 3", "name is not text"),
+        ("screen = 3", "screen is not a table"),
+    ] {
+        let e = read(&format!("{MIN}{text}\n")).unwrap_err();
+        assert_eq!(
+            e.text,
+            format!(
+                "%STUDIO-E-NOTTHEME, ember.toml is not a theme: {why}. The file is not listed and is untouched."
+            )
+        );
+    }
+    for base in [
+        "\"ff7a1a\"",
+        "\"#ff7a1\"",
+        "\"#gg7a1a\"",
+        "3",
+        "\"#ff7a1a0\"",
+    ] {
+        let e = read(&format!("version = 1\nbase = {base}\n")).unwrap_err();
+        assert!(
+            e.text
+                .ends_with("base is not a colour. The file is not listed and is untouched."),
+            "{base}: {}",
+            e.text
+        );
+    }
+}
+
+#[test]
+fn a_newer_version_is_not_listed() {
+    assert_eq!(
+        read("version = 2\nbase = \"#ffffff\"").unwrap_err().text,
+        "%STUDIO-E-THEMENEW, ember.toml uses theme format 2, this Studio knows 1. The theme is not listed. Update Studio to use it."
+    );
+}
+
+#[test]
+fn not_toml_names_a_line_and_quotes_nothing() {
+    let e = read_theme("notes.toml", b"version = 1\n\nsecret = \n").unwrap_err();
+    assert_eq!(
+        e.text,
+        "%STUDIO-E-NOTTHEME, notes.toml is not a theme: line 3, a value was expected. The file is not listed and is untouched."
+    );
+    let e = read_theme("notes.toml", b"version = 1\nbase = \"\xff\"\n").unwrap_err();
+    assert!(e.text.contains("line 2, not UTF-8"), "{}", e.text);
+    let e = read("version = 1\nversion = 1\nhidden = 1\n").unwrap_err();
+    assert!(e.text.contains("line 2, a key appears twice"), "{}", e.text);
+    assert!(!e.text.contains("hidden") && !e.text.contains("`"));
+}
+
+#[test]
+fn a_file_of_17_kib_is_not_read() {
+    let mut text = MIN.to_owned();
+    text.push_str(&"#".repeat(17 * 1024));
+    let e = read(&text).unwrap_err();
+    assert!(e.text.contains("is over 16 KiB"), "{}", e.text);
+}
+
+#[test]
+fn a_name_is_cleaned() {
+    for (raw, want) in [
+        ("Ev\u{202e}il", "Evil"),
+        ("Two\nlines", "Twolines"),
+        ("a\u{200d}b", "ab"),
+        ("  Dusk   at  sea ", "Dusk at sea"),
+        ("Été 2", "Été 2"),
+    ] {
+        let l = read(&format!("{MIN}name = \"{}\"\n", esc(raw))).unwrap();
+        assert_eq!(l.spec.name, want, "{raw:?}");
+    }
+    let long = "x".repeat(10_000);
+    let l = read(&format!("{MIN}name = \"{long}\"\n")).unwrap();
+    assert_eq!(l.spec.name.chars().count(), NAME_MAX);
+    assert_eq!(
+        l.notes[0].text,
+        format!(
+            "%STUDIO-W-THEMENAME, ember.toml: the name was cleaned to {}. The file is untouched.",
+            "x".repeat(32)
+        )
+    );
+    // A name of a theme that ships cannot pass for it.
+    let l = read(&format!("{MIN}name = \"green\"\n")).unwrap();
+    assert_eq!(l.spec.name, "green, ember.toml");
+    assert!(!l.spec.is_shipped());
+    // An empty name takes the file's name, then "Theme".
+    let l = read_theme(
+        "\u{202e}.toml",
+        format!("{MIN}name = \"\u{1F600}\"\n").as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(l.spec.name, "Theme");
+}
+
+#[test]
+fn a_file_name_is_shown_safely() {
+    assert_eq!(shown("ev\u{202e}l\n.toml"), "ev?l?.toml");
+    assert_eq!(shown(&"a".repeat(100)).len(), FILE_SHOWN_MAX);
+}
+
+#[test]
+fn file_names_from_names() {
+    let none = |_: &str| false;
+    assert_eq!(file_name("Ember", none), "ember.toml");
+    assert_eq!(file_name("CON", none), "theme-con.toml");
+    assert_eq!(file_name("Été 2", none), "t-2.toml");
+    assert_eq!(file_name("", none), "theme.toml");
+    assert_eq!(file_name("ééé", none), "theme.toml");
+    assert_eq!(file_name(&"a".repeat(50), none).len(), 32 + 5);
+    let taken = |f: &str| ["ember.toml", "ember-2.toml"].contains(&f);
+    assert_eq!(file_name("Ember", taken), "ember-3.toml");
+}
+
+#[test]
+fn shipped_numbers_round_trip() {
+    for spec in &SHIPPED {
+        let l = read(&theme_text(spec)).unwrap();
+        // A file cannot pass for a theme that ships.
+        assert_eq!(l.spec.name, format!("{}, ember.toml", spec.name));
+        assert_eq!(l.spec.base, spec.base);
+        assert_eq!(l.spec.strengths, spec.strengths, "{}", spec.name);
+        assert_eq!((l.spec.moves, l.spec.rate), (spec.moves, spec.rate));
+        assert!(l.notes.is_empty());
+    }
+}
+
+#[test]
+fn write_then_read_a_folder() {
+    let d = TempDir::new("write");
+    let themes = d.0.join(THEMES);
+    let mut s = SHIPPED[1].clone();
+    s.name = Cow::Borrowed("Ember");
+    write_theme(&themes, "ember.toml", &s).unwrap();
+    let f = read_folder(&themes);
+    assert_eq!(f.themes, vec![("ember.toml".to_owned(), s)]);
+    // No temporary file is left behind.
+    assert_eq!(std::fs::read_dir(&themes).unwrap().count(), 1);
+}
+
+#[test]
+fn two_files_one_name() {
+    let d = TempDir::new("twins");
+    for f in ["dusk.toml", "dusk-2.toml"] {
+        std::fs::write(d.0.join(f), format!("{MIN}name = \"Dusk\"\n")).unwrap();
+    }
+    std::fs::write(d.0.join("zed.toml"), format!("{MIN}name = \"dusk\"\n")).unwrap();
+    let f = read_folder(&d.0);
+    let names: Vec<&str> = f.themes.iter().map(|(_, t)| t.name.as_ref()).collect();
+    assert_eq!(
+        names,
+        ["Dusk, dusk-2.toml", "Dusk, dusk.toml", "dusk, zed.toml"]
+    );
+    assert_eq!(
+        f.notes[0].text,
+        "%STUDIO-W-THEMETWICE, 3 theme files are named Dusk: dusk-2.toml, dusk.toml, zed.toml. Both are listed. Rename one."
+    );
+}
+
+#[test]
+fn sixty_five_files() {
+    let d = TempDir::new("many");
+    for i in 0..65 {
+        std::fs::write(d.0.join(format!("t{i:02}.toml")), MIN).unwrap();
+    }
+    std::fs::write(d.0.join("readme.txt"), "x").unwrap();
+    std::fs::create_dir(d.0.join("sub.toml")).unwrap();
+    let f = read_folder(&d.0);
+    assert_eq!(f.themes.len(), MAX_FILES);
+    assert_eq!(f.themes[63].0, "t63.toml");
+    assert_eq!(
+        f.notes[0].text,
+        "%STUDIO-W-THEMEMANY, the themes folder holds 65 files, Studio reads the first 64"
+    );
+}
+
+#[test]
+fn a_refused_file_is_kept_with_its_reason() {
+    let d = TempDir::new("refused");
+    std::fs::write(d.0.join("bad.toml"), "version = 1").unwrap();
+    let f = read_folder(&d.0);
+    assert!(f.themes.is_empty());
+    assert_eq!(f.refused[0].0, "bad.toml");
+    assert!(f.refused[0].1.text.contains("no base colour"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_is_not_read_and_not_written_through() {
+    let d = TempDir::new("link");
+    let outside = d.0.join("outside.txt");
+    std::fs::write(&outside, "keep").unwrap();
+    let themes = d.0.join(THEMES);
+    std::fs::create_dir(&themes).unwrap();
+    std::os::unix::fs::symlink(&outside, themes.join("ember.toml")).unwrap();
+    assert!(read_folder(&themes).themes.is_empty());
+    write_theme(&themes, "ember.toml", &SHIPPED[0]).unwrap();
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+    assert!(
+        !std::fs::symlink_metadata(themes.join("ember.toml"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn settings_round_trip() {
+    let d = TempDir::new("settings");
+    let mut s = Settings::default();
+    let mut spec = SHIPPED[0].clone();
+    spec.strengths.bloom = 0.6;
+    let u = Unsaved {
+        from: "ember.toml".into(),
+        spec: Spec {
+            name: Cow::Owned(String::new()),
+            ..spec
+        },
+    };
+    s.set("ember.toml", true, true, Some(&u));
+    s.write(&d.0).unwrap();
+    let back = Settings::read(&d.0).unwrap();
+    assert_eq!(back.theme(), Some("ember.toml"));
+    assert!(back.high_legibility() && back.compact_header());
+    assert_eq!(back.unsaved(), Some(u));
+    let mut s = back;
+    s.set("Green", false, false, None);
+    assert!(s.unsaved().is_none());
+}
+
+#[test]
+fn an_unknown_key_survives() {
+    let d = TempDir::new("unknown");
+    std::fs::write(
+        d.0.join(SETTINGS),
+        "version = 1\ntheme = \"Amber\"\ntext_size = 115\n[later]\npanes = [1, 2]\n",
+    )
+    .unwrap();
+    let mut s = Settings::read(&d.0).unwrap();
+    assert_eq!(s.theme(), Some("Amber"));
+    s.set("Blue", false, false, None);
+    s.write(&d.0).unwrap();
+    let text = std::fs::read_to_string(d.0.join(SETTINGS)).unwrap();
+    let t: Table = text.parse().unwrap();
+    assert_eq!(t.get("text_size"), Some(&Value::Integer(115)));
+    assert_eq!(
+        t.get("later").and_then(|l| l.get("panes")),
+        Some(&Value::Array(vec![Value::Integer(1), Value::Integer(2)]))
+    );
+    assert_eq!(t.get("theme"), Some(&Value::String("Blue".into())));
+}
+
+#[test]
+fn a_broken_settings_file_is_a_note() {
+    let d = TempDir::new("broken");
+    std::fs::write(d.0.join(SETTINGS), "version = 1\ntheme = \n").unwrap();
+    assert_eq!(
+        Settings::read(&d.0).unwrap_err().text,
+        "%STUDIO-W-NOSETTINGS, could not read settings.toml: line 2, a value was expected. Studio starts with its defaults and writes no settings in this run. Fix the file or delete it."
+    );
+    assert_eq!(Settings::read(&d.0.join("none")), Ok(Settings::default()));
+}

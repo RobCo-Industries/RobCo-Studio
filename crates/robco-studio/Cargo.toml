@@ -23,6 +23,10 @@ eframe = { version = "=0.37.0", default-features = false, features = [
 # No defaults: on Linux only the portal backend, which loads libdbus at run
 # time and falls back to zenity, so the build needs no GTK and no D-Bus headers.
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
+# Reads theme files and settings.toml, as studio-core reads robco.toml, and
+# writes settings.toml back with the keys it does not know. The display
+# feature adds toml_writer, already in the tree. MIT OR Apache-2.0.
+toml = { version = "1.2.3", default-features = false, features = ["std", "parse", "display", "serde"] }
 # Rasterises the wordmark and the icons at start-up. Apache-2.0 OR MIT.
 resvg = { version = "0.45", default-features = false }
 
