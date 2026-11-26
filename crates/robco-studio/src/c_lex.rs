@@ -38,9 +38,14 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Class)> {
         Some(last) if last.1 == k && last.0.end == r.start => last.0.end = r.end,
         _ => out.push((r, k)),
     };
+    // The end of a line, past any backslash-newline splice.
     let to_eol = |mut i: usize| {
         while i < b.len() && b[i] != b'\n' {
-            i += 1;
+            i += if b[i] == b'\\' && b.get(i + 1) == Some(&b'\n') {
+                2
+            } else {
+                1
+            };
         }
         i
     };
@@ -55,16 +60,15 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Class)> {
             push(start..i, Class::Plain);
             continue;
         }
+        // A splice joins two lines into one: it keeps the line-start state.
+        if c == b'\\' && b.get(i + 1) == Some(&b'\n') {
+            i += 2;
+            push(start..i, Class::Plain);
+            continue;
+        }
         let first = std::mem::replace(&mut line_start, false);
         let class = if first && c == b'#' {
-            while i < b.len() && b[i] != b'\n' {
-                // A backslash at the end of a line carries on to the next.
-                i += if b[i] == b'\\' && b.get(i + 1) == Some(&b'\n') {
-                    2
-                } else {
-                    1
-                };
-            }
+            i = to_eol(i);
             Class::Preproc
         } else if c == b'/' && b.get(i + 1) == Some(&b'/') {
             i = to_eol(i);
@@ -75,6 +79,15 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Class)> {
                 i += 1;
             }
             i = (i + 2).min(b.len());
+            // A comment counts as white space: a `#` after it still starts a
+            // directive if only white space and comments came before on its
+            // line. A line end inside it, not spliced, starts a new line.
+            let body = &b[start..i];
+            line_start = first
+                || body
+                    .iter()
+                    .enumerate()
+                    .any(|(k, &x)| x == b'\n' && (k == 0 || body[k - 1] != b'\\'));
             Class::Comment
         } else if c == b'"' || c == b'\'' {
             i += 1;
@@ -151,5 +164,32 @@ mod tests {
             }
             assert_eq!(end, s.len());
         }
+    }
+
+    #[test]
+    fn directive_after_comments() {
+        let k = classes("/* note\n*/ #define X 1\n");
+        assert!(k.contains(&("#define X 1", Class::Preproc)), "{k:?}");
+        let k = classes("int a; /* x */ #define Y\n");
+        assert!(!k.iter().any(|&(_, c)| c == Class::Preproc), "{k:?}");
+        let k = classes("/* a */ /* b */ #if 1\n");
+        assert!(k.contains(&("#if 1", Class::Preproc)), "{k:?}");
+        // A spliced line end inside a comment does not start a line.
+        let k = classes("int a; /* x \\\n */ #define Z\n");
+        assert!(!k.iter().any(|&(_, c)| c == Class::Preproc), "{k:?}");
+    }
+
+    #[test]
+    fn splices() {
+        let k = classes("// one \\\nstill comment\nint");
+        assert!(
+            k.contains(&("// one \\\nstill comment", Class::Comment)),
+            "{k:?}"
+        );
+        assert!(k.contains(&("int", Class::Keyword)), "{k:?}");
+        let k = classes("#define A \\\n  1\nint");
+        assert!(k.contains(&("#define A \\\n  1", Class::Preproc)), "{k:?}");
+        let k = classes("\\\n#define B\n");
+        assert!(k.contains(&("#define B", Class::Preproc)), "{k:?}");
     }
 }
