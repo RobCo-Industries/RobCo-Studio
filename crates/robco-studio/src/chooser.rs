@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The folder chooser behind File, Open folder.
+//! The system dialogs behind File, Open folder and View, Theme, Add a
+//! theme file.
 //!
 //! The window asks a [`FolderChooser`] for a folder and polls it for the
 //! answer. [`SystemChooser`] shows the system's own dialog through `rfd`.
@@ -38,17 +39,31 @@ pub enum Choice {
     Failed(String),
 }
 
-/// Something that asks a person for a folder.
+/// What a chooser asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    /// A folder, for File, Open folder.
+    Folder,
+    /// A theme file, for Add a theme file.
+    ThemeFile,
+}
+
+/// Something that asks a person for a folder or a file.
 pub trait FolderChooser {
-    /// Show the chooser, starting in `start` when it is given. It may block
-    /// until the person answers.
-    fn start(&mut self, ctx: &eframe::egui::Context, start: Option<&Path>);
+    /// Show the chooser for `ask`, starting in `start` when it is given. It
+    /// may block until the person answers.
+    fn start(&mut self, ctx: &eframe::egui::Context, start: Option<&Path>, ask: Ask);
     /// The answer, once there is one. None while the chooser is open.
     fn poll(&mut self) -> Option<Choice>;
 }
 
 /// The title of the system dialog.
-const TITLE: &str = "Open folder";
+fn title(ask: Ask) -> &'static str {
+    match ask {
+        Ask::Folder => "Open folder",
+        Ask::ThemeFile => "Add a theme file",
+    }
+}
 
 /// The system's folder dialog.
 #[derive(Debug, Default)]
@@ -59,18 +74,23 @@ pub struct SystemChooser {
     rx: Option<std::sync::mpsc::Receiver<Choice>>,
 }
 
-fn dialog(start: Option<&Path>) -> rfd::FileDialog {
-    let d = rfd::FileDialog::new().set_title(TITLE);
-    match start {
+/// Show the system dialog for `ask` and wait for the answer.
+fn pick(start: Option<&Path>, ask: Ask) -> Option<PathBuf> {
+    let d = rfd::FileDialog::new().set_title(title(ask));
+    let d = match start {
         Some(s) => d.set_directory(s),
         None => d,
+    };
+    match ask {
+        Ask::Folder => d.pick_folder(),
+        Ask::ThemeFile => d.add_filter("Theme", &["toml"]).pick_file(),
     }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl FolderChooser for SystemChooser {
-    fn start(&mut self, _ctx: &eframe::egui::Context, start: Option<&Path>) {
-        self.answer = Some(match dialog(start).pick_folder() {
+    fn start(&mut self, _ctx: &eframe::egui::Context, start: Option<&Path>, ask: Ask) {
+        self.answer = Some(match pick(start, ask) {
             Some(p) => Choice::Chosen(p),
             None => Choice::Cancelled,
         });
@@ -87,17 +107,16 @@ const NO_DIALOG_WITHIN: std::time::Duration = std::time::Duration::from_millis(3
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl FolderChooser for SystemChooser {
-    fn start(&mut self, ctx: &eframe::egui::Context, start: Option<&Path>) {
+    fn start(&mut self, ctx: &eframe::egui::Context, start: Option<&Path>, ask: Ask) {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         let start = start.map(Path::to_path_buf);
         std::thread::spawn(move || {
             let t = std::time::Instant::now();
-            let c = match dialog(start.as_deref()).pick_folder() {
+            let c = match pick(start.as_deref(), ask) {
                 Some(p) => Choice::Chosen(p),
                 None if t.elapsed() < NO_DIALOG_WITHIN => Choice::Failed(
-                    "No folder dialog opened. Studio needs xdg-desktop-portal or zenity."
-                        .to_owned(),
+                    "No dialog opened. Studio needs xdg-desktop-portal or zenity.".to_owned(),
                 ),
                 None => Choice::Cancelled,
             };
@@ -119,7 +138,7 @@ impl FolderChooser for SystemChooser {
             Err(TryRecvError::Disconnected) => {
                 self.rx = None;
                 Some(Choice::Failed(
-                    "The folder dialog stopped without an answer.".to_owned(),
+                    "The dialog stopped without an answer.".to_owned(),
                 ))
             }
         }

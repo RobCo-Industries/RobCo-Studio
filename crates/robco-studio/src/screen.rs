@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The rules of the screen levels, with no graphics: which level the window
-//! starts in, which levels a person may pick, when the window asks for a
-//! frame, how persistence fades, and the curve that the pointer is mapped
-//! back through. [`crate::pass`] draws; this module decides.
+//! The rules of the screen, with no graphics: what a theme draws on this
+//! machine and what holds it back, when the window asks for a frame, how
+//! persistence fades, and the curve that the pointer is mapped back
+//! through. [`crate::pass`] draws; this module decides.
 //!
 //! # When the screen asks for frames
 //!
-//! Each strength alone above zero, the other nine at zero, at a pass level:
+//! Each strength alone above zero, the other nine at zero, through the pass:
 //!
 //! | Strength | Frames |
 //! | --- | --- |
 //! | bloom | never |
 //! | vignette | never |
-//! | scanlines | always at Live and Arcade, where they drift; never at Still |
+//! | scanlines | always at Live, where they drift; never at Still |
 //! | curvature | never |
 //! | persistence | after a change of the picture, until the afterglow fades |
 //! | noise | always |
@@ -30,7 +30,7 @@
 //! idle window still costs nothing. The afterglow runs without focus too:
 //! it ends by itself.
 
-use crate::theme::{Screen, Strengths, Theme, crt};
+use crate::theme::{Screen, Spec, Strengths, Theme, crt};
 use eframe::egui::{self, Pos2, Rect};
 use std::time::Duration;
 
@@ -55,63 +55,84 @@ impl Adapter {
     }
 }
 
-/// Said when the screen pass cannot run on this machine.
-pub const NO_ADAPTER: &str = "This machine has no graphics adapter for the screen pass.";
-/// Said when Studio starts in Still because of the system's setting.
-pub const REDUCED: &str = "The system asks for reduced motion.";
-/// Said by a level that high legibility does not allow.
-pub const LEGIBLE: &str = "High legibility keeps the screen Off.";
+/// What holds a theme back, so that it looks calmer than it was saved.
+/// The theme keeps its numbers in every case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// High legibility is on: the screen is flat.
+    Legible,
+    /// Reduce motion is on: nothing moves.
+    Still,
+    /// The machine has no graphics adapter: no screen pass.
+    NoAdapter,
+}
 
-/// The status line for a level: "Screen: Live.".
-pub fn news(level: Screen, custom: bool) -> String {
-    if custom {
-        "Screen: Custom.".to_owned()
-    } else {
-        format!("Screen: {}.", level.name())
+/// What a theme draws on this machine now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shown {
+    /// What the screen draws.
+    pub screen: Screen,
+    /// The strengths drawn.
+    pub strengths: Strengths,
+    /// What holds the theme back, in the order of [`Held`]. Each one is
+    /// listed when, alone, it would change what the theme draws.
+    pub held: Vec<Held>,
+}
+
+impl Shown {
+    /// The one thing the status line names when the theme starts: the one
+    /// that decides the most of what draws. High legibility, then the
+    /// adapter, then reduce motion.
+    pub fn first(&self) -> Option<Held> {
+        [Held::Legible, Held::NoAdapter, Held::Still]
+            .into_iter()
+            .find(|h| self.held.contains(h))
     }
 }
 
-/// The level at start, and what the status line says about it.
+/// What `spec` draws with this adapter, reduce motion and high legibility.
 ///
-/// A level asked for on the command line comes first, unless it needs the
-/// pass and there is no real adapter. With no real adapter Studio starts in
-/// Soft. When the system asks for reduced motion it starts in Still.
-/// Otherwise it starts in Live.
-pub fn start(
-    adapter: Adapter,
-    reduce_motion: Option<bool>,
-    asked: Option<Screen>,
-) -> (Screen, Option<String>) {
+/// High legibility draws Off with every strength at 0. A theme that does
+/// not move, or reduce motion, draws the still strengths. When every
+/// strength left is 0 the pass does not run: Off. With no real adapter the
+/// still overlays stand in: Soft. Otherwise the pass runs, Live when the
+/// theme moves and Still when it does not.
+pub fn shown(spec: &Spec, adapter: Adapter, reduce_motion: bool, high_legibility: bool) -> Shown {
+    let saved = spec.strengths;
+    let mut held = Vec::new();
+    if high_legibility {
+        held.push(Held::Legible);
+    }
+    let moves = spec.moves && (saved.still() != saved || saved.scanlines > 0.0);
+    if reduce_motion && moves {
+        held.push(Held::Still);
+    }
     let no_pass = adapter != Adapter::Hardware;
-    let soft = || {
-        let why = (adapter == Adapter::Software).then(|| format!("{NO_ADAPTER} Screen: Soft."));
-        (Screen::Soft, why)
-    };
-    match asked {
-        Some(l) if l.pass() && no_pass => soft(),
-        Some(l) => (l, None),
-        None if no_pass => soft(),
-        None if reduce_motion == Some(true) => {
-            (Screen::Still, Some(format!("{REDUCED} Screen: Still.")))
-        }
-        None => (Screen::Live, None),
+    if no_pass && saved != Strengths::NONE {
+        held.push(Held::NoAdapter);
     }
-}
-
-/// Why a person cannot pick `level` now, or None.
-pub fn unavailable(level: Screen, adapter: Adapter, high_legibility: bool) -> Option<&'static str> {
-    if high_legibility && level != Screen::Off {
-        Some(LEGIBLE)
-    } else if level.pass() && adapter != Adapter::Hardware {
-        Some(NO_ADAPTER)
+    let still = !spec.moves || reduce_motion;
+    let strengths = if high_legibility {
+        Strengths::NONE
+    } else if still {
+        saved.still()
     } else {
-        None
+        saved
+    };
+    let screen = if strengths == Strengths::NONE {
+        Screen::Off
+    } else if no_pass {
+        Screen::Soft
+    } else if still {
+        Screen::Still
+    } else {
+        Screen::Live
+    };
+    Shown {
+        screen,
+        strengths,
+        held,
     }
-}
-
-/// The strengths differ from the level's own: the level reads "Custom".
-pub fn custom(level: Screen, s: &Strengths) -> bool {
-    level.pass() && *s != level.strengths()
 }
 
 /// The pass changes from frame to frame at these strengths.
@@ -277,17 +298,13 @@ pub fn system_reduce_motion() -> Option<bool> {
     }
 }
 
-/// The screen's settings in the running window, beyond the level that the
-/// theme holds. They last for the session: there is no settings file yet.
+/// The screen's side of the running window: the facts of the machine and
+/// the link to the pass. They last for the session.
 pub struct Settings {
-    /// The strengths drawn at a pass level. Moved by the Adjust dialog.
-    pub strengths: Strengths,
-    /// Frames a second while the pass moves: one of [`crt::RATES`].
-    pub rate: u32,
     /// The adapter the window draws with.
     pub adapter: Adapter,
-    /// The Adjust dialog is open.
-    pub adjusting: bool,
+    /// Reduce motion is on, from the system.
+    pub reduce_motion: bool,
     clock: Clock,
     link: crate::pass::Shared,
 }
@@ -295,10 +312,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            strengths: Screen::Soft.strengths(),
-            rate: crt::RATE,
             adapter: Adapter::Unknown,
-            adjusting: false,
+            reduce_motion: false,
             clock: Clock::default(),
             link: crate::pass::Shared::default(),
         }
@@ -331,12 +346,13 @@ impl Settings {
             .inert = hold;
     }
 
-    /// What draws a frame from the theme and these settings as they are
-    /// now. Take it once, at the frame's start.
-    pub fn drawn(&self, theme: Theme) -> Drawn {
+    /// What draws a frame from the theme as it is now, at `rate` frames a
+    /// second. Take it once, at the frame's start.
+    pub fn drawn(&self, theme: Theme, rate: u32) -> Drawn {
         Drawn {
             theme,
-            strengths: self.strengths,
+            strengths: theme.strengths,
+            rate,
         }
     }
 
@@ -367,17 +383,17 @@ impl Settings {
             };
         }
         let moving = animated(level, strengths);
-        if let Some(d) = next_frame(moving, self.clock.glowing(), focused, self.rate) {
+        if let Some(d) = next_frame(moving, self.clock.glowing(), focused, drawn.rate) {
             ctx.request_repaint_after(d);
         }
     }
 }
 
-/// What draws one frame: the theme, with its level and so its glow
-/// state, and the strengths. The window takes it once, at the frame's
-/// start, and hands it to everything that draws: the kit's halos, the
+/// What draws one frame: the theme, with its screen and so its glow
+/// state, the strengths and the frame rate. The window takes it once, at
+/// the frame's start, and hands it to everything that draws: the kit's halos, the
 /// drawings, the scanline quad, the pass, and through the link the
-/// pointer and accessibility mappings. A command that changes the level
+/// pointer and accessibility mappings. A command that changes the theme
 /// in the middle of a frame changes it for the next one.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Drawn {
@@ -385,10 +401,12 @@ pub struct Drawn {
     pub theme: Theme,
     /// The strengths the pass runs at, at a pass level.
     pub strengths: Strengths,
+    /// Frames a second while the pass moves.
+    pub rate: u32,
 }
 
 impl Drawn {
-    /// The level the frame is drawn at.
+    /// What the screen draws this frame.
     pub fn level(&self) -> Screen {
         self.theme.screen()
     }
@@ -565,17 +583,20 @@ mod tests {
             Some(Duration::from_secs(1) / 30)
         );
         assert_eq!(next_frame(false, false, true, 60), None);
+        // The still strengths move only where the scanlines drift.
         for level in Screen::ALL {
-            let a = animated(level, &level.strengths());
+            let a = animated(level, &crt::LIVE.still());
             assert_eq!(a, level.moving(), "{level:?}");
         }
+        assert!(animated(Screen::Live, &crt::LIVE));
+        assert!(animated(Screen::Live, &crt::ARCADE));
         // Still with noise raised moves, without drift.
         let s = Strengths {
             noise: 0.2,
-            ..Screen::Still.strengths()
+            ..crt::LIVE.still()
         };
         assert!(animated(Screen::Still, &s));
-        assert!(!animated(Screen::Soft, &Screen::Arcade.strengths()));
+        assert!(!animated(Screen::Soft, &crt::ARCADE));
     }
 
     #[test]
@@ -592,47 +613,125 @@ mod tests {
         assert!(persistence_keep(1.0, 0.0) < 1.0);
     }
 
+    use crate::theme::SHIPPED;
+
+    fn green() -> Spec {
+        SHIPPED[0].clone()
+    }
+
+    /// Nothing holds Green on a real adapter: Live, at its own numbers.
     #[test]
-    fn start_follows_the_adapter_and_the_system() {
-        use Adapter::*;
-        assert_eq!(start(Hardware, None, None), (Screen::Live, None));
-        assert_eq!(start(Hardware, Some(false), None), (Screen::Live, None));
-        let (l, why) = start(Hardware, Some(true), None);
-        assert_eq!(l, Screen::Still);
+    fn nothing_holds_a_theme_on_a_real_adapter() {
+        let s = shown(&green(), Adapter::Hardware, false, false);
+        assert_eq!(s.screen, Screen::Live);
+        assert_eq!(s.strengths, crt::LIVE);
+        assert!(s.held.is_empty());
+        assert_eq!(s.first(), None);
+        let a = shown(&SHIPPED[4], Adapter::Hardware, false, false);
+        assert_eq!((a.screen, a.strengths), (Screen::Live, crt::ARCADE));
+    }
+
+    /// High legibility alone: flat, every strength at 0.
+    #[test]
+    fn high_legibility_holds_it_flat() {
+        let s = shown(&green(), Adapter::Hardware, false, true);
+        assert_eq!(s.screen, Screen::Off);
+        assert_eq!(s.strengths, Strengths::NONE);
+        assert_eq!(s.held, [Held::Legible]);
+        assert_eq!(s.first(), Some(Held::Legible));
+    }
+
+    /// Reduce motion alone: the still strengths, through the pass.
+    #[test]
+    fn reduce_motion_holds_it_still() {
+        let s = shown(&green(), Adapter::Hardware, true, false);
+        assert_eq!(s.screen, Screen::Still);
+        assert_eq!(s.strengths, crt::LIVE.still());
+        assert_eq!(s.held, [Held::Still]);
+    }
+
+    /// No adapter alone: the still overlays, with the theme's strengths.
+    #[test]
+    fn no_adapter_holds_it_simpler() {
+        for adapter in [Adapter::Software, Adapter::Unknown] {
+            let s = shown(&green(), adapter, false, false);
+            assert_eq!(s.screen, Screen::Soft);
+            assert_eq!(s.strengths, crt::LIVE);
+            assert_eq!(s.held, [Held::NoAdapter]);
+        }
+    }
+
+    /// All three together: each is listed, high legibility decides.
+    #[test]
+    fn all_three_hold_it_together() {
+        let s = shown(&green(), Adapter::Software, true, true);
+        assert_eq!(s.screen, Screen::Off);
+        assert_eq!(s.strengths, Strengths::NONE);
+        assert_eq!(s.held, [Held::Legible, Held::Still, Held::NoAdapter]);
+        assert_eq!(s.first(), Some(Held::Legible));
+        // Reduce motion with no adapter: still overlays, nothing moves.
+        let s = shown(&green(), Adapter::Software, true, false);
+        assert_eq!(s.screen, Screen::Soft);
+        assert_eq!(s.strengths, crt::LIVE.still());
+        assert_eq!(s.held, [Held::Still, Held::NoAdapter]);
+        assert_eq!(s.first(), Some(Held::NoAdapter));
+        // High legibility with reduce motion on a real adapter.
+        let s = shown(&green(), Adapter::Hardware, true, true);
+        assert_eq!(s.held, [Held::Legible, Held::Still]);
+        assert_eq!(s.screen, Screen::Off);
+    }
+
+    /// Ten zeros give Off, and nothing holds them.
+    #[test]
+    fn ten_zeros_give_off() {
+        let flat = &SHIPPED[5];
+        for adapter in [Adapter::Hardware, Adapter::Software] {
+            for reduce in [false, true] {
+                let s = shown(flat, adapter, reduce, false);
+                assert_eq!(s.screen, Screen::Off, "{adapter:?} {reduce}");
+                assert!(s.held.is_empty(), "{adapter:?} {reduce}");
+            }
+        }
+        let moving_zeros = Spec {
+            moves: true,
+            ..flat.clone()
+        };
         assert_eq!(
-            why.as_deref(),
-            Some("The system asks for reduced motion. Screen: Still.")
+            shown(&moving_zeros, Adapter::Hardware, false, false).screen,
+            Screen::Off
         );
-        let (l, why) = start(Software, Some(true), None);
-        assert_eq!(l, Screen::Soft);
-        assert_eq!(
-            why.as_deref(),
-            Some("This machine has no graphics adapter for the screen pass. Screen: Soft.")
-        );
-        assert_eq!(start(Unknown, None, None), (Screen::Soft, None));
-        assert_eq!(
-            start(Hardware, Some(true), Some(Screen::Arcade)),
-            (Screen::Arcade, None)
-        );
-        assert_eq!(
-            start(Software, None, Some(Screen::Off)),
-            (Screen::Off, None)
-        );
-        assert_eq!(start(Software, None, Some(Screen::Live)).0, Screen::Soft);
+        // Only moving strengths, held still: nothing left, Off.
+        let only_noise = Spec {
+            strengths: Strengths {
+                noise: 0.4,
+                ..Strengths::NONE
+            },
+            ..green()
+        };
+        let s = shown(&only_noise, Adapter::Hardware, true, false);
+        assert_eq!(s.screen, Screen::Off);
+        assert_eq!(s.held, [Held::Still]);
+    }
+
+    /// A theme that does not move draws the still strengths, and keeps
+    /// its numbers. Reduce motion has nothing to hold.
+    #[test]
+    fn moves_off_gives_still_strengths() {
+        let spec = Spec {
+            moves: false,
+            ..green()
+        };
+        for reduce in [false, true] {
+            let s = shown(&spec, Adapter::Hardware, reduce, false);
+            assert_eq!(s.strengths, Strengths::still(&crt::LIVE));
+            assert_eq!(s.screen, Screen::Still);
+            assert!(s.held.is_empty(), "{reduce}");
+        }
+        assert_eq!(spec.strengths, crt::LIVE);
     }
 
     #[test]
-    fn levels_follow_the_adapter_and_high_legibility() {
-        for level in Screen::ALL {
-            let pass = level.pass();
-            assert_eq!(unavailable(level, Adapter::Hardware, false), None);
-            assert_eq!(unavailable(level, Adapter::Software, false).is_some(), pass);
-            assert_eq!(unavailable(level, Adapter::Unknown, false).is_some(), pass);
-            assert_eq!(
-                unavailable(level, Adapter::Hardware, true).is_some(),
-                level != Screen::Off
-            );
-        }
+    fn the_adapter_kind() {
         assert_eq!(
             Adapter::of(eframe::egui_wgpu::wgpu::DeviceType::Cpu),
             Adapter::Software
@@ -646,7 +745,7 @@ mod tests {
     #[test]
     fn the_clock_stops_without_focus() {
         let mut c = Clock::default();
-        let s = Screen::Live.strengths();
+        let s = crt::LIVE;
         c.frame(1.0, Screen::Live, &s, true, true);
         let f = c.frame(1.05, Screen::Live, &s, true, true);
         assert!((f.time - 0.05).abs() < 1e-6);
@@ -656,13 +755,13 @@ mod tests {
         assert_eq!(held.keep, 0.0);
         assert_eq!(held.strengths, s.still());
         assert_eq!(held.scan_offset, f.scan_offset);
-        let still = c.frame(10.0, Screen::Still, &Screen::Still.strengths(), true, true);
+        let still = c.frame(10.0, Screen::Still, &crt::LIVE.still(), true, true);
         assert_eq!(still.scan_offset, 0.0);
     }
 
     #[test]
     fn the_clock_goes_on_from_the_held_phase() {
-        let s = Screen::Live.strengths();
+        let s = crt::LIVE;
         for rate in [15.0, 30.0, 60.0] {
             let mut c = Clock::default();
             let mut t = 0.0;
@@ -683,17 +782,6 @@ mod tests {
             let late = c.frame(t + 20.0, Screen::Live, &s, true, true);
             assert!(late.time - back.time <= crt::MAX_STEP + 1e-4, "{rate}");
         }
-    }
-
-    #[test]
-    fn custom_reads_when_a_strength_moved() {
-        let mut s = Screen::Live.strengths();
-        assert!(!custom(Screen::Live, &s));
-        s.bloom = 0.9;
-        assert!(custom(Screen::Live, &s));
-        assert!(!custom(Screen::Soft, &s));
-        assert_eq!(news(Screen::Live, false), "Screen: Live.");
-        assert_eq!(news(Screen::Live, true), "Screen: Custom.");
     }
 
     /// Each strength alone, at Still and at Live: the table of the module's
@@ -724,7 +812,6 @@ mod tests {
             set(&mut s);
             assert_eq!(motion(Screen::Still, &s), still, "{name} at Still");
             assert_eq!(motion(Screen::Live, &s), live, "{name} at Live");
-            assert_eq!(motion(Screen::Arcade, &s), live, "{name} at Arcade");
             for level in [Screen::Off, Screen::Soft] {
                 assert_eq!(motion(level, &s), Never, "{name} at {level:?}");
             }
@@ -743,7 +830,7 @@ mod tests {
     fn persistence_alone_glows_after_a_change_then_stops() {
         let s = Strengths {
             persistence: 1.0,
-            ..Screen::Still.strengths()
+            ..crt::LIVE.still()
         };
         let mut c = Clock::default();
         let idle = c.frame(0.0, Screen::Still, &s, true, false);

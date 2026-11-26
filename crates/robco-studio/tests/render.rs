@@ -14,7 +14,6 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use robco_studio::Studio;
 use robco_studio::app::Page;
 use robco_studio::art::{Art, Icon, Mark};
-use robco_studio::theme::Scheme;
 use std::path::{Path, PathBuf};
 
 const MANIFEST: &str = "format = 1\n\n[project]\nname = \"PIPES\"\ntitle = \"Pipes\"\nversion = \"1.0.0\"\nkind = \"holotape\"\nsubtype = \"game\"\n\n[target]\nplatform = \"pipos\"\nabi = \"1.3\"\n\n[build]\nbackend = \"robco\"\nsources = [\"src/*.c\"]\n";
@@ -118,7 +117,7 @@ fn open_main(h: &mut Harness<'static, Studio>) {
     h.run_steps(2);
 }
 
-/// The Project page with the sample project in each scheme, the Card
+/// The Project page with the sample project in each colour theme, the Card
 /// page, the compact header, the find bar, and two empty pages.
 #[test]
 #[ignore = "writes PNG files; needs a wgpu adapter"]
@@ -149,13 +148,13 @@ fn render_the_window() {
     h.state_mut().page = Page::Card;
     shot(&mut h, &dir, "window-card.png").unwrap();
     h.state_mut().page = Page::Project;
-    h.state_mut().theme.scheme = Scheme::Amber;
+    h.state_mut().pick_theme(1);
     shot(&mut h, &dir, "window-amber.png").unwrap();
-    h.state_mut().theme.scheme = Scheme::Blue;
+    h.state_mut().pick_theme(2);
     shot(&mut h, &dir, "window-blue.png").unwrap();
-    h.state_mut().theme.scheme = Scheme::White;
+    h.state_mut().pick_theme(3);
     shot(&mut h, &dir, "window-white.png").unwrap();
-    h.state_mut().theme.scheme = Scheme::Green;
+    h.state_mut().pick_theme(0);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
     h.run_steps(2);
     h.state_mut().editor.find.query = "game".into();
@@ -255,10 +254,8 @@ fn paint_sheet(ui: &mut egui::Ui, arts: &mut Option<[Art; 2]>) {
     use robco_studio::theme::{Screen, Theme, effect, text};
     let ctx = ui.ctx().clone();
     let soft = Theme::default();
-    let off = Theme {
-        screen: Screen::Off,
-        ..soft
-    };
+    let mut off = soft;
+    off.screen = Screen::Off;
     let [on_art, off_art] =
         arts.get_or_insert_with(|| [Art::new(&ctx, &soft), Art::new(&ctx, &off)]);
     let p = soft.palette();
@@ -332,31 +329,88 @@ fn render_the_art_sheet() {
     img.save(dir.join("sheet-green.png")).unwrap();
 }
 
-/// A window with the screen at `level`, its pass plugged in before the
-/// first frame on the same device as the harness's renderer, as eframe
-/// would give it.
-fn screen_harness(
-    folder: Option<&Path>,
-    ppp: f32,
-    level: robco_studio::theme::Screen,
-) -> Harness<'static, Studio> {
-    screen_harness_gpu(folder, ppp, level).0
+/// How the screen shows in a picture, and how a test gets it: the shown
+/// form follows the theme, reduce motion and the adapter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Look {
+    /// Flat: ten zeros.
+    Off,
+    /// Green with no adapter known: the still overlays.
+    Soft,
+    /// Green with reduce motion on.
+    Still,
+    /// Green.
+    Live,
+    /// Arcade.
+    Arcade,
+}
+
+impl Look {
+    const ALL: [Look; 5] = [Look::Off, Look::Soft, Look::Still, Look::Live, Look::Arcade];
+
+    fn name(self) -> &'static str {
+        match self {
+            Look::Off => "off",
+            Look::Soft => "soft",
+            Look::Still => "still",
+            Look::Live => "live",
+            Look::Arcade => "arcade",
+        }
+    }
+
+    /// The shipped theme, reduce motion, and whether the adapter is
+    /// hidden from the rules.
+    fn how(self) -> (usize, bool, bool) {
+        match self {
+            Look::Off => (5, false, false),
+            Look::Soft => (0, false, true),
+            Look::Still => (0, true, false),
+            Look::Live => (0, false, false),
+            Look::Arcade => (4, false, false),
+        }
+    }
+
+    /// The form the screen draws in this look on a real adapter.
+    fn screen(self) -> robco_studio::theme::Screen {
+        use robco_studio::theme::Screen;
+        match self {
+            Look::Off => Screen::Off,
+            Look::Soft => Screen::Soft,
+            Look::Still => Screen::Still,
+            Look::Live | Look::Arcade => Screen::Live,
+        }
+    }
+}
+
+/// A window in `look`, its pass plugged in before the first frame on the
+/// same device as the harness's renderer, as eframe would give it.
+fn screen_harness(folder: Option<&Path>, ppp: f32, look: Look) -> Harness<'static, Studio> {
+    screen_harness_gpu(folder, ppp, look, None).0
 }
 
 /// [`screen_harness`] and the render state its pass was made on.
 fn screen_harness_gpu(
     folder: Option<&Path>,
     ppp: f32,
-    level: robco_studio::theme::Screen,
+    look: Look,
+    settings: Option<&Path>,
 ) -> (Harness<'static, Studio>, eframe::egui_wgpu::RenderState) {
     use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
     use robco_studio::screen::Adapter;
     let rs = create_render_state(default_wgpu_setup(), Default::default());
-    let adapter = Adapter::of(rs.adapter.get_info().device_type);
+    let (theme, reduce, hidden) = look.how();
+    let adapter = if hidden {
+        Adapter::Unknown
+    } else {
+        Adapter::of(rs.adapter.get_info().device_type)
+    };
     let mut studio = Studio::new(folder);
+    if let Some(dir) = settings {
+        studio = studio.with_settings(dir.to_path_buf());
+    }
     let link = studio.screen.link();
     let gpu = rs.clone();
-    studio.choose_screen(adapter, Some(false), Some(level));
+    studio.choose_screen(adapter, Some(reduce), Some(theme));
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 720.0))
         .with_pixels_per_point(ppp)
@@ -367,42 +421,59 @@ fn screen_harness_gpu(
     (h, rs)
 }
 
-/// The Project page at each screen level, three Live frames half a second
-/// apart, an open menu, an open dropdown, a tooltip and a dialog at Live,
-/// and Live at display scale 2, as `screen-*.png`, and View with high
-/// legibility on, as `menu-view-marks.png`. Into `STUDIO_SHOTS`.
+/// Make the theme in use run the pass at zero: persistence alone, so
+/// little that its afterglow ends at once, and the pass then draws every
+/// strength at 0.
+fn pass_at_zero(h: &mut Harness<'static, Studio>) {
+    use robco_studio::theme::Strengths;
+    h.state_mut().edit_theme(|t| {
+        t.moves = true;
+        t.strengths = Strengths {
+            persistence: 0.01,
+            ..Strengths::NONE
+        };
+    });
+}
+
+/// The Project page in each look, three Live frames half a second apart,
+/// an open menu, an open dropdown, a tooltip and a dialog at Live, and Live
+/// at display scale 2, as `screen-*.png`, and View with high legibility on,
+/// as `menu-view-marks.png`. Into `STUDIO_SHOTS`.
 #[test]
 #[ignore = "writes PNG files; needs a wgpu adapter"]
 fn render_the_screen_levels() {
     use egui_kittest::kittest::NodeT;
-    use robco_studio::theme::Screen;
     let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
     let d = sample("screen").unwrap();
-    for level in Screen::ALL {
-        let mut h = screen_harness(Some(&d), 1.0, level);
-        assert_eq!(h.state().theme.screen, level, "no hardware adapter here");
+    for look in Look::ALL {
+        let mut h = screen_harness(Some(&d), 1.0, look);
+        assert_eq!(
+            h.state().theme.screen,
+            look.screen(),
+            "no hardware adapter here"
+        );
         open_main(&mut h);
-        let name = format!("screen-{}.png", level.name().to_lowercase());
+        let name = format!("screen-{}.png", look.name());
         shot(&mut h, &dir, &name).unwrap();
     }
-    let mut h = screen_harness(Some(&d), 1.0, Screen::Live);
+    let mut h = screen_harness(Some(&d), 1.0, Look::Live);
     open_main(&mut h);
     for i in 0..3 {
         // Two steps of a quarter second each.
         shot(&mut h, &dir, &format!("screen-live-{i}.png")).unwrap();
         h.run_steps(2);
     }
-    // An open menu, with its Screen submenu.
+    // An open menu, with its Theme submenu.
     h.query_all_by_label("View")
         .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
         .unwrap()
         .click();
     h.run_steps(2);
     let sub = h
-        .query_all_by_label("Screen")
+        .query_all_by_label("Theme")
         .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
         .unwrap()
         .rect();
@@ -430,11 +501,12 @@ fn render_the_screen_levels() {
     h.hover_at(egui::pos2(640.0, 400.0));
     h.run_steps(2);
     // A dialog over the scrim.
-    h.state_mut().screen.adjusting = true;
+    h.state_mut().theme_editor.open = true;
     shot(&mut h, &dir, "screen-live-dialog.png").unwrap();
-    h.state_mut().screen.adjusting = false;
+    h.state_mut().theme_editor.open = false;
     h.run_steps(2);
-    // View with high legibility on: its mark, and Off's in Screen.
+    // View with high legibility on: its mark, Green's in Theme, and the
+    // note that high legibility holds the theme.
     h.state_mut().theme.high_legibility = true;
     h.run_steps(2);
     h.query_all_by_label("View")
@@ -443,7 +515,7 @@ fn render_the_screen_levels() {
         .click();
     h.run_steps(2);
     let sub = h
-        .query_all_by_label("Screen")
+        .query_all_by_label("Theme")
         .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
         .unwrap()
         .rect();
@@ -451,34 +523,38 @@ fn render_the_screen_levels() {
     h.run_steps(3);
     shot(&mut h, &dir, "menu-view-marks.png").unwrap();
     drop(h);
-    let mut h = screen_harness(Some(&d), 2.0, Screen::Live);
+    let mut h = screen_harness(Some(&d), 2.0, Look::Live);
     open_main(&mut h);
     shot(&mut h, &dir, "screen-live-2x.png").unwrap();
 }
 
-/// A level entered from another draws as the same level entered at start:
-/// Soft from Live keeps the drawings' halos and the scanline quad, Off from
-/// Soft drops them. Neither level runs the pass, so pixel for pixel.
+/// A theme entered from another draws as the same theme entered at start,
+/// with no adapter known: Green, at Soft, entered from Flat gains the
+/// drawings' halos and the scanline quad, and Flat, at Off, entered from
+/// Green drops them. Neither runs the pass, so pixel for pixel.
 #[test]
 #[ignore = "needs a wgpu adapter"]
-fn a_level_entered_later_draws_as_at_start() {
-    use robco_studio::menus::Command;
+fn a_theme_entered_later_draws_as_at_start() {
+    use robco_studio::menus::{Command, ThemeId};
     use robco_studio::theme::Screen;
     let d = sample("entered").unwrap();
     let dir = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from);
-    for (from, to) in [(Screen::Live, Screen::Soft), (Screen::Soft, Screen::Off)] {
-        let picture = |first: Screen| {
-            let mut h = screen_harness(Some(&d), 1.0, first);
-            assert_eq!(h.state().theme.screen, first, "no hardware adapter here");
+    let shown = |t: usize| if t == 0 { Screen::Soft } else { Screen::Off };
+    for (from, to) in [(5, 0), (0, 5)] {
+        let picture = |first: usize| {
+            let mut h = screen_harness(Some(&d), 1.0, Look::Soft);
+            if first != 0 {
+                h.state_mut().pick_theme(first);
+                h.run_steps(2);
+            }
+            assert_eq!(h.state().theme.screen, shown(first));
             open_main(&mut h);
             if first != to {
-                h.state_mut().pending.push(Command::Screen(to));
+                h.state_mut().pending.push(Command::Theme(ThemeId::At(to)));
             }
             h.run_steps(4);
-            assert_eq!(h.state().theme.screen, to);
+            assert_eq!(h.state().theme.screen, shown(to));
             h.state_mut().status.1 = "Ready.".to_owned();
-            // The click on main.c went through Live's curve; the same place
-            // for the pointer in both pictures.
             h.hover_at(egui::pos2(900.0, 500.0));
             h.run_steps(4);
             h.render().unwrap()
@@ -487,7 +563,12 @@ fn a_level_entered_later_draws_as_at_start() {
         let later = picture(from);
         if let Some(dir) = &dir {
             std::fs::create_dir_all(dir).unwrap();
-            let name = format!("screen-{}-from-{}.png", to.name(), from.name()).to_lowercase();
+            let name = format!(
+                "screen-{}-from-{}.png",
+                shown(to).name(),
+                shown(from).name()
+            )
+            .to_lowercase();
             later.save(dir.join(name)).unwrap();
         }
         assert_eq!(start.dimensions(), later.dimensions());
@@ -516,17 +597,18 @@ fn a_level_entered_later_draws_as_at_start() {
 #[test]
 #[ignore = "needs a wgpu adapter"]
 fn the_pass_at_zero_draws_what_egui_draws() {
-    use robco_studio::theme::{Screen, Strengths};
+    use robco_studio::theme::Screen;
     let d = sample("zero").unwrap();
-    let mut off = screen_harness(Some(&d), 1.0, Screen::Off);
+    let mut off = screen_harness(Some(&d), 1.0, Look::Off);
     open_main(&mut off);
     off.run_steps(4);
     let flat = off.render().unwrap();
-    let mut pass = screen_harness(Some(&d), 1.0, Screen::Still);
-    if pass.state().theme.screen != Screen::Still {
+    let mut pass = screen_harness(Some(&d), 1.0, Look::Live);
+    if pass.state().theme.screen != Screen::Live {
         return; // A software adapter: no pass to compare.
     }
-    pass.state_mut().screen.strengths = Strengths::NONE;
+    pass_at_zero(&mut pass);
+    pass.state_mut().status.1 = off.state().status.1.clone();
     open_main(&mut pass);
     pass.run_steps(4);
     let through = pass.render().unwrap();
@@ -538,9 +620,10 @@ fn the_pass_at_zero_draws_what_egui_draws() {
         differ += usize::from(d > 2);
     }
     assert!(differ < 50, "{differ} pixels differ, by up to {worst}");
-    // Live: the corner is outside the curve, black.
-    pass.state_mut().screen.strengths = Screen::Live.strengths();
-    pass.state_mut().theme.screen = Screen::Live;
+    // Live: the corner is outside the curve, black. A pick would ask
+    // first, so put the saved values back to end the change.
+    let saved = pass.state().themes()[0].clone();
+    pass.state_mut().edit_theme(|t| *t = saved);
     pass.run_steps(2);
     let live = pass.render().unwrap();
     for (x, y) in [(0, 0), (1279, 0), (0, 719), (1279, 719)] {
@@ -557,13 +640,12 @@ fn the_pass_at_zero_draws_what_egui_draws() {
 fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
     use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
     use robco_studio::screen::{Adapter, Settings};
-    use robco_studio::theme::{Screen, Strengths};
+    use robco_studio::theme::{Screen, Strengths, crt};
     let rs = create_render_state(default_wgpu_setup(), Default::default());
     if Adapter::of(rs.adapter.get_info().device_type) != Adapter::Hardware {
         return; // A software adapter: no pass.
     }
-    let mut settings = Settings::default();
-    settings.strengths = Strengths::NONE;
+    let settings = Settings::default();
     let link = settings.link();
     let gpu = rs.clone();
     let spot = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(64.0, 64.0));
@@ -584,11 +666,10 @@ fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
                     egui::Color32::WHITE,
                 );
                 drop(tex);
-                let theme = robco_studio::theme::Theme {
-                    screen: Screen::Still,
-                    ..Default::default()
-                };
-                let drawn = s.drawn(theme);
+                let mut theme = robco_studio::theme::Theme::default();
+                theme.screen = Screen::Still;
+                theme.strengths = Strengths::NONE;
+                let drawn = s.drawn(theme, crt::RATE);
                 s.end_frame(&ctx, &drawn);
             },
             settings,
@@ -606,13 +687,13 @@ fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
 #[test]
 #[ignore = "needs a wgpu adapter"]
 fn a_second_plug_keeps_the_pass() {
-    use robco_studio::theme::{Screen, Strengths};
+    use robco_studio::theme::Screen;
     let d = sample("replug").unwrap();
-    let (mut h, rs) = screen_harness_gpu(Some(&d), 1.0, Screen::Still);
-    if h.state().theme.screen != Screen::Still {
+    let (mut h, rs) = screen_harness_gpu(Some(&d), 1.0, Look::Live, None);
+    if h.state().theme.screen != Screen::Live {
         return; // A software adapter: no pass.
     }
-    h.state_mut().screen.strengths = Strengths::NONE;
+    pass_at_zero(&mut h);
     open_main(&mut h);
     h.run_steps(4);
     let before = h.render().unwrap();
@@ -732,34 +813,38 @@ fn the_afterglow_starts_empty_when_the_pass_resumes() {
     );
 }
 
-/// A frame is shaded by the level it was drawn for. A command that
-/// switches Soft to Live in the middle of a frame leaves that frame a
-/// plain Soft frame, with no pass over Soft's halos and scanline quad; the
-/// next frame is a plain Live frame. And the reverse. Live's moving
-/// strengths and persistence are zero, so the pictures compare exactly.
+/// A frame is shaded by the theme it was drawn for. A command that
+/// switches Flat, at Off, to a theme at Live in the middle of a frame
+/// leaves that frame a plain Off frame, with no pass; the next frame is a
+/// plain Live frame. And the reverse. The Live theme's moving strengths
+/// and persistence are zero, so the pictures compare exactly.
 #[test]
 #[ignore = "needs a wgpu adapter"]
-fn a_frame_is_shaded_by_the_level_that_drew_it() {
-    use robco_studio::menus::Command;
-    use robco_studio::theme::{Screen, Strengths};
-    let still_live = Strengths {
-        noise: 0.0,
-        flicker: 0.0,
-        band: 0.0,
-        scanlines: 0.0,
-        persistence: 0.0,
-        ..Screen::Live.strengths()
+fn a_frame_is_shaded_by_the_theme_that_drew_it() {
+    use robco_studio::menus::{Command, ThemeId};
+    use robco_studio::theme::{SHIPPED, Screen, Spec, Strengths, crt};
+    const FLAT: usize = 5;
+    // The theme at Live, added after the six.
+    const STILL_LIVE: usize = 6;
+    let still_live = Spec {
+        name: "Calm".into(),
+        strengths: Strengths {
+            scanlines: 0.0,
+            ..crt::LIVE.still()
+        },
+        ..SHIPPED[0].clone()
     };
-    let settle = |h: &mut Harness<'static, Studio>, level: Screen| {
-        if level == Screen::Live {
-            h.state_mut().screen.strengths = still_live;
-        }
+    let harness_at = |theme: usize| {
+        let mut h = screen_harness(None, 1.0, Look::Live);
+        h.state_mut().list_theme(still_live.clone(), "calm.toml");
+        h.state_mut().pick_theme(theme);
         h.run_steps(3);
+        h
     };
-    // A plain frame at `level`, with `status` in the footer.
-    let plain = |level: Screen, status: &(robco_studio::kit::Level, String)| {
-        let mut h = screen_harness(None, 1.0, level);
-        settle(&mut h, level);
+    let level = |t: usize| if t == FLAT { Screen::Off } else { Screen::Live };
+    // A plain frame in `theme`, with `status` in the footer.
+    let plain = |theme: usize, status: &(robco_studio::kit::Level, String)| {
+        let mut h = harness_at(theme);
         h.state_mut().status = status.clone();
         h.step();
         h.render().unwrap()
@@ -768,28 +853,369 @@ fn a_frame_is_shaded_by_the_level_that_drew_it() {
         assert_eq!(a.len(), b.len());
         a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count()
     };
-    for (from, to) in [(Screen::Soft, Screen::Live), (Screen::Live, Screen::Soft)] {
-        let mut h = screen_harness(None, 1.0, from);
-        if h.state().theme.screen != from {
+    for (from, to) in [(FLAT, STILL_LIVE), (STILL_LIVE, FLAT)] {
+        let mut h = harness_at(from);
+        if h.state().theme.screen != level(from) {
             return; // A software adapter: no pass.
         }
-        settle(&mut h, from);
-        h.state_mut().pending.push(Command::Screen(to));
+        h.state_mut().pending.push(Command::Theme(ThemeId::At(to)));
         h.step();
         let mid = h.render().unwrap();
         let status = h.state().status.clone();
-        assert_eq!(h.state().theme.screen, to);
+        assert_eq!(h.state().theme.screen, level(to));
         let n = differ(mid.as_raw(), plain(from, &status).as_raw());
         assert_eq!(
             n, 0,
             "{from:?} to {to:?}: the switch frame is not {from:?}'s"
         );
-        if to == Screen::Live {
-            h.state_mut().screen.strengths = still_live;
-        }
         h.step();
         let next = h.render().unwrap();
         let n = differ(next.as_raw(), plain(to, &status).as_raw());
         assert_eq!(n, 0, "{from:?} to {to:?}: the next frame is not {to:?}'s");
     }
+}
+
+/// The theme editor on a window at Live with a base colour the rule
+/// raises: the Colour tab, the Screen tab, and the Screen tab with reduce
+/// motion holding four sliders and the switch, as `theme-*.png`. Into
+/// `STUDIO_SHOTS`.
+#[test]
+#[ignore = "writes PNG files; needs a wgpu adapter"]
+fn render_the_theme_editor() {
+    use robco_studio::app::ThemeTab;
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = sample("theme-editor").unwrap();
+    for (look, tab, name) in [
+        (Look::Live, ThemeTab::Colour, "theme-colour.png"),
+        (Look::Live, ThemeTab::Screen, "theme-screen.png"),
+        (Look::Still, ThemeTab::Screen, "theme-screen-held.png"),
+    ] {
+        let mut h = screen_harness(Some(&d), 1.0, look);
+        open_main(&mut h);
+        h.state_mut()
+            .edit_theme(|t| t.base = robco_studio::palette::hex(0xff7a1a));
+        h.state_mut().theme_editor.open = true;
+        h.state_mut().theme_editor.tab = tab;
+        h.event(egui::Event::PointerGone);
+        shot(&mut h, &dir, name).unwrap();
+    }
+}
+
+/// The window behind the theme editor is its preview: with the editor
+/// open, every pixel outside the pane and its halo is the same as with
+/// the editor closed. Flat, so no pass moves a pixel.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn the_theme_editor_leaves_the_window_behind_as_it_was() {
+    use robco_studio::theme::size;
+    let d = sample("theme-behind").unwrap();
+    let mut h = screen_harness(Some(&d), 1.0, Look::Off);
+    h.state_mut().status.1 = "Ready.".to_owned();
+    h.event(egui::Event::PointerGone);
+    h.run_steps(4);
+    let closed = h.render().unwrap();
+    h.state_mut().theme_editor.open = true;
+    h.run_steps(4);
+    let open = h.render().unwrap();
+    let pane = h.state().theme_pane_rect().expand(size::STEP_16);
+    assert!(pane.width() > size::SIM_W);
+    let mut differ = 0;
+    for (x, y, a) in closed.enumerate_pixels() {
+        if pane.contains(egui::pos2(x as f32, y as f32)) {
+            continue;
+        }
+        if open.get_pixel(x, y) != a {
+            differ += 1;
+        }
+    }
+    assert_eq!(differ, 0, "pixels outside the pane changed");
+}
+
+/// Under Arcade's curvature a drag on a slider at the pane's right edge
+/// tracks the pointer: the pass maps the pointer and the bounds both.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_slider_at_the_pane_edge_tracks_under_arcade() {
+    use egui::accesskit::Role;
+    use robco_studio::app::ThemeTab;
+    let d = sample("theme-arcade").unwrap();
+    let mut h = screen_harness(Some(&d), 1.0, Look::Arcade);
+    h.state_mut().theme_editor.open = true;
+    h.state_mut().theme_editor.tab = ThemeTab::Screen;
+    h.run_steps(3);
+    let r = h
+        .query_all_by_label("Bloom")
+        .find(|n| n.accesskit_node().role() == Role::Slider)
+        .unwrap()
+        .rect();
+    let press = |h: &mut Harness<'static, Studio>, at: egui::Pos2, down: bool| {
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: down,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(1);
+    };
+    let bloom = |h: &Harness<'static, Studio>| h.state().spec().strengths.bloom;
+    press(&mut h, r.right_center() - egui::vec2(1.0, 0.0), true);
+    assert!(
+        bloom(&h) > 0.95,
+        "the press at the right end: {}",
+        bloom(&h)
+    );
+    h.event(egui::Event::PointerMoved(r.center()));
+    h.run_steps(1);
+    assert!((bloom(&h) - 0.5).abs() < 0.05, "the drag: {}", bloom(&h));
+    press(&mut h, r.left_center(), false);
+    assert!(
+        bloom(&h) < 0.05,
+        "the release at the left end: {}",
+        bloom(&h)
+    );
+}
+
+/// The states of a theme, into `STUDIO_SHOTS`: the editor with the Save
+/// as name row open, the Delete question, View, Theme with a person's
+/// theme and a changed one, and the window in each of the eight quick
+/// colours, as `theme-*.png` and `quick-*.png`. The settings folder is a
+/// temporary one.
+#[test]
+#[ignore = "writes PNG files; needs a wgpu adapter"]
+fn render_the_theme_states() {
+    use egui::accesskit::Role;
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = sample("theme-states").unwrap();
+    let settings = Sample(std::env::temp_dir().join(format!(
+        "robco-studio-shots-settings-{}",
+        std::process::id()
+    )));
+    let themes = settings.join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    std::fs::write(
+        themes.join("ember.toml"),
+        "version = 1\nname = \"Ember\"\nbase = \"#ff7a1a\"\n[screen]\nbloom = 0.45\nscanlines = 0.3\n",
+    )
+    .unwrap();
+    std::fs::write(themes.join("notes.toml"), "version = 1\n").unwrap();
+    let (mut h, _) = screen_harness_gpu(Some(&d), 1.0, Look::Live, Some(&settings));
+    open_main(&mut h);
+    h.state_mut().edit_theme(|t| t.strengths.noise = 0.2);
+    h.state_mut().theme_editor.open = true;
+    h.run_steps(2);
+    h.state_mut().start_naming(false);
+    h.event(egui::Event::PointerGone);
+    shot(&mut h, &dir, "theme-save-as.png").unwrap();
+    h.state_mut().theme_editor.naming = None;
+    let ember = h.state().theme_index("Ember").unwrap();
+    h.state_mut().pick_theme(ember);
+    h.state_mut().theme_editor.question = Some(robco_studio::app::ThemeQuestion::Delete);
+    shot(&mut h, &dir, "theme-delete.png").unwrap();
+    h.state_mut().theme_editor.question = None;
+    h.state_mut().theme_editor.open = false;
+    h.state_mut().edit_theme(|t| t.strengths.noise = 0.2);
+    h.run_steps(2);
+    h.query_all_by_label("View")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    let sub = h
+        .query_all_by_label("Theme")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)
+        .unwrap()
+        .rect();
+    h.hover_at(sub.center());
+    h.run_steps(3);
+    shot(&mut h, &dir, "theme-menu-own.png").unwrap();
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.event(egui::Event::PointerGone);
+    for (name, c) in robco_studio::palette::QUICK {
+        h.state_mut().edit_theme(|t| t.base = c);
+        let file = format!("quick-{}.png", name.to_lowercase());
+        shot(&mut h, &dir, &file).unwrap();
+    }
+}
+
+/// How bright the glow is just outside a `bright` glyph at Bloom 1 on
+/// Green, as a share of `bright`. It prints the number and checks nothing
+/// against a limit. It reads the Files pane's title, FILES. Glyph pixels
+/// are those within 8 of `bright` on every channel in a frame with the
+/// pass at zero. The halo is each pixel 1 to 3 pixels from a glyph pixel
+/// that is `pane` in that frame. The share is
+/// the halo pixel's largest channel at Bloom 1 over `bright`'s, and the
+/// same less the frame at zero.
+#[test]
+#[ignore = "needs a wgpu adapter; prints a measurement"]
+fn measure_the_bloom_halo() {
+    use robco_studio::theme::Strengths;
+    let d = sample("bloom").unwrap();
+    let mut h = screen_harness(Some(&d), 1.0, Look::Still);
+    h.event(egui::Event::PointerGone);
+    let bright = h.state().theme.palette().bright;
+    let frame = |h: &mut Harness<'static, Studio>, s: Strengths| {
+        h.state_mut().edit_theme(|t| {
+            t.moves = false;
+            t.strengths = s;
+        });
+        h.run_steps(6);
+        h.render().unwrap()
+    };
+    let zero = frame(
+        &mut h,
+        Strengths {
+            persistence: 0.01,
+            ..Strengths::NONE
+        },
+    );
+    let one = frame(
+        &mut h,
+        Strengths {
+            bloom: 1.0,
+            ..Strengths::NONE
+        },
+    );
+    let near = |a: &image::Rgba<u8>, c: egui::Color32, by: i32| {
+        (0..3).all(|k| (i32::from(a[k]) - i32::from([c.r(), c.g(), c.b()][k])).abs() <= by)
+    };
+    // The Files pane's title row: FILES, a caps label in `bright` on
+    // `pane`, away from any filled control.
+    let files = h
+        .state()
+        .place_rect(robco_studio::app::Place::Files)
+        .unwrap();
+    let ground = h.state().theme.palette().pane;
+    let (x0, y0) = (files.left() as u32, files.top() as u32);
+    let (w, ht) = (files.right() as u32, (files.top() + 26.0) as u32);
+    let top = |c: &[u8]| f32::from(c[0].max(c[1]).max(c[2]));
+    let b = f32::from(bright.r().max(bright.g()).max(bright.b()));
+    let (mut most, mut most_less, mut glyphs) = (0.0f32, 0.0f32, 0);
+    for y in y0..ht {
+        for x in x0..w {
+            if !near(zero.get_pixel(x, y), bright, 8) {
+                continue;
+            }
+            glyphs += 1;
+            for dy in -3i32..=3 {
+                for dx in -3i32..=3 {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= ht as i32 {
+                        continue;
+                    }
+                    let (nx, ny) = (nx as u32, ny as u32);
+                    if !near(zero.get_pixel(nx, ny), ground, 4) {
+                        continue;
+                    }
+                    let lit = top(&one.get_pixel(nx, ny).0);
+                    let base = top(&zero.get_pixel(nx, ny).0);
+                    most = most.max(lit / b);
+                    most_less = most_less.max((lit - base) / b);
+                }
+            }
+        }
+    }
+    assert!(glyphs > 0, "no bright glyph found");
+    eprintln!(
+        "bloom halo: {glyphs} glyph pixels, brightest halo pixel {most:.3} of bright, {most_less:.3} above the ground"
+    );
+}
+
+/// A settings folder with 64 themes, "Theme 00" on, removed when the test
+/// ends.
+fn many_themes(tag: &str) -> std::io::Result<Sample> {
+    let settings = Sample(
+        std::env::temp_dir().join(format!("robco-studio-shots-{tag}-{}", std::process::id())),
+    );
+    let themes = settings.join("themes");
+    let _ = std::fs::remove_dir_all(&*settings);
+    std::fs::create_dir_all(&themes)?;
+    for i in 0..64 {
+        std::fs::write(
+            themes.join(format!("t{i:02}.toml")),
+            format!("version = 1\nname = \"Theme {i:02}\"\nbase = \"#5aff7f\"\n"),
+        )?;
+    }
+    Ok(settings)
+}
+
+/// Open the theme editor's Theme list with a click where it is drawn.
+fn open_theme_list(h: &mut Harness<'static, Studio>) -> Option<egui::Rect> {
+    use egui::accesskit::Role;
+    h.state_mut().theme_editor.open = true;
+    h.run_steps(3);
+    let field = h
+        .query_all_by_role(Role::ComboBox)
+        .find(|n| {
+            n.accesskit_node()
+                .label()
+                .is_some_and(|l| l.starts_with("Theme:"))
+        })?
+        .rect();
+    click_at(h, field.center());
+    h.run_steps(4);
+    h.query_by_role(Role::ListBox).map(|n| n.rect())
+}
+
+fn click_at(h: &mut Harness<'static, Studio>, at: egui::Pos2) {
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run_steps(1);
+}
+
+/// The theme editor's Theme list open over 64 themes, into `STUDIO_SHOTS`
+/// as `theme-list-64.png`.
+#[test]
+#[ignore = "writes PNG files; needs a wgpu adapter"]
+fn render_the_long_theme_list() {
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = sample("theme-list").unwrap();
+    let settings = many_themes("theme-list-settings").unwrap();
+    let (mut h, _) = screen_harness_gpu(Some(&d), 1.0, Look::Live, Some(&settings));
+    open_main(&mut h);
+    open_theme_list(&mut h).unwrap();
+    h.key_press(egui::Key::End);
+    h.event(egui::Event::PointerGone);
+    shot(&mut h, &dir, "theme-list-64.png").unwrap();
+}
+
+/// Under Arcade's curvature, a click on the last row the open list shows
+/// picks that row: the pass maps the pointer back through the curve.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_click_on_the_last_shown_row_picks_it_under_arcade() {
+    use egui::accesskit::Role;
+    let d = sample("theme-list-arcade").unwrap();
+    let settings = many_themes("theme-list-arcade-settings").unwrap();
+    let (mut h, _) = screen_harness_gpu(Some(&d), 1.0, Look::Arcade, Some(&settings));
+    let list = open_theme_list(&mut h).unwrap();
+    let (label, r) = h
+        .query_all_by_role(Role::ListBoxOption)
+        .map(|n| (n.accesskit_node().label().unwrap_or_default(), n.rect()))
+        .filter(|(_, r)| list.contains_rect(*r))
+        .max_by(|a, b| a.1.bottom().total_cmp(&b.1.bottom()))
+        .unwrap();
+    assert!(label.starts_with("Theme "), "{label}");
+    click_at(&mut h, r.center());
+    h.run_steps(3);
+    assert_eq!(h.state().theme_name(), label);
 }
