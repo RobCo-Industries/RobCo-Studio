@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="at-t" style="color:#5aff7f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+  <title id="at-t">Atom mark</title>
+  <!-- Original atom mark for RobCo Studio: three orbits, a nucleus and three electrons. Ellipses and circles only.
+       One orbit stands upright and the other two lean 60 degrees to each side of it.
+       Groups: "halo" is the baked glow, a wider stroke under a blur. Drop it with effects off.
+       Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+  <rect class="asset-ground" width="64" height="64" fill="#091d10"/>
+  <defs>
+    <filter id="at-blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.4"/></filter>
+    <g id="at-orbits" fill="none">
+      <ellipse cx="32" cy="32" rx="9.5" ry="25"/>
+      <ellipse cx="32" cy="32" rx="9.5" ry="25" transform="rotate(60 32 32)"/>
+      <ellipse cx="32" cy="32" rx="9.5" ry="25" transform="rotate(-60 32 32)"/>
+    </g>
+    <g id="at-dots" stroke="none">
+      <circle cx="32" cy="32" r="4.6"/>
+      <circle cx="32" cy="7" r="2.7"/>
+      <circle cx="53.65" cy="44.5" r="2.7"/>
+      <circle cx="10.35" cy="44.5" r="2.7"/>
+    </g>
+  </defs>
+  <g class="halo" opacity=".6" filter="url(#at-blur)">
+    <use href="#at-orbits" stroke="currentColor" stroke-width="4.5"/>
+    <use href="#at-dots" fill="currentColor"/>
+  </g>
+  <g class="mark">
+    <use href="#at-orbits" stroke="currentColor" stroke-width="2.4"/>
+    <use href="#at-dots" fill="currentColor"/>
+  </g>
+</svg>

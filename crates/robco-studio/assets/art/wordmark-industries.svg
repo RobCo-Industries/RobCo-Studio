@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 419 60" width="419" height="60" role="img" aria-labelledby="wi-t" style="color:#5aff7f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+  <title id="wi-t">RobCo Industries</title>
+  <!-- Original lettering for the footer mark, in the same construction as wordmark.svg: centre lines of straight
+       runs and quarter arcs, flat ends, clipped bowl corners, a 13 degree lean. Lighter than the Studio wordmark, because the footer
+       draws it 22 px high. Groups: "halo" is the baked glow, "letters" is the word. This file has no "shade".
+       Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+  <rect class="asset-ground" width="419" height="60" fill="#091d10"/>
+  <defs>
+    <filter id="wi-blur" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="2.6"/></filter>
+    <clipPath id="wi-robco-band"><rect x="-30" y="-44" width="215.98" height="44"/></clipPath>
+    <g id="wi-robco" fill="none" stroke-linecap="butt" stroke-linejoin="miter" transform="translate(8 52) skewX(-13)"><g clip-path="url(#wi-robco-band)"><path transform="translate(0 0)" d="M4.2 -44V0"/><path transform="translate(0 0)" d="M4.2 -39.8H18.2L24.2 -33.8V-26.36A7.24 7.24 0 0 1 16.96 -19.12H4.2"/><path transform="translate(0 0)" d="M12.6 -20.12L25.88 8.4"/><path transform="translate(35.08 0)" d="M9.2 -27.3H17.2L23.2 -21.3V-9.2A5 5 0 0 1 18.2 -4.2H9.2A5 5 0 0 1 4.2 -9.2V-22.3A5 5 0 0 1 9.2 -27.3Z"/><path transform="translate(67.48 0)" d="M4.2 -44V0"/><path transform="translate(67.48 0)" d="M9.2 -27.3H17.2L23.2 -21.3V-9.2A5 5 0 0 1 18.2 -4.2H9.2A5 5 0 0 1 4.2 -9.2V-22.3A5 5 0 0 1 9.2 -27.3Z"/><path transform="translate(99.88 0)" d="M23.7 -39.8H16.08A11.88 11.88 0 0 0 4.2 -27.92V-16.08A11.88 11.88 0 0 0 16.08 -4.2H23.7"/><path transform="translate(128.58 0)" d="M9.2 -27.3H17.2L23.2 -21.3V-9.2A5 5 0 0 1 18.2 -4.2H9.2A5 5 0 0 1 4.2 -9.2V-22.3A5 5 0 0 1 9.2 -27.3Z"/></g></g>
+    <clipPath id="wi-industries-band"><rect x="-30" y="-44" width="278.24" height="44"/></clipPath>
+    <g id="wi-industries" fill="none" stroke-linecap="butt" stroke-linejoin="miter" transform="translate(179.98 52) skewX(-13)"><g clip-path="url(#wi-industries-band)"><path transform="translate(0 0)" d="M3.2 -44V0"/><path transform="translate(12 0)" d="M3.2 -31.5V0"/><path transform="translate(12 0)" d="M3.2 -23.3A5 5 0 0 1 8.2 -28.3H13.7A5 5 0 0 1 18.7 -23.3V0"/><path transform="translate(39.5 0)" d="M8.2 -28.3H14.2L19.2 -23.3V-8.2A5 5 0 0 1 14.2 -3.2H8.2A5 5 0 0 1 3.2 -8.2V-23.3A5 5 0 0 1 8.2 -28.3Z"/><path transform="translate(39.5 0)" d="M19.2 -44V0"/><path transform="translate(67.5 0)" d="M3.2 -31.5V-8.2A5 5 0 0 0 8.2 -3.2H13.7A5 5 0 0 0 18.7 -8.2"/><path transform="translate(67.5 0)" d="M18.7 -31.5V0"/><path transform="translate(95 0)" d="M15.92 -28.3H9.48A6.28 6.28 0 0 0 9.48 -15.75H10.92A6.28 6.28 0 0 1 10.92 -3.2H1.28"/><path transform="translate(121 0)" d="M5.44 -39.6V-7.7A4.5 4.5 0 0 0 9.94 -3.2H12.94"/><path transform="translate(121 0)" d="M0 -28.3H12.94"/><path transform="translate(139.54 0)" d="M3.2 -31.5V0"/><path transform="translate(139.54 0)" d="M3.2 -23.3A5 5 0 0 1 8.2 -28.3H13.2"/><path transform="translate(158.34 0)" d="M3.2 -31.5V0"/><path transform="translate(158.34 0)" d="M3.2 -44V-38.11"/><path transform="translate(170.34 0)" d="M3.2 -15.25H18.7V-23.3A5 5 0 0 0 13.7 -28.3H8.2A5 5 0 0 0 3.2 -23.3V-8.2A5 5 0 0 0 8.2 -3.2H17.74"/><path transform="translate(197.84 0)" d="M15.92 -28.3H9.48A6.28 6.28 0 0 0 9.48 -15.75H10.92A6.28 6.28 0 0 1 10.92 -3.2H1.28"/></g></g>
+  </defs>
+  <g class="halo" stroke="currentColor" opacity=".4" filter="url(#wi-blur)"><use href="#wi-robco" stroke-width="12.4"/><use href="#wi-industries" stroke-width="10.4"/></g>
+  <g class="letters" stroke="currentColor"><use href="#wi-robco" stroke-width="8.4"/><use href="#wi-industries" stroke-width="6.4"/></g>
+</svg>

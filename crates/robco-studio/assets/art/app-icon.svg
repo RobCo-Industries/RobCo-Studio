@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="ai-t" style="color:#5aff7f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+  <title id="ai-t">RobCo Studio application icon</title>
+  <!-- The application icon: the R of the Studio wordmark inside the orbits of the atom mark, on a dark tile.
+       Built from the same lines and arcs as wordmark.svg and atom.svg. No font is used.
+       The tile is 824 by 824 with a 186 radius, centred on a 1024 canvas, which is the grid macOS expects.
+       Groups: "icon-ground" is the tile. "halo" is the baked glow. "orbits" and "letter" are the mark.
+       "small" is the mark for 16, 24 and 32 px: the letter alone, larger, on the same tile. Show "small" and hide
+       "orbits", "letter" and "halo" when you export those sizes.
+       Export as PNG: 16, 32, 64, 128, 256, 512 and 1024 for the macOS icon set, 16, 24, 32, 48, 64 and 256 for
+       the Windows icon file, 16, 24, 32, 48, 64, 128, 256 and 512 for the Linux icon theme, which also takes this file.
+       The colours are the green scheme's and do not follow the window's scheme: ground #091d10, lines #5aff7f.
+       Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+  <defs>
+    <filter id="ai-blur" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="16"/></filter>
+    <radialGradient id="ai-lit" cx=".5" cy=".46" r=".62">
+      <stop offset="0" stop-color="#164524"/><stop offset=".6" stop-color="#091d10"/><stop offset="1" stop-color="#05140a"/>
+    </radialGradient>
+    <clipPath id="ai-band"><rect x="-30" y="-45" width="120" height="45"/></clipPath>
+    <clipPath id="ai-tile"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
+    <g id="ai-r" fill="none" stroke-linecap="butt" stroke-linejoin="miter" transform="translate(316.45 728) scale(9.6) skewX(-13)"><g clip-path="url(#ai-band)"><path d="M5.3 -45V0"/><path d="M5.3 -39.7H19.3L26.3 -32.7V-25.95A7.4 7.4 0 0 1 18.9 -18.55H5.3"/><path d="M14.12 -19.55L28.42 10.6"/></g></g>
+    <g id="ai-r-small" fill="none" stroke-linecap="butt" stroke-linejoin="miter" transform="translate(236.57 815.75) scale(13.5) skewX(-13)"><g clip-path="url(#ai-band)"><path d="M5.3 -45V0"/><path d="M5.3 -39.7H19.3L26.3 -32.7V-25.95A7.4 7.4 0 0 1 18.9 -18.55H5.3"/><path d="M14.12 -19.55L28.42 10.6"/></g></g>
+    <g id="ai-orbits" fill="none">
+      <ellipse cx="512" cy="512" rx="118" ry="340"/>
+      <ellipse cx="512" cy="512" rx="118" ry="340" transform="rotate(60 512 512)"/>
+      <ellipse cx="512" cy="512" rx="118" ry="340" transform="rotate(-60 512 512)"/>
+    </g>
+    <g id="ai-dots" stroke="none">
+      <circle cx="512" cy="172" r="30"/><circle cx="806.4" cy="682" r="30"/><circle cx="217.6" cy="682" r="30"/>
+    </g>
+  </defs>
+  <g class="icon-ground">
+    <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#ai-lit)"/>
+    <rect x="118" y="118" width="788" height="788" rx="170" fill="none" stroke="currentColor" stroke-width="10" opacity=".9"/>
+    <rect x="140" y="140" width="744" height="744" rx="150" fill="none" stroke="currentColor" stroke-width="3" opacity=".35"/>
+  </g>
+  <g clip-path="url(#ai-tile)">
+    <g class="halo" opacity=".55" filter="url(#ai-blur)">
+      <use href="#ai-orbits" stroke="currentColor" stroke-width="40"/>
+      <use href="#ai-r" stroke="currentColor" stroke-width="12.6"/>
+    </g>
+    <g class="orbits">
+      <use href="#ai-orbits" stroke="currentColor" stroke-width="22"/>
+      <use href="#ai-dots" fill="currentColor"/>
+    </g>
+    <g class="letter">
+      <use href="#ai-r" stroke="#091d10" stroke-width="15.6"/>
+      <use href="#ai-r" stroke="currentColor" stroke-width="10.6"/>
+    </g>
+    <g class="small" display="none">
+      <use href="#ai-r-small" stroke="currentColor" stroke-width="11.6"/>
+    </g>
+  </g>
+</svg>

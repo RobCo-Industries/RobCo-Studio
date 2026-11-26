@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 60" width="420" height="60" role="img" aria-labelledby="sk-t" style="color:#5aff7f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+  <title id="sk-t">Works skyline</title>
+  <!-- Original line drawing of a works by the water, for the right end of the header: a guyed mast, a hall with a
+       saw-tooth roof, a water tower, an office block with a blank sign frame, a dish, two stacks, a dome and a
+       gantry crane. Strokes only, drawn for Studio. It copies no building and no skyline from a game or a picture.
+       The ground line sits on y 59 so the header's rule can run on from it.
+       Layers: "far" at 28 percent, "mid" at 55 percent, "near" at full. "halo" is the baked glow of the near layer.
+       Drop "halo" with effects off. The file holds no text. The sign frame stays empty.
+       Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+  <rect class="asset-ground" width="420" height="60" fill="#091d10"/>
+  <defs>
+    <filter id="sk-blur" x="-5%" y="-40%" width="110%" height="180%"><feGaussianBlur stdDeviation="2.2"/></filter>
+    <g id="sk-near" fill="none" stroke-linejoin="round" stroke-linecap="round">
+      <!-- guyed mast -->
+      <path d="M46 59V9M43 59L46 38L49 59M43.6 52h4.8M44.3 45h3.4M46 9v-5M44 13h4M44.5 21h3M45 29h2"/>
+      <path d="M46 12L30 59M46 12L62 59M46 26L37 59M46 26L55 59" stroke-width=".7"/>
+      <!-- hall with a saw-tooth roof -->
+      <path d="M70 59V40L84 31V40L98 31V40L112 31V40L126 31V59"/>
+      <path d="M75 59V49h6v10M89 46h6v5h-6zM103 46h6v5h-6zM117 46h5v5h-5z" stroke-width=".8"/>
+      <!-- water tower -->
+      <path d="M140 59L143 37M158 59L155 37M149 59V37M141 50L157 44M141.8 44L157.2 50"/>
+      <path d="M139 37V26Q149 20 159 26V37ZM139 30h20"/>
+      <path d="M149 21v-4"/>
+      <!-- office block with a blank sign frame -->
+      <path d="M172 59V16H222V59M168 16H226M176 16V11H218V16"/>
+      <path d="M183 11V4H211V11M186 4L183 1M208 4L211 1"/>
+      <path d="M178 23h7v5h-7zM189 23h7v5h-7zM200 23h7v5h-7zM211 23h6v5h-6zM178 33h7v5h-7zM189 33h7v5h-7zM200 33h7v5h-7zM211 33h6v5h-6zM178 43h7v5h-7zM189 43h7v5h-7zM200 43h7v5h-7zM211 43h6v5h-6z" stroke-width=".8"/>
+      <path d="M192 59V53h10v6"/>
+      <!-- annex with a dish -->
+      <path d="M222 59V38H258V59M228 44h6v4h-6zM238 44h6v4h-6zM248 44h6v4h-6z"/>
+      <path d="M240 38V31M233 22A9 9 0 0 0 249 29ZM241 25.5L246 20"/>
+      <!-- two stacks -->
+      <path d="M270 59L272 10H278L280 59M271.3 27h7.4M271.7 18h6.6"/>
+      <path d="M288 59L289.6 20H295.4L297 59M289 36h7M289.3 28h6.4"/>
+      <!-- dome -->
+      <path d="M308 59V46A19 19 0 0 1 346 46V59M308 46H346M327 27V22M317 46A10 19 0 0 1 337 46"/>
+      <!-- gantry crane -->
+      <path d="M362 59V19M372 59V19M358 19H404M362 19L372 27M372 19L362 27M362 35L372 43M372 35L362 43M362 27H372M362 35H372M362 43H372M362 51H372M362 51L372 59M372 51L362 59"/>
+      <path d="M367 19V13L400 19M367 13L360 19M392 19V34M389 34h6v4h-6z"/>
+    </g>
+  </defs>
+  <g class="far" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round" opacity=".28">
+    <path d="M0 59H8L14 52H30V59M56 59V47H66V59M128 59V44H138M160 44H170V59M258 59V50H268M298 59V48H306M346 59V50H360M376 59V44H396V59M404 59V52H414L420 56"/>
+    <path d="M10 44L18 41L27 45M392 10L398 8L405 11M120 14L126 12L133 15" stroke-width=".8"/>
+  </g>
+  <g class="halo" stroke="currentColor" stroke-width="2.6" opacity=".5" filter="url(#sk-blur)"><use href="#sk-near"/></g>
+  <g class="mid" fill="none" stroke="currentColor" stroke-width="1" opacity=".55">
+    <path d="M0 59H420"/>
+  </g>
+  <g class="near" stroke="currentColor" stroke-width="1.2"><use href="#sk-near"/></g>
+</svg>
