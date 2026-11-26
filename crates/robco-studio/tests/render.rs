@@ -88,9 +88,13 @@ fn harness(folder: Option<&Path>) -> Harness<'static, Studio> {
 }
 
 fn harness_at(folder: Option<&Path>, height: f32) -> Harness<'static, Studio> {
+    harness_scaled(folder, height, 1.0)
+}
+
+fn harness_scaled(folder: Option<&Path>, height: f32, ppp: f32) -> Harness<'static, Studio> {
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, height))
-        .with_pixels_per_point(1.0)
+        .with_pixels_per_point(ppp)
         .wgpu()
         .build_ui_state(full_window, Studio::new(folder));
     h.run_steps(3);
@@ -127,6 +131,10 @@ fn render_the_window() {
     let mut h = harness(Some(&d));
     open_main(&mut h);
     shot(&mut h, &dir, "window-green.png").unwrap();
+    let mut h2 = harness_scaled(Some(&d), 720.0, 2.0);
+    open_main(&mut h2);
+    shot(&mut h2, &dir, "window-green-2x.png").unwrap();
+    drop(h2);
     h.state_mut().page = Page::Card;
     shot(&mut h, &dir, "window-card.png").unwrap();
     h.state_mut().page = Page::Project;
