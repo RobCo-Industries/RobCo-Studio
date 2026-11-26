@@ -1070,3 +1070,82 @@ fn install_refuses_names_that_are_not_cache_folder_names() {
     let r = package(&d.cache(), &e, &d.local(), Pin::Index);
     assert_eq!(r.unwrap_err().error_code(), "package: archive");
 }
+
+#[test]
+fn cache_folder_names_are_the_same_on_every_system() {
+    // The spec's example index and the pinned tool versions.
+    for ok in [
+        "15.2.1-1.1",
+        "10.1.2",
+        "1.3.0",
+        "0.1.0",
+        "1.0.0",
+        "1.4.0",
+        "1.5.2",
+        "2.0.0",
+        "console",
+        "com10",
+        "lpt0",
+    ] {
+        assert!(is_folder_name(ok), "{ok}");
+    }
+    for bad in [
+        "1:2",
+        "1*",
+        "1?",
+        "1<2",
+        "1>2",
+        "1|2",
+        "1\"2",
+        "1/2",
+        "1\\2",
+        "1\u{1}",
+        "1.",
+        "1 ",
+        ".",
+        "..",
+        "CON",
+        "con",
+        "Nul.1",
+        "aux.tar.gz",
+        "COM1",
+        "lpt9.0",
+        "prn",
+    ] {
+        assert!(!is_portable(bad), "{bad}");
+    }
+}
+
+#[test]
+fn install_refuses_a_name_that_is_not_a_folder_on_every_system() {
+    let d = Dir::new("tool-portable");
+    let bytes = tool_zip(&[("bin/x", b"x")]);
+    d.put("gcc.archive", &bytes);
+    let a = archive_of("gcc.archive", &bytes, "");
+    let cases = [
+        ("gcc", "1:2", "linux-x64"),
+        ("gcc", "1*", "linux-x64"),
+        ("gcc", "1?", "linux-x64"),
+        ("gcc", "1<2>", "linux-x64"),
+        ("gcc", "1|2", "linux-x64"),
+        ("gcc", "1.2.", "linux-x64"),
+        ("gcc", "CON", "linux-x64"),
+        ("gcc", "nul.1", "linux-x64"),
+        ("gcc", "COM3", "linux-x64"),
+        ("gcc", "1", "aux"),
+        ("con", "1", "linux-x64"),
+    ];
+    for (name, version, host) in cases {
+        let r = tool(&d.cache(), name, version, host, &a, &d.local(), Pin::Index);
+        let e = r.unwrap_err();
+        assert_eq!(e.error_code(), "tool: archive", "{version}");
+        assert!(e.to_string().contains("not a cache folder name"), "{e}");
+        assert!(d.temp_is_empty());
+    }
+    assert_eq!(fs::read_dir(d.cache()).unwrap().count(), 0);
+    let mut e = entry_for("pkg.zip", b"x");
+    e.name = "nul".to_owned();
+    let r = package(&d.cache(), &e, &d.local(), Pin::Index);
+    assert_eq!(r.unwrap_err().error_code(), "package: archive");
+    assert_eq!(fs::read_dir(d.cache()).unwrap().count(), 0);
+}

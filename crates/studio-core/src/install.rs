@@ -307,7 +307,7 @@ pub fn package(
     let version = entry.version.to_string();
     // The cache folder names come from the entry: each must be one plain
     // folder name. A version prints as digits, letters, `-`, `+` and `.`.
-    if !is_package_name(&entry.name) || !is_folder_name(&version) {
+    if !is_package_name(&entry.name) || !is_portable(&entry.name) || !is_folder_name(&version) {
         return Err(Error::PackageArchive(format!(
             "package {} {version}: not a cache folder name",
             entry.name
@@ -344,7 +344,12 @@ pub fn tool(
 ) -> Result<State, Error> {
     // A tool version may hold `/`, and `.` or `..` is a version too: each
     // name must be one plain folder name before it names a cache folder.
-    if !is_host_name(name) || !is_host_name(host) || !is_folder_name(version) {
+    if !is_host_name(name)
+        || !is_host_name(host)
+        || !is_portable(name)
+        || !is_portable(host)
+        || !is_folder_name(version)
+    {
         return Err(Error::ToolArchive(format!(
             "tool {name} {version} {host}: not a cache folder name"
         )));
@@ -638,10 +643,37 @@ struct PackageFile {
     name: String,
 }
 
-/// One plain folder name: a tool version by its form, without `/`, and not
-/// `.` or `..`.
+/// One plain folder name: a tool version by its form that [`is_portable`]
+/// accepts too.
 fn is_folder_name(s: &str) -> bool {
-    is_tool_version(s) && !s.contains('/') && s != "." && s != ".."
+    is_tool_version(s) && is_portable(s)
+}
+
+/// Whether `s` can name a folder on Linux, macOS and Windows alike, so an
+/// install fails the same way on every system. It refuses `< > : " / \ |
+/// ? *`, every control character, a name that ends in a dot or a space,
+/// `.` and `..` among them, and the device names of Windows, `CON`, `PRN`,
+/// `AUX`, `NUL`, `COM1` to `COM9` and `LPT1` to `LPT9`, in any case and
+/// with or without an ending such as `.txt`.
+///
+/// The spec does not state this rule yet. Until it does, a cache folder
+/// name must pass it.
+fn is_portable(s: &str) -> bool {
+    const DEVICES: [&str; 4] = ["con", "prn", "aux", "nul"];
+    if s.is_empty()
+        || s.ends_with(['.', ' '])
+        || s.chars().any(|c| {
+            c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+    let stem = s.split('.').next().unwrap_or(s).trim_end_matches(' ');
+    let stem = stem.to_ascii_lowercase();
+    let numbered = stem.len() == 4
+        && (stem.starts_with("com") || stem.starts_with("lpt"))
+        && matches!(stem.as_bytes()[3], b'1'..=b'9');
+    !(DEVICES.contains(&stem.as_str()) || numbered)
 }
 
 /// Checks a package archive by "The archive", reads `sdk.json` and checks
