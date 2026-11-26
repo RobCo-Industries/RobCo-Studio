@@ -21,7 +21,8 @@
 //!   one more test builds the project folder `ROBCO_TEST_PROJECT`, with
 //!   its own `robco.toml`, against the same fixture index. It writes the
 //!   tape and the `result` line, as `result.json`, into the folder
-//!   `ROBCO_TEST_PROJECT_OUT`. `tools/agreement.sh` uses it to compare a
+//!   `ROBCO_TEST_PROJECT_OUT`, with `gcc.sha256`, the SHA-256 of the
+//!   `gcc` program it installed. `tools/agreement.sh` uses it to compare a
 //!   tape built by Make with the one `robco build` gives.
 #![allow(
     clippy::unwrap_used,
@@ -554,6 +555,16 @@ fn build_the_project_the_environment_names() {
     let name = std::path::Path::new(tape_rel).file_name().unwrap();
     fs::write(out.join(name), &tape).unwrap();
     fs::write(out.join("result.json"), format!("{result}\n")).unwrap();
+    // The gcc program robco build installed and ran, for check 3 of
+    // tools/agreement.sh: its SHA-256, and the release it was installed as.
+    let release = result["gcc"].as_str().unwrap();
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    let prog = f.cache().join(format!(
+        "tools/gcc/{release}/{}/bin/arm-none-eabi-gcc{exe}",
+        host()
+    ));
+    let hash = sha256_hex(&fs::read(&prog).unwrap());
+    fs::write(out.join("gcc.sha256"), format!("{hash}\n")).unwrap();
 }
 
 /// Makes a link at `at` under the fixture's folder that points to `target`.
