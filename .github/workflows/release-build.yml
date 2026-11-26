@@ -56,7 +56,6 @@ jobs:
       NAME: ${{ matrix.name }}
       RUNNER_LABEL: ${{ matrix.os }}
       BIN: target/${{ matrix.target }}/release/robco${{ matrix.exe }}
-      RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
     steps:
       - name: The runner can run the target
         env:
@@ -78,25 +77,30 @@ jobs:
       - name: Install the musl C compiler
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
       # The panic locations of the crates name their source files. Map the
       # cargo home and the workspace to short fixed names, so the program
-      # names no folder of the runner. Only this build takes the map, so
-      # it joins the matrix flags instead of replacing them. The C of
-      # studio-sys is built without -g and names no file, so it needs no
-      # -ffile-prefix-map; the scan below would catch one.
-      - name: Map the build paths
+      # names no folder of the runner. The flags are computed once, here,
+      # and every later cargo command of the job takes the same RUSTFLAGS,
+      # so the tests reuse the release build's crates instead of compiling
+      # them again. The step runs before the cache, whose key hashes them.
+      # Windows keeps its crt-static flag. The C of studio-sys is built
+      # without -g and names no file, so it needs no -ffile-prefix-map; the
+      # scan below would catch one.
+      - name: Release flags
+        env:
+          MATRIX_RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
           ch="${CARGO_HOME:-$HOME/.cargo}"
           ws="$GITHUB_WORKSPACE"
           if [ "$RUNNER_OS" = Windows ]; then ch=$(cygpath -w "$ch"); ws=$(cygpath -w "$ws"); fi
           case "$ch$ws" in *" "*) echo "::error::a build path holds a space: $ch, $ws"; exit 1 ;; esac
-          echo "REMAP=--remap-path-prefix=$ch=/cargo --remap-path-prefix=$ws=/robco" >> "$GITHUB_ENV"
+          flags="-D warnings $MATRIX_RUSTFLAGS --remap-path-prefix=$ch=/cargo --remap-path-prefix=$ws=/robco"
+          echo "RUSTFLAGS: $flags"
+          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Release build
-        env:
-          RUSTFLAGS: -D warnings ${{ matrix.rustflags }} ${{ env.REMAP }}
         run: |
           echo "RUSTFLAGS: $RUSTFLAGS"
           cargo build --release --locked -p robco --target "$TARGET"
