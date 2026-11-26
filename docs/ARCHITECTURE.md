@@ -146,7 +146,7 @@ The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and noth
 |---|---|
 | `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, effects Off and Soft. The only module that may hold a colour or a size literal. |
 | `kit` | The thin layer: pane, buttons, tabs, tree row, text field, dropdown, menu row, banner, empty state, divider, status segment. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
-| `art` | The wordmark and the icons, rasterised from their SVG files at start with `resvg`, and the Spleen 8x16 label atlas built from its BDF file. |
+| `art` | The drawings and the icons, rasterised from their SVG files with `resvg`, the Spleen 8x16 label atlas built from its BDF file, its blurred halo atlas, and the application icon. |
 | `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. |
 | `native_menu` | macOS only: the system menu bar, through `muda`. |
 | `project` | The open folder, its `robco.toml` read by `studio-core`, and the rows of the Files tree. |
@@ -173,6 +173,22 @@ Known limits:
 - Each frame lays out and searches the whole text. A file near 16 MiB, or one very long line, makes the window slow.
 - Studio opens regular files only, links followed. A folder, a named pipe, a device or a socket is refused, and a named pipe is not waited on. A file or a `robco.toml` larger than 16 MiB is refused before it is read. The crate's docs name no limit, so 16 MiB is a default, not a measured need.
 
-`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI.
+`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, with effects on at the left and off at the right.
+
+The drawings live in `crates/robco-studio/assets/art/`. Each was drawn for Studio and carries its SPDX lines and a provenance line.
+
+| File | What |
+|---|---|
+| `wordmark.svg` | "RobCo Studio", for the header |
+| `wordmark-industries.svg` | "RobCo Industries", for the footer |
+| `atom.svg` | The atom mark |
+| `skyline.svg` | The works skyline at the right of the header |
+| `device-frame.svg` | The wrist device around the simulator's screen, with ids for its keys, dial, slot and lamps |
+| `holotape.svg` | The tape |
+| `card.svg` | The memory card |
+| `app-icon.svg` | The application icon, with a small form for 16 to 32 px. It keeps its own ground and colours. |
+| `icons.svg` | The icons, as symbols `i-NAME` |
+
+Every file but the application icon draws in `currentColor` on a ground rectangle of class `asset-ground`, so it can be opened and looked at. One loader removes that rectangle, turns the colour white and rasterises the rest at a whole number of device pixels, and the window tints it. The glow of each drawing is its group of class `halo`, blurred by `resvg`; the loader drops that group when effects are off. A file that keeps room around its box for the glow states the box in its comment, "fills the box 0 0 W H", and the texture reaches out of the box by that room. Caps labels in `bright` on `ground` or `pane` can draw over a second Spleen atlas, blurred once on the CPU, for their glow.
 
 A settings file does not exist yet. It would hold the scheme, high legibility, the effects level, the pane sizes and which panes are shown, the text size, and the recent projects.
