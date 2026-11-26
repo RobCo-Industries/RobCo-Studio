@@ -835,11 +835,12 @@ fn the_zoom_menu_and_the_row_share_one_step() {
     let mut h = harness(None);
     assert_eq!(h.state().sim_zoom, 1);
     // At the side of a 1280 px window only 1x fits: 2x from the menu
-    // falls back, and Larger says why.
+    // is refused and says why, and Larger says the same.
     h.state_mut()
         .run(&egui::Context::default(), Command::SimZoom(2));
     h.run_steps(2);
     assert_eq!(h.state().sim_zoom, 1);
+    assert!(h.state().status.1.contains("2x does not fit"));
     let larger = h
         .query_all_by_label("Larger")
         .find(|n| n.accesskit_node().role() == Role::Button)
@@ -856,6 +857,7 @@ fn the_zoom_menu_and_the_row_share_one_step() {
     h.state_mut().layout.sim_w = 1000.0;
     h.state_mut().layout.files = false;
     h.state_mut().layout.bottom = false;
+    h.run_steps(2);
     h.state_mut()
         .run(&egui::Context::default(), Command::SimZoom(2));
     h.run_steps(2);
@@ -1525,4 +1527,60 @@ fn a_project_opened_as_dot_has_an_absolute_root() {
             .starts,
         [here.parent().map(Path::to_path_buf)]
     );
+}
+
+/// The Simulator menu's scale items, each with its reason when it is not
+/// available. None when the menu or an item is missing.
+fn scale_items(h: &mut Harness<'static, Studio>) -> Option<Vec<Option<String>>> {
+    h.query_all_by_label("Simulator")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)?
+        .click();
+    h.run_steps(2);
+    let v = ["Scale 1x", "Scale 2x", "Scale 3x"]
+        .into_iter()
+        .map(|l| {
+            let n = h
+                .query_all_by_label(l)
+                .find(|n| n.accesskit_node().role() == Role::MenuItem)?;
+            let a = n.accesskit_node();
+            Some(
+                a.is_disabled()
+                    .then(|| a.description().unwrap_or_default().to_owned()),
+            )
+        })
+        .collect();
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    v
+}
+
+#[test]
+fn the_scale_items_follow_the_panes_room() {
+    let mut h = harness(None);
+    let at_720 = scale_items(&mut h).unwrap();
+    assert_eq!(at_720[0], None);
+    assert!(
+        at_720[1]
+            .as_deref()
+            .is_some_and(|s| s.contains("2x does not fit"))
+    );
+    assert!(
+        at_720[2]
+            .as_deref()
+            .is_some_and(|s| s.contains("3x does not fit"))
+    );
+    let mut h = harness_sized(None, egui::vec2(1400.0, 1200.0));
+    h.state_mut().layout.sim_w = 1000.0;
+    h.state_mut().layout.files = false;
+    h.state_mut().layout.bottom = false;
+    h.run_steps(2);
+    let roomy = scale_items(&mut h).unwrap();
+    assert_eq!(&roomy[..2], [None, None]);
+    // A state the window's menu and the macOS bar both read.
+    let it = robco_studio::menus::menus()
+        .into_iter()
+        .flat_map(|m| m.items)
+        .find(|i| i.text == "Scale 2x")
+        .unwrap();
+    assert_eq!(h.state().unavailable(&it), None);
 }

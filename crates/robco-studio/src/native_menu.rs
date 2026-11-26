@@ -14,6 +14,8 @@ const APP_MENU: [Command; 3] = [Command::About, Command::Settings, Command::Quit
 pub struct NativeMenu {
     _menu: muda::Menu,
     chosen: std::sync::mpsc::Receiver<String>,
+    /// Every item, with the state it was last given.
+    items: Vec<(Item, muda::MenuItem, bool)>,
 }
 
 fn code(key: &str) -> Option<Code> {
@@ -87,12 +89,14 @@ impl NativeMenu {
     pub fn install(ctx: eframe::egui::Context) -> Result<NativeMenu, String> {
         let model = menus::menus();
         let bar = muda::Menu::new();
+        let mut items = Vec::new();
         let app = muda::Submenu::new("RobCo Studio", true);
         for (m, menu) in model.iter().enumerate() {
             for (i, it) in menu.items.iter().enumerate() {
                 if APP_MENU.contains(&it.command) {
-                    app.append(&item(menus::item_id(m, i), it))
-                        .map_err(|e| e.to_string())?;
+                    let mi = item(menus::item_id(m, i), it);
+                    app.append(&mi).map_err(|e| e.to_string())?;
+                    items.push((*it, mi, it.unavailable.is_none()));
                 }
             }
         }
@@ -101,8 +105,9 @@ impl NativeMenu {
             let sub = muda::Submenu::new(menu.title, true);
             for (i, it) in menu.items.iter().enumerate() {
                 if !APP_MENU.contains(&it.command) {
-                    sub.append(&item(menus::item_id(m, i), it))
-                        .map_err(|e| e.to_string())?;
+                    let mi = item(menus::item_id(m, i), it);
+                    sub.append(&mi).map_err(|e| e.to_string())?;
+                    items.push((*it, mi, it.unavailable.is_none()));
                 }
             }
             bar.append(&sub).map_err(|e| e.to_string())?;
@@ -114,7 +119,23 @@ impl NativeMenu {
             let _ = tx.send(e.id().as_ref().to_owned());
             ctx.request_repaint();
         }));
-        Ok(NativeMenu { _menu: bar, chosen })
+        Ok(NativeMenu {
+            _menu: bar,
+            chosen,
+            items,
+        })
+    }
+
+    /// Give each item the state the window's own menu gives it now, by
+    /// [`crate::Studio::unavailable`]. Call after each frame.
+    pub fn sync(&mut self, studio: &crate::Studio) {
+        for (it, mi, on) in &mut self.items {
+            let now = studio.unavailable(it).is_none();
+            if now != *on {
+                mi.set_enabled(now);
+                *on = now;
+            }
+        }
     }
 
     /// The commands chosen in the bar since the last call.

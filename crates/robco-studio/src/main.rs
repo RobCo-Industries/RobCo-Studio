@@ -82,5 +82,9 @@ impl eframe::App for Window {
             self.studio.pending.extend(m.take_commands());
         }
         self.studio.ui(ui);
+        #[cfg(target_os = "macos")]
+        if let Some(m) = &mut self._menu {
+            m.sync(&self.studio);
+        }
     }
 }

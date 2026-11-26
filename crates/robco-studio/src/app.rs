@@ -165,6 +165,9 @@ pub struct Studio {
     pub compact_header: bool,
     /// The simulator's zoom step, 1 to 3.
     pub sim_zoom: u8,
+    /// The largest zoom step the simulator pane had room for when last
+    /// drawn.
+    sim_room: u8,
     /// Commands chosen in a menu outside the window, run next frame.
     pub pending: Vec<Command>,
     art: Option<(Art, f32, Effects)>,
@@ -333,6 +336,7 @@ impl Studio {
             menu_row: true,
             compact_header: false,
             sim_zoom: 1,
+            sim_room: 1,
             pending: Vec::new(),
             art: None,
             styled: None,
@@ -411,6 +415,15 @@ impl Studio {
             self.use_project(p);
         } else if self.editor.switching {
             self.next_project = Some(p);
+        }
+    }
+
+    /// Why the menu item `it` cannot act now, or None. The scale items
+    /// follow the simulator pane's room, as its Larger button does.
+    pub fn unavailable(&self, it: &menus::Item) -> Option<String> {
+        match it.command {
+            Command::SimZoom(z) => zoom_unavailable(z, self.sim_room),
+            _ => it.unavailable.map(str::to_owned),
         }
     }
 
@@ -521,7 +534,10 @@ impl Studio {
             Command::ToggleBottom => self.layout.bottom = !self.layout.bottom,
             Command::ResetLayout => self.layout = Layout::default(),
             Command::CompactHeader => self.compact_header = !self.compact_header,
-            Command::SimZoom(z) => self.sim_zoom = z.clamp(1, 3),
+            Command::SimZoom(z) => match zoom_unavailable(z, self.sim_room) {
+                Some(why) => self.status = (Level::Info, why),
+                None => self.sim_zoom = z.clamp(1, 3),
+            },
             Command::NextPane => self.move_focus(ctx, true),
             Command::PreviousPane => self.move_focus(ctx, false),
             Command::Phosphor(s) => self.theme.scheme = s,
@@ -787,8 +803,9 @@ impl Studio {
                 .show(|ui| {
                     for it in &m.items {
                         let note = it.shortcut.map(|s| s.shown(mac)).unwrap_or_default();
+                        let why = self.unavailable(it);
                         if kit
-                            .menu_row(ui, it.text, &note, it.unavailable, size::MENU_POPUP_W)
+                            .menu_row(ui, it.text, &note, why.as_deref(), size::MENU_POPUP_W)
                             .clicked()
                         {
                             chosen = Some(it.command);
@@ -1142,6 +1159,7 @@ impl Studio {
     fn sim_pane(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect, focus: bool) {
         let p = kit.p();
         let fit = sim_fit(rect);
+        self.sim_room = fit;
         self.sim_zoom = self.sim_zoom.clamp(1, fit);
         let zoom = self.sim_zoom;
         let mut new_zoom = zoom;
@@ -1231,15 +1249,11 @@ impl Studio {
             }
             let smaller = (zoom <= 1).then_some(menus::LATER);
             let next = zoom + 1;
-            let no_room = format!(
-                "{next}x does not fit this pane. Give the simulator the centre."
-            );
+            let no_room = zoom_unavailable(next, fit);
             let larger = if zoom >= 3 {
                 Some(menus::LATER)
-            } else if next > fit {
-                Some(no_room.as_str())
             } else {
-                None
+                no_room.as_deref()
             };
             let (less, more) = kit.zoom_group(&mut b, &format!("{zoom}x"), smaller, larger);
             if less {
@@ -1738,6 +1752,13 @@ impl Studio {
             }
         }
     }
+}
+
+/// Why zoom `step` cannot be chosen when the simulator pane has room for
+/// `fit`, or None when it fits. The pane's Larger button and the
+/// Simulator menu's scale items both ask this.
+pub fn zoom_unavailable(step: u8, fit: u8) -> Option<String> {
+    (step > fit).then(|| format!("{step}x does not fit this pane. Give the simulator the centre."))
 }
 
 /// The scrim over the whole window, which takes every click under it.
