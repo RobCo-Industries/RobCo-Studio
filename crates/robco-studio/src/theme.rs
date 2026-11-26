@@ -241,11 +241,8 @@ pub mod size {
     pub const ATOM_COMPACT: f32 = 24.0;
     /// The skyline at the right of the header.
     pub const SKYLINE: [f32; 2] = [420.0, 60.0];
-    /// The narrowest of the four action buttons of the toolbar. Each fits
-    /// its icon and label.
-    pub const TOOLBAR_ACTION_MIN: f32 = 84.0;
-    /// The padding at each side of an action button's icon and label.
-    pub const TOOLBAR_ACTION_PAD: f32 = 12.0;
+    /// The one width of the four action buttons of the toolbar.
+    pub const TOOLBAR_ACTION_W: f32 = 132.0;
     /// The space at each side of a divider in the toolbar.
     pub const TOOLBAR_DIVIDER_GAP: f32 = 16.0;
     /// A divider in the toolbar.
@@ -292,8 +289,6 @@ pub mod size {
     pub const GUTTER_W: f32 = 52.0;
     /// Indent of one tree level.
     pub const TREE_INDENT: f32 = 14.0;
-    /// The project dropdown in the toolbar.
-    pub const PROJECT_DROPDOWN_W: f32 = 160.0;
     /// The target dropdown in the toolbar.
     pub const TARGET_DROPDOWN_W: f32 = 192.0;
     /// A menu popup.

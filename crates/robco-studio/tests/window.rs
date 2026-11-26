@@ -684,7 +684,6 @@ fn toolbar_controls(h: &Harness<'static, Studio>) -> Option<Vec<(String, egui::R
             .rect(),
     )];
     for (name, role) in [
-        ("Project: PIPES", Role::ComboBox),
         ("Target: Pip-OS, ABI 1.3", Role::ComboBox),
         ("Build", Role::Button),
         ("Run", Role::Button),
@@ -730,20 +729,16 @@ fn the_toolbar_fits_1280_points_with_no_overlap() {
             w[1].1
         );
     }
-    for (name, _) in &all[3..] {
-        let b = h
-            .query_all_by_label(name.as_str())
-            .find(|n| n.accesskit_node().role() == Role::Button)
-            .unwrap()
-            .rect();
-        assert!(b.width() >= size::TOOLBAR_ACTION_MIN, "{name}");
+    assert_eq!(all.len(), 6, "pages, target, four actions");
+    for (name, b) in &all[2..] {
+        assert_eq!(b.width(), size::TOOLBAR_ACTION_W, "{name}: one width");
         assert_eq!(b.height(), size::CONTROL_H, "{name}");
     }
-    // The dropdowns' widths hold the longest target name whole.
+    // The dropdown's width holds the longest target name whole.
     assert!(
-        all[2].1.width() >= size::TARGET_DROPDOWN_W,
+        all[1].1.width() >= size::TARGET_DROPDOWN_W,
         "{:?}",
-        all[2].1
+        all[1].1
     );
 }
 
@@ -868,7 +863,7 @@ fn the_zoom_menu_and_the_row_share_one_step() {
     h.get_by_label("2x");
 }
 
-/// The folder name the Project dropdown shows for a sample.
+/// The folder name a sample without a manifest goes by.
 fn folder_name(d: &Path) -> String {
     d.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -877,17 +872,17 @@ fn folder_name(d: &Path) -> String {
 
 #[test]
 fn a_dropdown_shows_its_list_on_the_click_that_opens_it() {
-    let d = sample("dropdown").unwrap();
-    let name = folder_name(&d);
+    let d = pipes("dropdown").unwrap();
+    let name = "Pip-OS, ABI 1.3";
     let mut h = harness(Some(&*d));
-    h.get_by_label(&format!("Project: {name}")).click();
+    h.get_by_label(&format!("Target: {name}")).click();
     // The click's frame lays the new list out unseen, as egui does for
     // every new popup, and asks itself for the frame that shows it.
     h.step();
     assert!(h.ctx.has_requested_repaint());
     h.step();
     assert!(
-        h.query_all_by_label(&name)
+        h.query_all_by_label(name)
             .any(|n| n.accesskit_node().role() == Role::MenuItem),
         "the list shows in the frame after the click, with no new input"
     );
@@ -898,18 +893,153 @@ fn a_long_project_name_is_cut_and_given_in_full_on_hover() {
     let d = sample("a-long-project-name").unwrap();
     let name = folder_name(&d);
     let mut h = harness(Some(&*d));
-    let label = format!("Project: {name}");
     // The status bar names the project too: count before the hover.
     let before = h.query_all_by_label(&name).count();
-    h.get_by_label(&label).hover();
+    tree_root(&h, &name).unwrap().hover();
     h.run_steps(90);
     assert_eq!(
         h.query_all_by_label(&name).count(),
         before + 1,
         "a cut name gives its full text in a tooltip"
     );
-    // The screen reader gets the full name too.
-    h.get_by_label(&label);
+}
+
+/// The tree's root row named `name`.
+fn tree_root<'a>(h: &'a Harness<'static, Studio>, name: &'a str) -> Option<egui_kittest::Node<'a>> {
+    h.query_all_by_label(name)
+        .find(|n| n.accesskit_node().role() == Role::TreeItem)
+}
+
+/// The toolbar holds no project dropdown and no PROJECT label.
+#[test]
+fn no_widget_is_named_for_the_project_dropdown() {
+    let d = pipes("no-project-dropdown").unwrap();
+    let h = harness(Some(&*d));
+    let tool = h.state().place_rect(Place::Toolbar).unwrap();
+    let combos: Vec<String> = h
+        .query_all(egui_kittest::kittest::by().role(Role::ComboBox))
+        .filter(|n| tool.contains_rect(n.rect()))
+        .filter_map(|n| n.accesskit_node().label())
+        .collect();
+    assert_eq!(combos, ["Target: Pip-OS, ABI 1.3"]);
+    assert!(h.query_by_label("Project: PIPES").is_none());
+    assert!(h.query_by_label("Project:").is_none());
+}
+
+/// The window's title names the project, then the application.
+#[test]
+fn the_window_title_follows_the_project() {
+    let d = pipes("title").unwrap();
+    assert_eq!(harness(Some(&*d)).state().title(), "PIPES - RobCo Studio");
+    let f = sample("title-folder").unwrap();
+    let name = folder_name(&f);
+    assert_eq!(
+        harness(Some(&*f)).state().title(),
+        format!("{name} - RobCo Studio")
+    );
+    assert_eq!(harness(None).state().title(), "RobCo Studio");
+}
+
+/// The project is the tree's root row: open at first, with the folder
+/// under it; closing it hides the tree; arrows and keys reach it.
+#[test]
+fn the_tree_has_the_project_as_its_root() {
+    let d = pipes("tree-root").unwrap();
+    let mut h = harness(Some(&*d));
+    let root = tree_root(&h, "PIPES").unwrap();
+    assert_eq!(root.accesskit_node().data().is_expanded(), Some(true));
+    let below = |h: &Harness<'static, Studio>, n: &str| {
+        h.query_all_by_label(n)
+            .any(|x| x.accesskit_node().role() == Role::TreeItem)
+    };
+    assert!(below(&h, "src") && below(&h, "robco.toml"));
+    // The rows hang one step in from the root.
+    assert!(h.get_by_label("src").rect().top() > tree_root(&h, "PIPES").unwrap().rect().top());
+    tree_root(&h, "PIPES").unwrap().click();
+    h.run_steps(2);
+    assert_eq!(
+        tree_root(&h, "PIPES")
+            .unwrap()
+            .accesskit_node()
+            .data()
+            .is_expanded(),
+        Some(false)
+    );
+    assert!(!below(&h, "src") && !below(&h, "robco.toml"));
+    // The keys open it again, and Down moves from the root to its first row.
+    tree_root(&h, "PIPES").unwrap().focus();
+    h.run_steps(1);
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert!(below(&h, "src"));
+    tree_root(&h, "PIPES").unwrap().focus();
+    h.run_steps(1);
+    h.key_press(Key::ArrowDown);
+    h.run_steps(2);
+    assert!(h.get_by_label("src").accesskit_node().is_focused());
+    // One row a press, not two.
+    h.key_press(Key::ArrowDown);
+    h.run_steps(2);
+    assert!(h.get_by_label("notes.txt").accesskit_node().is_focused());
+    // A folder without a manifest goes by its own name.
+    let f = sample("tree-folder").unwrap();
+    let h = harness(Some(&*f));
+    tree_root(&h, &folder_name(&f)).unwrap();
+}
+
+/// What the project dropdown offered lives in the File menu.
+#[test]
+fn the_file_menu_opens_a_project() {
+    use robco_studio::menus::{Command, NO_DIALOG, menus};
+    let file = menus().into_iter().find(|m| m.title == "File").unwrap();
+    let open = file
+        .items
+        .iter()
+        .find(|i| i.command == Command::OpenFolder)
+        .unwrap();
+    assert_eq!(open.text, "Open folder");
+    assert_eq!(open.unavailable, Some(NO_DIALOG));
+    let mut h = harness(None);
+    h.get_by_label("File").click();
+    h.run_steps(2);
+    assert!(
+        h.query_all_by_label("Open folder")
+            .any(|n| n.accesskit_node().role() == Role::MenuItem)
+    );
+}
+
+/// The empty Tape pane's Build and the empty Debug tab's Debug act and
+/// say they are not here yet.
+#[test]
+fn the_empty_states_jobs_act_and_say_so() {
+    let d = sample("empty-jobs").unwrap();
+    let mut h = harness(Some(&*d));
+    let tape = h.state().place_rect(Place::Tape).unwrap();
+    h.query_all_by_label("Build")
+        .find(|n| n.accesskit_node().role() == Role::Button && tape.intersects(n.rect()))
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    h.get_by_label("Build is not in this version yet.");
+    h.query_all_by_label("Debug")
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    let bottom = h.state().place_rect(Place::Bottom).unwrap();
+    let b = h
+        .query_all_by_label("Debug")
+        .find(|n| n.accesskit_node().role() == Role::Button && bottom.contains_rect(n.rect()))
+        .unwrap();
+    assert!(!b.accesskit_node().is_disabled());
+    h.state_mut().status = (robco_studio::kit::Level::Info, "Ready.".to_owned());
+    h.run_steps(2);
+    h.query_all_by_label("Debug")
+        .find(|n| n.accesskit_node().role() == Role::Button && bottom.contains_rect(n.rect()))
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    h.get_by_label("Debug is not in this version yet.");
 }
 
 #[test]

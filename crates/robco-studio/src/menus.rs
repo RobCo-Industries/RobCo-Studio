@@ -141,10 +141,6 @@ pub struct Menu {
 
 /// Said by an item a later release brings.
 pub const LATER: &str = "Not in this release of Studio. Nothing was done.";
-/// Said by Build.
-pub const NO_BUILD: &str = "Build is not in this release of Studio. Nothing was built.";
-/// Said by Debug.
-pub const NO_DEBUG: &str = "Debug is not in this release of Studio. No debugger started.";
 
 /// The jobs drawn ready whose commands do not exist yet, with their
 /// names. Their buttons and menu items act, and the act only says so on

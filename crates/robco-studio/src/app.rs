@@ -7,7 +7,7 @@ use crate::art::{Art, Icon, Mark};
 use crate::editor::{Answer, Editor};
 use crate::kit::{Button, ButtonKind, Kit, Level};
 use crate::menus::{self, Command};
-use crate::project::{Manifest, Project};
+use crate::project::{Manifest, Project, Row};
 use crate::theme::{Effects, Theme, Type, effect, size};
 use eframe::egui::{
     self, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, UiBuilder, accesskit::Role,
@@ -456,6 +456,12 @@ impl Studio {
         }
     }
 
+    /// The window's title as last sent: the project's name, then the
+    /// application's.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     /// Draw one frame of the window into `ui`.
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
@@ -661,15 +667,9 @@ impl Studio {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         row.spacing_mut().item_spacing.x = 0.0;
-        let (name, target) = match &self.project {
-            Some(pr) => (
-                pr.name(),
-                match &pr.manifest {
-                    Manifest::Read { target, .. } => target.name(),
-                    _ => "None".to_owned(),
-                },
-            ),
-            None => ("None".to_owned(), "None".to_owned()),
+        let target = match self.project.as_ref().map(|pr| &pr.manifest) {
+            Some(Manifest::Read { target, .. }) => target.name(),
+            _ => "None".to_owned(),
         };
         let track = crate::theme::text::LABEL_TRACKING;
         let label = |row: &mut Ui, text: &str| {
@@ -706,17 +706,6 @@ impl Studio {
             self.page = Page::ALL[i];
         }
         divider(&mut row);
-        label(&mut row, "Project:");
-        kit.dropdown(
-            &mut row,
-            "Project",
-            Icon::Folder,
-            &name,
-            self.project.is_none(),
-            size::PROJECT_DROPDOWN_W,
-            &[name.as_str()],
-        );
-        divider(&mut row);
         label(&mut row, "Target:");
         kit.dropdown(
             &mut row,
@@ -736,25 +725,36 @@ impl Studio {
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
         acts.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+        let mut first = rect.right();
         for (text, icon, c) in [
             ("Write card", Icon::WriteCard, Command::WriteCard),
             ("Debug", Icon::Debug, Command::Debug),
             ("Run", Icon::Run, Command::Run),
             ("Build", Icon::Build, Command::Build),
         ] {
-            if kit
-                .button(
-                    &mut acts,
-                    Button::quiet(text)
-                        .kind(ButtonKind::Filled)
-                        .icon(icon)
-                        .fitted(size::TOOLBAR_ACTION_PAD, size::TOOLBAR_ACTION_MIN),
-                )
-                .clicked()
-            {
+            let resp = kit.button(
+                &mut acts,
+                Button::quiet(text)
+                    .kind(ButtonKind::Filled)
+                    .icon(icon)
+                    .width(size::TOOLBAR_ACTION_W),
+            );
+            first = first.min(resp.rect.left());
+            if resp.clicked() {
                 self.pending.push(c);
             }
         }
+        // A divider sets the action group apart from the target, as one
+        // stands between the pages and the target.
+        let x = first - size::TOOLBAR_DIVIDER_GAP - stroke_w();
+        t.painter().vline(
+            x,
+            egui::Rangef::new(
+                rect.center().y - size::TOOLBAR_DIVIDER_H / 2.0,
+                rect.center().y + size::TOOLBAR_DIVIDER_H / 2.0,
+            ),
+            kit.theme.frame(p.frame),
+        );
     }
 
     /// The footer: the Industries mark, the division, the status line,
@@ -1099,6 +1099,7 @@ impl Studio {
             }
             _ => None,
         });
+        let pending = &mut self.pending;
         kit.pane(ui, rect, Place::Tape.name(), true, focus, |ui, r| {
             let mut t = ui.new_child(
                 UiBuilder::new()
@@ -1119,15 +1120,17 @@ impl Studio {
                 let build = Button::quiet("Build")
                     .kind(ButtonKind::Filled)
                     .icon(Icon::Build)
-                    .unavailable(menus::NO_BUILD)
                     .small();
-                kit.empty_state(
+                let out = kit.empty_state(
                     ui,
                     r.content,
                     Icon::Tape,
                     "No tape yet. Build makes one.",
                     &[build],
                 );
+                if out.iter().any(egui::Response::clicked) {
+                    pending.push(Command::Build);
+                }
                 return;
             };
             let art = egui::Vec2::from(size::TAPE_ART);
@@ -1225,12 +1228,24 @@ impl Studio {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(&mut child, |ui| {
-                    let ids: Vec<Id> = pr
-                        .rows
+                    // The project itself is the root row; the folder's
+                    // rows hang under it while it is open.
+                    let root = Row {
+                        path: pr.root.clone(),
+                        name: pr.name(),
+                        depth: 0,
+                        is_dir: true,
+                        open: pr.root_open,
+                    };
+                    let shown: Vec<&Row> = std::iter::once(&root)
+                        .chain(pr.rows.iter().filter(|_| pr.root_open))
+                        .collect();
+                    let ids: Vec<Id> = shown
                         .iter()
                         .map(|row| Id::unique(("tree", &row.path)))
                         .collect();
-                    for (i, row) in pr.rows.iter().enumerate() {
+                    for (i, row) in shown.iter().enumerate() {
+                        let depth = if i == 0 { 0 } else { row.depth + 1 };
                         let (rect, _) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), size::ROW_TREE),
                             Sense::hover(),
@@ -1247,7 +1262,7 @@ impl Studio {
                             ui,
                             ids[i],
                             rect,
-                            row.depth,
+                            depth,
                             &row.name,
                             icon,
                             row.is_dir.then_some(row.open),
@@ -1283,7 +1298,12 @@ impl Studio {
         });
         self.places.push((Place::Files, rect));
         if let Some(id) = focus_row {
-            ui.memory_mut(|m| m.request_focus(id));
+            // The tree moves the focus itself: egui's own arrow move
+            // would step a second row.
+            ui.memory_mut(|m| {
+                m.request_focus(id);
+                m.move_focus(egui::FocusDirection::None);
+            });
         }
         if let Some(pr) = self.project.as_mut() {
             if let Some((path, to)) = toggle {
@@ -1349,6 +1369,7 @@ impl Studio {
         let fr = self.focus_request == Some(Place::Bottom);
         let mut tab = self.bottom_tab;
         let log = &mut self.log;
+        let pending = &mut self.pending;
         kit.pane(ui, rect, Place::Bottom.name(), false, fr, |ui, r| {
             let mut x = r.header.left();
             for (t, name, icon) in [
@@ -1428,15 +1449,17 @@ impl Studio {
                     let b = Button::quiet("Debug")
                         .kind(ButtonKind::Filled)
                         .icon(Icon::Debug)
-                        .unavailable(menus::NO_DEBUG)
                         .small();
-                    kit.empty_state(
+                    let out = kit.empty_state(
                         ui,
                         r.content,
                         Icon::Debug,
                         "Debug starts a run with the debugger attached.",
                         &[b],
                     );
+                    if out.iter().any(egui::Response::clicked) {
+                        pending.push(Command::Debug);
+                    }
                 }
             }
         });

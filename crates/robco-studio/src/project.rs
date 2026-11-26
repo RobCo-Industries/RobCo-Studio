@@ -74,6 +74,8 @@ pub struct Project {
     pub selected: Option<PathBuf>,
     /// The last error from reading a folder.
     pub error: Option<String>,
+    /// Whether the tree's root row, the project itself, is open.
+    pub root_open: bool,
 }
 
 impl Project {
@@ -125,6 +127,7 @@ impl Project {
             rows: Vec::new(),
             selected: None,
             error: None,
+            root_open: true,
         };
         p.refresh();
         Ok(p)
@@ -152,6 +155,10 @@ impl Project {
 
     /// Open or close a folder row.
     pub fn toggle(&mut self, path: &Path) {
+        if path == self.root {
+            self.root_open = !self.root_open;
+            return;
+        }
         if !self.open.remove(path) {
             self.open.insert(path.to_owned());
         }
@@ -160,7 +167,9 @@ impl Project {
 
     /// Open (`true`) or close a folder row.
     pub fn set_open(&mut self, path: &Path, open: bool) {
-        if open != self.open.contains(path) {
+        if path == self.root {
+            self.root_open = open;
+        } else if open != self.open.contains(path) {
             self.toggle(path);
         }
     }
