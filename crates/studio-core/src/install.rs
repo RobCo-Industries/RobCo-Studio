@@ -167,7 +167,11 @@ pub enum Phase {
 /// A step that fails gets a `start` and no `done`, as "step" allows: the
 /// error the call returns belongs to the step that is still open. An item
 /// that the cache holds with the expected record gets one `skip` and no
-/// other call. A record that differs gets no call at all.
+/// other call. Every failure comes inside a step: one that comes before
+/// the step would have begun opens it first. A record that differs, a cache
+/// folder that cannot be read and a name that is no cache folder name fail
+/// in `install`. A temporary folder that cannot be made, and an unfinished
+/// folder that cannot be cleared, fail in `download`.
 pub trait Progress {
     /// A step begins.
     fn start(&mut self, phase: Phase);
@@ -411,20 +415,31 @@ fn package_with(
     // The cache folder names come from the entry: each must be one plain
     // folder name. A version prints as digits, letters, `-`, `+` and `.`.
     if !is_package_name(&entry.name) || !is_portable(&entry.name) || !is_folder_name(&version) {
-        return Err(Error::PackageArchive(format!(
-            "package {} {version}: not a cache folder name",
-            entry.name
-        )));
+        return Err(open_in(
+            progress,
+            Phase::Install,
+            Error::PackageArchive(format!(
+                "package {} {version}: not a cache folder name",
+                entry.name
+            )),
+        ));
     }
     let item = Item {
         kind: Kind::Package,
         label: format!("package {} {version}", entry.name),
-        dir: package_dir(cache, &entry.name, &version).ok_or_else(|| {
-            Error::PackageArchive(format!(
-                "package {} {version}: not a cache folder name",
-                entry.name
-            ))
-        })?,
+        dir: match package_dir(cache, &entry.name, &version) {
+            Some(dir) => dir,
+            None => {
+                return Err(open_in(
+                    progress,
+                    Phase::Install,
+                    Error::PackageArchive(format!(
+                        "package {} {version}: not a cache folder name",
+                        entry.name
+                    )),
+                ));
+            }
+        },
         url: &entry.url,
         size: entry.size,
         sha256: &entry.sha256,
@@ -494,18 +509,29 @@ fn tool_with(
         || !is_portable(host)
         || !is_folder_name(version)
     {
-        return Err(Error::ToolArchive(format!(
-            "tool {name} {version} {host}: not a cache folder name"
-        )));
+        return Err(open_in(
+            progress,
+            Phase::Install,
+            Error::ToolArchive(format!(
+                "tool {name} {version} {host}: not a cache folder name"
+            )),
+        ));
     }
     let item = Item {
         kind: Kind::Tool,
         label: format!("tool {name} {version} {host}"),
-        dir: tool_dir(cache, name, version, host).ok_or_else(|| {
-            Error::ToolArchive(format!(
-                "tool {name} {version} {host}: not a cache folder name"
-            ))
-        })?,
+        dir: match tool_dir(cache, name, version, host) {
+            Some(dir) => dir,
+            None => {
+                return Err(open_in(
+                    progress,
+                    Phase::Install,
+                    Error::ToolArchive(format!(
+                        "tool {name} {version} {host}: not a cache folder name"
+                    )),
+                ));
+            }
+        },
         url: &archive.url,
         size: archive.size,
         sha256: &archive.sha256,
@@ -573,25 +599,45 @@ fn install(
     progress: &mut dyn Progress,
     extract: &dyn Fn(&Path, &Path) -> Result<PathBuf, Error>,
 ) -> Result<State, Error> {
-    let held = |h: &str, progress: &mut dyn Progress| {
-        let state = compare(item, h, pin)?;
-        progress.skip();
-        Ok(state)
+    // Every failure happens inside a step. The look into the cache and the
+    // check of a record belong to `install`, where the item would have been
+    // installed. The temporary folder and the clearing of an unfinished
+    // folder come before the fetch of an item the cache lacks, so they
+    // belong to `download`. A step opens only when it fails here, so an
+    // item found whole in the cache gets its `skip` alone.
+    let held = |h: &str, progress: &mut dyn Progress| match compare(item, h, pin) {
+        Ok(state) => {
+            progress.skip();
+            Ok(state)
+        }
+        Err(e) => Err(open_in(progress, Phase::Install, e)),
     };
-    let unfinished = match cached(&item.dir)? {
-        Cached::Holds(h) => return held(&h, progress),
-        Cached::Missing => false,
-        Cached::Unfinished => true,
+    let unfinished = match cached(&item.dir) {
+        Ok(Cached::Holds(h)) => return held(&h, progress),
+        Ok(Cached::Missing) => false,
+        Ok(Cached::Unfinished) => true,
+        Err(e) => return Err(open_in(progress, Phase::Install, e)),
     };
-    let temp = TempDir::new(cache)?;
-    if unfinished && let Some(h) = clear_unfinished(&temp.0, &item.dir)? {
-        return held(&h, progress);
+    let temp = TempDir::new(cache).map_err(|e| open_in(progress, Phase::Download, e))?;
+    if unfinished {
+        match clear_unfinished(&temp.0, &item.dir) {
+            Ok(Some(h)) => return held(&h, progress),
+            Ok(None) => {}
+            Err(e) => return Err(open_in(progress, Phase::Download, e)),
+        }
     }
     let archive = download(&temp.0, item, transport, progress)?;
     progress.start(Phase::Install);
     let state = finish(item, pin, &temp.0, &archive, extract)?;
     progress.done(Phase::Install);
     Ok(state)
+}
+
+/// Opens `phase` for a failure that comes before the step would have
+/// begun, and returns the error, which then belongs to that open step.
+fn open_in(progress: &mut dyn Progress, phase: Phase, e: Error) -> Error {
+    progress.start(phase);
+    e
 }
 
 /// The `install` step: extracts the checked archive, writes the record and

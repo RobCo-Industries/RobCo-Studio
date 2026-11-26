@@ -1815,11 +1815,11 @@ fn progress_of_a_good_package_and_of_one_in_the_cache() {
         watch_zip(&d, &bytes),
         (Ok(State::Present), strings(&["skip"]))
     );
-    // Another archive in the cache: no transition at all.
+    // Another archive in the cache fails where it would have installed.
     let other = package_zip(&files(), &files()[..2]);
     assert_eq!(
         watch_zip(&d, &other),
-        (Err("package: hash".to_owned()), vec![])
+        (Err("package: hash".to_owned()), strings(&["start Install"]))
     );
 }
 
@@ -2071,4 +2071,64 @@ fn install_puts_the_pipos_layout_before_unlisted_entries() {
         assert!(err.to_string().contains(path), "{err}");
         assert!(d.temp_is_empty());
     }
+}
+
+/// A name that is no cache folder name fails in `install`.
+#[test]
+fn progress_puts_a_bad_name_in_install() {
+    let d = Dir::new("progress-name");
+    let mut e = entry_for("p.zip", b"x");
+    e.name = "../x".to_owned();
+    assert_eq!(
+        watch_package(&d, &e, &d.local()),
+        (
+            Err("package: archive".to_owned()),
+            strings(&["start Install"])
+        )
+    );
+    let bytes = tool_zip(&[("bin/x", b"x")]);
+    let a = archive_of("gcc.archive", &bytes, "");
+    let mut r = Recorder::default();
+    let s = tool_watched(
+        &d.cache(),
+        ["gcc", "..", "linux-x64"],
+        &a,
+        &d.local(),
+        Pin::Index,
+        &mut r,
+    );
+    assert_eq!(s.unwrap_err().error_code(), "tool: archive");
+    assert_eq!(r.0, strings(&["start Install"]));
+}
+
+/// Read-only or unreadable folders of the cache: each early failure opens
+/// the step it belongs to.
+#[cfg(unix)]
+#[test]
+fn progress_puts_each_early_failure_in_a_step() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &Path, m: u32| fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
+    // A cache where no temporary folder can be made: `download`.
+    let d = Dir::new("progress-temp");
+    fs::create_dir_all(d.cache()).unwrap();
+    mode(&d.cache(), 0o555);
+    let r = watch_zip(&d, &good_zip());
+    mode(&d.cache(), 0o755);
+    assert_eq!(r, (Err("io: write".to_owned()), strings(IN_DOWNLOAD)));
+    // A cache folder that cannot be looked into: `install`.
+    let d = Dir::new("progress-look");
+    let parent = d.cache().join("packages/templates");
+    fs::create_dir_all(&parent).unwrap();
+    mode(&parent, 0o000);
+    let r = watch_zip(&d, &good_zip());
+    mode(&parent, 0o755);
+    assert_eq!(r, (Err("io: read".to_owned()), strings(&["start Install"])));
+    // An unfinished folder that cannot be taken aside: `download`.
+    let d = Dir::new("progress-clear");
+    leave_unfinished(&d);
+    let parent = pkg_dir(&d).parent().unwrap().to_path_buf();
+    mode(&parent, 0o555);
+    let r = watch_zip(&d, &good_zip());
+    mode(&parent, 0o755);
+    assert_eq!(r, (Err("io: write".to_owned()), strings(IN_DOWNLOAD)));
 }
