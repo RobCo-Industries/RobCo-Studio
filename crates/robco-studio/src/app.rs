@@ -480,10 +480,8 @@ impl Studio {
     /// follow the simulator pane's room, as its Larger button does. The
     /// screen levels follow the adapter and high legibility.
     pub fn unavailable(&self, it: &menus::Item) -> Option<String> {
-        match (self.front(), it.command) {
-            (Front::Question, Command::ScreenAdjust) => return Some(ASKING.to_owned()),
-            (Front::Adjust, c) if !acts_over_adjust(c) => return Some(ADJUSTING.to_owned()),
-            _ => {}
+        if let Verdict::Refused(why) = verdict(it.command, self.front()) {
+            return Some(why.to_owned());
         }
         match it.command {
             Command::SimZoom(z) => zoom_unavailable(z, self.sim_room),
@@ -672,13 +670,12 @@ impl Studio {
     /// strengths, the page. So every command asks for the next frame, which
     /// draws its effect even when nothing moves and no input comes.
     pub fn run(&mut self, ctx: &egui::Context, c: Command) {
-        match self.front() {
-            Front::Chooser => return,
-            // Adjust is modal: only quitting and opening a folder act.
-            Front::Adjust if !acts_over_adjust(c) => return,
-            _ => {}
-        }
         ctx.request_repaint();
+        // One table decides which command acts over what is in front.
+        if let Verdict::Refused(why) = verdict(c, self.front()) {
+            self.say(Level::Info, why.to_owned());
+            return;
+        }
         // The editor keeps one sentence: pass on the last command's before
         // this one can overwrite it, so the line's rule weighs both.
         if let Some((level, text)) = self.editor.news.take() {
@@ -686,12 +683,8 @@ impl Studio {
         }
         match c {
             Command::OpenFolder => {
-                // A question on the screen comes first; a switch then asks
-                // its own.
-                if self.editor.question.is_none() {
-                    self.choosing = Choosing::Due;
-                    ctx.request_repaint();
-                }
+                self.choosing = Choosing::Due;
+                ctx.request_repaint();
             }
             Command::Save => self.editor.save(),
             Command::SaveAll => self.editor.save_all(),
@@ -738,9 +731,7 @@ impl Studio {
                 }
             }
             Command::ScreenAdjust => {
-                if self.editor.question.is_some() {
-                    self.say(Level::Info, ASKING.to_owned());
-                } else if self.theme.screen().pass() {
+                if self.theme.screen().pass() {
                     self.screen.adjusting = true;
                 } else {
                     self.say(Level::Info, ADJUST_NOT.to_owned());
@@ -2264,14 +2255,112 @@ pub enum Front {
     Nothing,
 }
 
-/// The commands that act while Adjust is in front: quitting and opening
-/// a folder, which may raise a question or the chooser in front of it,
-/// and Adjust itself, which is open.
-fn acts_over_adjust(c: Command) -> bool {
-    matches!(
-        c,
-        Command::Quit | Command::OpenFolder | Command::ScreenAdjust
-    )
+/// Whether a command acts over what is in front: see [`verdict`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// The command acts, by its own availability rules.
+    Acts,
+    /// The command does nothing, for this reason.
+    Refused(&'static str),
+}
+
+/// What a command is to the dialogs in front.
+#[derive(Clone, Copy)]
+enum Part {
+    /// Quit: it may raise its question in front of Adjust.
+    Quit,
+    /// Open folder: it brings the chooser, which holds Adjust as it is.
+    OpenFolder,
+    /// A Screen level or Adjust: what the Adjust dialog is about.
+    Screen,
+    /// Any other command, which acts on the window behind a dialog.
+    Window,
+}
+
+/// The one table of which command acts over what is in front. `run`
+/// asks it before anything else, for every source of a command, and
+/// `unavailable` asks it, so the menus, the macOS menu bar and the
+/// tooltips show what `run` does. A dialog's own controls are not
+/// commands: they belong to the dialog and act while it is in front.
+///
+/// - The chooser: nothing acts.
+/// - A question: nothing acts, a second Quit included; only the
+///   question's own answers do, and Escape cancels it.
+/// - Adjust: Quit, Open folder, the Screen levels and Adjust act.
+/// - Nothing: every command acts by its own rules.
+pub fn verdict(c: Command, front: Front) -> Verdict {
+    use Command as C;
+    let role = match c {
+        C::Quit => Part::Quit,
+        C::OpenFolder => Part::OpenFolder,
+        C::Screen(_) | C::ScreenAdjust => Part::Screen,
+        C::NewProject
+        | C::OpenRecent
+        | C::Save
+        | C::SaveAll
+        | C::CloseTab
+        | C::OpenInEditor
+        | C::Settings
+        | C::Undo
+        | C::Redo
+        | C::CutCopyPaste
+        | C::Find
+        | C::FindNext
+        | C::FindPrevious
+        | C::GoToLine
+        | C::PageProject
+        | C::PageCard
+        | C::PageDevice
+        | C::PageSdk
+        | C::ToggleFiles
+        | C::ToggleBottom
+        | C::SimulatorPlace
+        | C::ResetLayout
+        | C::CompactHeader
+        | C::NextPane
+        | C::PreviousPane
+        | C::TextLarger
+        | C::TextSmaller
+        | C::TextReset
+        | C::Phosphor(_)
+        | C::HighLegibility
+        | C::ProjectSettings
+        | C::NewFile
+        | C::Export
+        | C::ShowFolder
+        | C::Build
+        | C::Run
+        | C::Debug
+        | C::Stop
+        | C::RunTests
+        | C::NextError
+        | C::PreviousError
+        | C::Breakpoint
+        | C::WriteCard
+        | C::ResetMachine
+        | C::KeyLegend
+        | C::SimZoom(_)
+        | C::InsertTape
+        | C::EjectTape
+        | C::Continue
+        | C::Step
+        | C::Break
+        | C::GiveKeysBack
+        | C::Connect
+        | C::SaveLog
+        | C::PushAndRun
+        | C::Documentation
+        | C::SdkCheck
+        | C::SystemReport
+        | C::About => Part::Window,
+    };
+    match (front, role) {
+        (Front::Chooser, _) => Verdict::Refused(CHOOSING),
+        (Front::Question, _) => Verdict::Refused(ASKING),
+        (Front::Adjust, Part::Window) => Verdict::Refused(ADJUSTING),
+        (Front::Adjust, Part::Quit | Part::OpenFolder | Part::Screen) => Verdict::Acts,
+        (Front::Nothing, _) => Verdict::Acts,
+    }
 }
 
 /// Why a command waits while a question is open.
@@ -2600,6 +2689,137 @@ mod tests {
             .as_ref()
             .map(|a| (a.halos(), a.has_scanlines()));
         assert_eq!(art, Some((false, false)));
+    }
+
+    /// What a command can change, cheap to compare: the level, the
+    /// strengths, the page, the project, the documents and the dialogs.
+    fn digest(s: &Studio) -> String {
+        let docs: Vec<(u64, &str)> = s
+            .editor
+            .docs
+            .iter()
+            .map(|d| (d.id, d.text.as_str()))
+            .collect();
+        format!(
+            "{:?}",
+            (
+                (
+                    s.theme,
+                    s.screen.strengths,
+                    s.screen.rate,
+                    s.screen.adjusting
+                ),
+                (s.page, s.layout, s.compact_header, s.sim_zoom),
+                s.project.as_ref().map(|p| p.root.clone()),
+                docs,
+                (s.editor.question, s.editor.find.open, s.choosing),
+            )
+        )
+    }
+
+    /// A window on one edited file at Live, with `front` in front. A
+    /// question comes over an open Adjust, the case that once leaked.
+    fn fronted(f: &Path, front: Front) -> Studio {
+        let mut s = Studio::new(None);
+        s.screen.adapter = screen::Adapter::Hardware;
+        s.set_screen(Screen::Live);
+        s.open_file(f);
+        if let Some(d) = s.editor.current_mut() {
+            d.text = "new\n".into();
+        }
+        match front {
+            Front::Nothing => {}
+            Front::Adjust => s.screen.adjusting = true,
+            Front::Question => {
+                s.screen.adjusting = true;
+                assert!(!s.editor.request_quit());
+            }
+            Front::Chooser => s.choosing = Choosing::Due,
+        }
+        assert_eq!(s.front(), front);
+        s
+    }
+
+    /// Every command of the menu model against every front state: the
+    /// table's verdict, what `run` did and what `unavailable` says agree.
+    /// A command the table lets act changes what it changes with nothing
+    /// in front; a refused one changes nothing.
+    #[test]
+    fn the_front_table_is_what_run_and_the_menus_do() {
+        let d = std::env::temp_dir().join(format!("robco-front-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("main.c");
+        let ctx = egui::Context::default();
+        let mut items: Vec<menus::Item> =
+            menus::menus().into_iter().flat_map(|m| m.items).collect();
+        items.extend(menus::screen_items());
+        let run = |front: Front, it: &menus::Item| {
+            std::fs::write(&f, b"old\n").unwrap();
+            let mut s = fronted(&f, front);
+            let why = s.unavailable(it);
+            let before = digest(&s);
+            ctx.begin_pass(egui::RawInput::default());
+            s.run(&ctx, it.command);
+            ctx.end_pass().textures_delta.clear();
+            (why, before != digest(&s))
+        };
+        for it in &items {
+            let (_, acts_alone) = run(Front::Nothing, it);
+            for front in [
+                Front::Chooser,
+                Front::Question,
+                Front::Adjust,
+                Front::Nothing,
+            ] {
+                let v = verdict(it.command, front);
+                let (why, changed) = run(front, it);
+                match v {
+                    Verdict::Refused(r) => {
+                        assert!(
+                            !changed,
+                            "{:?} over {front:?} changed the window",
+                            it.command
+                        );
+                        assert_eq!(why.as_deref(), Some(r), "{:?} over {front:?}", it.command);
+                    }
+                    Verdict::Acts => {
+                        // Adjust over Adjust finds it open already.
+                        let open = front == Front::Adjust && it.command == Command::ScreenAdjust;
+                        assert_eq!(
+                            changed,
+                            acts_alone && !open,
+                            "{:?} over {front:?}",
+                            it.command
+                        );
+                        assert!(
+                            ![ASKING, ADJUSTING, CHOOSING].contains(&why.as_deref().unwrap_or("")),
+                            "{:?} over {front:?} said {why:?}",
+                            it.command
+                        );
+                    }
+                }
+            }
+        }
+        // The rows decided by hand, spelled out.
+        assert_eq!(
+            verdict(Command::Quit, Front::Question),
+            Verdict::Refused(ASKING)
+        );
+        assert_eq!(
+            verdict(Command::Screen(Screen::Off), Front::Question),
+            Verdict::Refused(ASKING)
+        );
+        assert_eq!(
+            verdict(Command::Screen(Screen::Off), Front::Adjust),
+            Verdict::Acts
+        );
+        assert_eq!(verdict(Command::OpenFolder, Front::Adjust), Verdict::Acts);
+        assert_eq!(
+            verdict(Command::Save, Front::Adjust),
+            Verdict::Refused(ADJUSTING)
+        );
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     fn press(s: &mut Studio, ctx: &egui::Context, key: Key, modifiers: Modifiers) {

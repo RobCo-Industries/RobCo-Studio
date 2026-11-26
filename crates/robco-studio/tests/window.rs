@@ -2420,6 +2420,36 @@ fn a_question_beats_adjust_and_adjust_comes_back() {
     assert_eq!(h.state().front(), Front::Nothing);
 }
 
+/// A Screen level from the macOS menu bar, while a quit question covers
+/// Adjust with a moved slider, changes nothing; after Cancel, Adjust is
+/// back with the slider where it was.
+#[test]
+fn a_native_screen_level_waits_behind_a_question_over_adjust() {
+    let (_d, mut h) = adjusting("adjust-native-level").unwrap();
+    bloom(&h).unwrap().set_value_accesskit(0.9);
+    h.run_steps(2);
+    let moved = h.state().screen.strengths;
+    assert!((moved.bloom - 0.9).abs() < 1e-6);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Q);
+    h.run_steps(2);
+    assert_eq!(h.state().front(), Front::Question);
+    for l in robco_studio::theme::Screen::ALL {
+        h.state_mut()
+            .pending
+            .push(robco_studio::menus::Command::Screen(l));
+        h.run_steps(2);
+        assert_eq!(h.state().front(), Front::Question, "{l:?}");
+        assert_eq!(h.state().theme.screen(), robco_studio::theme::Screen::Live);
+        assert_eq!(h.state().screen.strengths, moved, "{l:?}");
+        assert!(h.state().screen.adjusting, "{l:?}");
+    }
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert_eq!(h.state().front(), Front::Adjust);
+    assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
+    assert_eq!(h.state().screen.strengths, moved);
+}
+
 /// While a question is open, the Adjust command does not open Adjust.
 #[test]
 fn a_question_refuses_the_adjust_command() {
