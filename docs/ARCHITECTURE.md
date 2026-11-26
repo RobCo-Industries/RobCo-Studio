@@ -146,7 +146,7 @@ The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and noth
 
 | Module | Holds |
 |---|---|
-| `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, effects Off and Soft. The only module that may hold a colour or a size literal. |
+| `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, the screen levels and their strengths. The only module that may hold a colour or a size literal. |
 | `kit` | The thin layer: pane, filled and outlined buttons, tabs, segmented control, zoom group, tree row, text field, dropdown, menu row, banner, empty state, divider, footer segment. The segmented control also serves as a tab list. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
 | `art` | The drawings and the icons, rasterised from their SVG files with `resvg`, the Spleen 8x16 label atlas built from its BDF file, its blurred halo atlas, and the application icon. |
 | `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. |
@@ -156,7 +156,9 @@ The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and noth
 | `document` | One open file: bytes to text and back, LF in the editor, CRLF kept on save. |
 | `editor` | Tabs, the text widget per document, the gutter, colours for C, find and replace, and the one question about unsaved edits. |
 | `c_lex` | A token pass over C for its colours. |
-| `app` | The window: its strips, pages, the panes of the Project page, focus with F6, the dialog. |
+| `screen` | The rules of the screen levels, with no graphics: the level at start, which levels can be picked, when a frame is asked for, how persistence fades, and the curve the pointer is mapped through. |
+| `pass` | The screen pass: an egui plugin, a second `egui_wgpu::Renderer` and the WGSL passes of `screen.wgsl`. |
+| `app` | The window: its strips, pages, the panes of the Project page, focus with F6, the save question and the screen's Adjust dialog. |
 
 The window is cut into strips, top to bottom:
 
@@ -171,13 +173,57 @@ flowchart TB
 ```
 
 - The header is tall when the window's inner height is 720 points or more, and compact under that or when View, Compact header is on. It takes no focus; a screen reader gets one image named "RobCo Studio".
-- Panes are rounded, with a title row and a rule. Tabs stand on the rule; the active tab, the chosen part of a segmented control and the current page are filled in `bright` with a halo.
+- Panes are rounded, with a title row and a rule. Tabs stand on the rule; the active tab, the chosen part of a segmented control and the current page are filled in `bright`, with a halo at Soft.
 - The simulator pane shows the device at 62 percent with the empty state in its screen opening while no machine runs, then the honest line and Stop, Reset, Fit and the zoom group. The Simulator menu's scale items set the same step. A step that does not fit the pane is not available, in the pane's Larger button, in the window's menu and in the macOS menu bar alike, with the same reason; one function answers for all three. The room comes from the page layout of each frame, whichever page shows, so a resize on the Card, Device or SDK page updates the menus too. When a resize leaves no room for the chosen step, it drops at once to the largest step that fits, and the status line says so once.
 - The pages control is the toolbar's first control: PROJECT, CARD, DEVICE and SDK in one outline. A screen reader gets a tab list named "Pages" with one tab per page, the current one selected. It is one stop in the Tab order, and the left and right arrows move between pages. The page shortcuts and the View menu move its selection.
 - The toolbar holds no project control. A divider stands after the pages control and another before the four actions, which share one width. At 1280 points the whole toolbar fits with room to spare.
 - The open project is the current document. The window title gives its name, then the application's, as in "PIPES - RobCo Studio", and only "RobCo Studio" with no project. File, Open folder, Cmd or Ctrl+O, opens another one through the system's folder dialog. The dialog starts in the parent of the open project, or the home folder with no project. A project's folder is made absolute when it opens, through links, so a project opened as `.` or `my-project` has its folder's name and a parent for the dialog. A chosen folder goes through the same path as one given on the command line, with the same messages. Documents with edits are asked about first, one by one, with the question quitting asks; Cancel keeps the project and its edits. Cancel in the dialog changes nothing. While the dialog is open nothing in the window acts: the window draws its whole interface disabled, under the scrim its own dialogs use, and the status line says a folder dialog is open. On Linux, where the window keeps drawing, the window can still be moved and repainted, but closing it is refused until the dialog answers. The Files tree has the project as its root row, open at first; closing it hides the tree. A folder without a valid `robco.toml` goes by its folder's name.
 - The bottom pane puts the log's filters in its tab row while the Log tab is on.
 - A long status line in the footer hides the division first, then Position, then ends in an ellipsis. Settings and Help hold the right end and never give way.
+
+#### The screen
+
+View, Screen picks how the screen looks. The items are radio items, then a separator and Adjust, in the window's menu row and in the macOS menu bar alike.
+
+| Level | What draws | Moves |
+|---|---|---|
+| Off | Nothing extra | No |
+| Soft | The still overlays: the scanline quad, rectangle halos, label halos, the drawings' baked halo groups. No pass. | No |
+| Still | The pass: bloom 0.35, vignette 0.50, scanlines 0.30, curvature 0.12 | No |
+| Live | Still, with persistence 0.50, noise 0.10, flicker 0.20, a rolling band 0.30, and drifting scanlines | Yes |
+| Arcade | Everything strong, with a shadow mask 0.30 and chromatic aberration 0.20 | Yes |
+
+Adjust opens a dialog with one slider for each of the ten strengths, the frame rate, 15, 30 or 60 a second, and Reset back to the level's own numbers. A moved slider makes the level read "Custom". The choice lasts for the session.
+
+`robco-studio --screen LEVEL` starts at a level, for pictures or a slow machine. A pass level on a machine without a real adapter still gives Soft.
+
+The draw path. eframe draws egui straight into the window's surface, with no step an application can reach between egui's picture and the screen. An egui plugin, public in egui 0.37, gives two:
+
+```mermaid
+flowchart TB
+    IN["Window input"] --> IH["Plugin input hook: pointer mapped back through the curve"]
+    IH --> UI["Studio::ui builds the frame; the kit draws no still glow at a pass level"]
+    UI --> END["egui end of pass: shapes in egui's own layer order, texture changes"]
+    END --> OH["Plugin output hook: copies the texture changes, tessellates the shapes, leaves one paint callback"]
+    OH --> EF["eframe paints: uploads textures, calls the callback's prepare"]
+    EF --> PR["prepare: second egui renderer draws into a texture, then bright, blur, blur, composite"]
+    PR --> PA["paint: one triangle into eframe's pass"]
+```
+
+- `pass::plug` adds the plugin before the first frame and puts the pass in eframe's callback resources. `Context::add_plugin`, `Plugin::input_hook` and `Plugin::output_hook`, `Context::tessellate`, `egui_wgpu::Callback::new_paint_callback` and `CallbackTrait::prepare` and `paint` are the calls it leans on.
+- The output hook sees the shapes after egui drained its layers in its own order, so menus, dropdown lists, tooltips and dialogs draw above the panes as they do without the pass.
+- The output hook copies every texture change for the pass's renderer: the font atlas, the Spleen label atlas, the icons, the drawings, the device and the scanline texture. With every strength at zero the pass draws what egui draws, which a render test checks.
+- Each strength is 0 to 1. At zero the shader skips its work, and with bloom at zero the three bloom passes are not run.
+
+Rules of the screen, each with a test:
+
+- Live and Arcade ask for a frame at the chosen rate only while the window has focus. Off, Soft and Still ask for none, so an idle window costs nothing. Without focus the pass holds the still form of its last frame.
+- No double glow: at a pass level the kit draws no rectangle halo, no label halo and no scanline quad, and the drawings lose their halo groups. Bloom does that work. At Soft they are drawn as before.
+- The pointer is mapped back through the curve, so a click lands on what is drawn.
+- Studio reads the adapter's kind at start. With a software adapter it starts in Soft, and the pass levels are not available, with the reason "This machine has no graphics adapter for the screen pass."
+- When the system asks for reduced motion, Studio starts in Still. Live and Arcade stay available.
+- High legibility forces Off and makes the other levels not available.
+- Persistence fades by the time between frames, so it fades the same at 15, 30 or 60 frames a second.
 
 Rules, each with a test:
 
@@ -197,9 +243,15 @@ Known limits:
 - Each frame lays out and searches the whole text. A file near 16 MiB, or one very long line, makes the window slow.
 - On macOS and Windows the folder dialog runs on the main thread at the top of a frame and blocks it; the last frame stays on screen. On Linux it runs on a thread through the desktop portal, with `zenity` as the fallback. When neither answers within 300 ms with nothing, the status bar says no dialog opened. A portal that accepts the call and never answers keeps the window from taking commands until it is closed. The real dialog was only compiled on macOS; it was not opened on any system. The tests use a fake.
 - The Open folder button of the editor pane's empty state and the Open another folder button of its banner run File, Open folder. There is no Open recent: Studio has no settings file yet.
+- The screen pass ran only on one Mac, on Metal, in offscreen render tests. It was not opened in a real window by these tests, and it was not run on Linux or Windows. Its cost there, and on a weaker GPU, is not measured.
+- The reduced-motion setting is read on macOS only, from the Accessibility settings, once at start. Windows and Linux are not read: there Studio starts in Live on a real adapter.
+- Accessibility rectangles stay where the flat picture has them; only the pointer is mapped. In a 1280 by 720 window at Still and Live, the curvature of 0.12 moves the picture under a point in the editor, about 4 points at the toolbar's pages control, 8 at the footer's left end and 10 at a corner. At Arcade, 0.40, it is about 14 points at the pages control and 30 at a corner. A screen reader's highlight or a magnifier that follows focus is off by as much, and so are IME candidate windows.
+- Flicker changes brightness by at most 3 percent, 30 times a second, and the band takes 6 seconds to cross. Nobody has read code for hours through Live.
+- A texture made in a frame reaches the pass's renderer in that frame. A partial change to a texture made before the plugin was added is skipped; the plugin is added before the first frame, so this does not happen in the window.
+- Studio has no settings file, so the level, the strengths and the frame rate last for the session.
 - Studio opens regular files only, links followed. A folder, a named pipe, a device or a socket is refused, and a named pipe is not waited on. A file or a `robco.toml` larger than 16 MiB is refused before it is read. The crate's docs name no limit, so 16 MiB is a default, not a measured need.
 
-`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, with effects on at the left and off at the right.
+`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, at Soft at the left and Off at the right. Its `render_the_screen_levels` writes `screen-*.png`: the Project page at each level, three Live frames half a second apart, an open menu, an open dropdown list, a tooltip and the Adjust dialog at Live, and Live at display scale 2.
 
 The drawings live in `crates/robco-studio/assets/art/`. Each carries its SPDX lines and a provenance line. The two wordmarks, the atom and the skyline are traced from a reference picture supplied by the project owner. The application icon is built from the traced atom and letter R, on a tile drawn for Studio. The other drawings are drawn for Studio.
 
@@ -215,6 +267,6 @@ The drawings live in `crates/robco-studio/assets/art/`. Each carries its SPDX li
 | `app-icon.svg` | The application icon, with a small form for 16 to 32 px. It keeps its own ground and colours. |
 | `icons.svg` | The icons, as symbols `i-NAME` |
 
-Every file but the application icon draws in `currentColor` on a ground rectangle of class `asset-ground`, so it can be opened and looked at. One loader removes that rectangle, turns the colour white and rasterises the rest at a whole number of device pixels, and the window tints it. The glow of each drawing is its group of class `halo`, blurred by `resvg`; the loader drops that group when effects are off. A file that keeps room around its box for the glow states the box in its comment, "fills the box 0 0 W H", and the texture reaches out of the box by that room. Caps labels in `bright` on `ground` or `pane` can draw over a second Spleen atlas, blurred once on the CPU, for their glow.
+Every file but the application icon draws in `currentColor` on a ground rectangle of class `asset-ground`, so it can be opened and looked at. One loader removes that rectangle, turns the colour white and rasterises the rest at a whole number of device pixels, and the window tints it. The glow of each drawing is its group of class `halo`, blurred by `resvg`; the loader keeps that group at Soft only. A file that keeps room around its box for the glow states the box in its comment, "fills the box 0 0 W H", and the texture reaches out of the box by that room. Caps labels in `bright` on `ground` or `pane` can draw over a second Spleen atlas, blurred once on the CPU, for their glow.
 
-A settings file does not exist yet. It would hold the scheme, high legibility, the effects level, the pane sizes and which panes are shown, the text size, and the recent projects.
+A settings file does not exist yet. It would hold the scheme, high legibility, the screen level and its strengths, the pane sizes and which panes are shown, the text size, and the recent projects.

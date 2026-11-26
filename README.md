@@ -29,7 +29,8 @@ What works today:
 - The editor edits plain text and C, with line numbers and colours for C. It saves with Cmd or Ctrl+S, finds and replaces with Cmd or Ctrl+F, and keeps a file's CRLF line endings. A file it cannot open as text is refused with the reason, and nothing changes.
 - A tab with unsaved edits shows a square after its name. Closing it, or quitting, asks "Save ... before closing?" first.
 - F6 and Shift+F6 move between the panes. Every control takes keyboard focus and has a name for a screen reader.
-- The green, amber, blue and white schemes, high legibility, and effects Off and Soft, from the View menu.
+- The green, amber, blue and white schemes and high legibility, from the View menu.
+- View, Screen: Off, Soft, Still, Live and Arcade, and Adjust with a slider for each effect. Still, Live and Arcade pass the whole window through a CRT shader: bloom, vignette, scanlines, a curved glass, and in Live and Arcade persistence, noise, flicker and a rolling band. Live and Arcade animate only while the window has focus. Studio starts in Live on a graphics adapter, in Still when the system asks for reduced motion, which only macOS tells it, and in Soft on a software adapter. `--screen LEVEL` starts at a level.
 
 What does not work yet, and says so:
 
