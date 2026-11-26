@@ -792,13 +792,23 @@ pub enum OnDisk {
     },
 }
 
-/// True for the error of a symbolic link loop, `ELOOP`.
-fn is_loop(e: &std::io::Error) -> bool {
+/// True for the error of a symbolic link loop.
+///
+/// On Unix it is `ELOOP`. On Windows it is `ERROR_CANT_RESOLVE_FILENAME`,
+/// 1921 (0x781), "The name of the file cannot be resolved by the system",
+/// from Microsoft's "System Error Codes (1700-3999)":
+/// <https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1700-3999->.
+/// `ErrorKind::FilesystemLoop` would say the same, but it is unstable on
+/// the pinned toolchain, 1.100.0, so the raw codes are used. The Windows
+/// code is not proven on a Windows machine.
+pub(crate) fn is_loop(e: &std::io::Error) -> bool {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    const ELOOP: i32 = 40;
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    const ELOOP: i32 = 62;
-    cfg!(unix) && e.raw_os_error() == Some(ELOOP)
+    const LOOP: i32 = 40;
+    #[cfg(windows)]
+    const LOOP: i32 = 1921;
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+    const LOOP: i32 = 62;
+    e.raw_os_error() == Some(LOOP)
 }
 
 /// Checks the icon file and returns its 128 META bytes.

@@ -703,3 +703,15 @@ fn inside_root_gives_unreadable_for_a_folder_without_search() {
         }
     );
 }
+
+#[test]
+fn a_link_loop_error_is_known_on_each_system() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let code = 40;
+    #[cfg(windows)]
+    let code = 1921;
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+    let code = 62;
+    assert!(is_loop(&std::io::Error::from_raw_os_error(code)));
+    assert!(!is_loop(&std::io::Error::from_raw_os_error(2)));
+}
