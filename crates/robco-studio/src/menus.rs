@@ -161,8 +161,6 @@ pub fn not_yet(c: Command) -> Option<&'static str> {
 pub fn not_yet_news(name: &str) -> String {
     format!("{name} is not in this version yet.")
 }
-/// Said by the Open folder buttons of the editor pane, which do not act.
-pub const USE_FILE_MENU: &str = "Use File, Open folder.";
 /// Said by an edit command the editor takes from its keys only.
 pub const KEYS_ONLY: &str = "Use the shortcut in the editor. The menu item does not act yet.";
 

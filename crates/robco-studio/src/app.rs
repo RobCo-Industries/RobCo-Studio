@@ -1518,6 +1518,7 @@ impl Studio {
         };
         let no_project = self.project.is_none();
         let editor = &mut self.editor;
+        let mut open_folder = false;
         kit.pane(ui, rect, Place::Editor.name(), !has_docs, fr, |ui, r| {
             if has_docs {
                 editor.tabs(kit, ui, r.header);
@@ -1525,20 +1526,26 @@ impl Studio {
             let mut body = r.content;
             if let Some((level, text)) = &banner {
                 let mut b = ui.new_child(UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
-                let other = Button::quiet("Open another folder").unavailable(menus::USE_FILE_MENU);
-                kit.banner(&mut b, *level, text, Some(other));
+                let other = Button::quiet("Open another folder");
+                open_folder |= kit.banner(&mut b, *level, text, Some(other)).is_some_and(|r| r.clicked());
                 body.min.y = b.min_rect().bottom() + size::UNIT * 2.0;
             }
             if no_project {
                 let new = Button::quiet("New project").kind(ButtonKind::Filled).icon(Icon::Add).unavailable(menus::LATER);
-                let open = Button::quiet("Open folder").icon(Icon::Folder).unavailable(menus::USE_FILE_MENU);
-                kit.empty_state(ui, body, Icon::Tape, "No project is open. Make one from a template, or open a folder that holds a robco.toml.", &[new, open]);
+                let open = Button::quiet("Open folder").icon(Icon::Folder);
+                let r = kit.empty_state(ui, body, Icon::Tape, "No project is open. Make one from a template, or open a folder that holds a robco.toml.", &[new, open]);
+                open_folder |= r.get(1).is_some_and(|r| r.clicked());
             } else if !has_docs {
                 kit.empty_state(ui, body, Icon::File, "No file is open. Choose one in Files.", &[]);
             } else {
                 editor.body(kit, ui, body);
             }
         });
+        // The same command as File, Open folder, run next frame.
+        if open_folder {
+            self.pending.push(Command::OpenFolder);
+            ui.ctx().request_repaint();
+        }
         self.places.push((Place::Editor, rect));
     }
 

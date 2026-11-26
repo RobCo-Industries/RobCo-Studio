@@ -1584,3 +1584,29 @@ fn the_scale_items_follow_the_panes_room() {
         .unwrap();
     assert_eq!(h.state().unavailable(&it), None);
 }
+
+#[test]
+fn the_empty_states_open_folder_opens_the_chooser() {
+    let b = sample("empty-open-to").unwrap();
+    let (mut h, fake) = with_fake(None, Some(Choice::Chosen(b.to_path_buf())));
+    h.query_all_by_label("Open folder")
+        .find(|n| n.accesskit_node().role() == Role::Button)
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts,
+        [std::env::home_dir()]
+    );
+    assert!(tree_root(&h, &folder_name(&b)).is_some());
+    // The banner's button of a folder without robco.toml does the same.
+    let c = sample("empty-open-next").unwrap();
+    fake.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .answer = Some(Choice::Chosen(c.to_path_buf()));
+    h.get_by_label("Open another folder").click();
+    h.run_steps(3);
+    assert!(tree_root(&h, &folder_name(&c)).is_some());
+}
