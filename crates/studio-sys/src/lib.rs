@@ -151,6 +151,16 @@ pub fn ini_parse(text: &str) -> Result<Vec<IniEntry>, IniError> {
     Ok(entries)
 }
 
+/// A zeroed buffer of `n` bytes. A failed allocation is an error with code
+/// -1, never an abort.
+fn zeroed(what: &str, n: usize) -> Result<Vec<u8>, Error> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n)
+        .map_err(|_| Error::new(what, -1, format!("cannot allocate {n} bytes")))?;
+    v.resize(n, 0);
+    Ok(v)
+}
+
 fn c_string(what: &str, s: &str) -> Result<CString, Error> {
     CString::new(s).map_err(|_| Error::new(what, -1, "the text holds a NUL byte"))
 }
@@ -332,7 +342,7 @@ impl SealTexts {
 pub fn rimg_seal(image: &[u8], opts: &SealOpts<'_>) -> Result<Vec<u8>, Error> {
     let texts = SealTexts::new("rimg_seal", opts)?;
     let c = texts.c_opts(opts);
-    let mut out = vec![0u8; image.len()];
+    let mut out = zeroed("rimg_seal", image.len())?;
     // SAFETY: `image` holds `image.len()` bytes and `out` as many, as the C
     // needs; they do not overlap. `c` points into `texts` and `opts`, which
     // outlive the call, and its strings end with NUL.
@@ -369,8 +379,15 @@ pub fn rimg_pack(payload: &[u8], opts: &PackOpts<'_>) -> Result<Vec<u8>, Error> 
         meta: opts.meta.map_or(-1, c_int::from),
         entry: opts.entry,
     };
+    // The C decides first, with no buffer: steps 1 to 5 run, and a payload
+    // too long for a 32-bit file_size gives its RIMG_E_SIZE. Only when the
+    // one failure left is the capacity is the full buffer allocated.
+    pack_decision(pack_probe(payload.len(), &c))?;
     // The largest image the C makes: the payload, the header and META.
-    let mut out = vec![0u8; payload.len().saturating_add(ffi::RIMG_PACK_MAX_EXTRA)];
+    let mut out = zeroed(
+        "rimg_pack",
+        payload.len().saturating_add(ffi::RIMG_PACK_MAX_EXTRA),
+    )?;
     let mut len = 0usize;
     // SAFETY: `payload` holds `payload.len()` bytes and `out` holds
     // `out.len()`, passed as the capacity; they do not overlap. `c` points
@@ -398,6 +415,40 @@ pub fn rimg_pack(payload: &[u8], opts: &PackOpts<'_>) -> Result<Vec<u8>, Error> 
     }
     out.truncate(len);
     Ok(out)
+}
+
+/// Runs `rimg_pack` on a payload of `payload_len` bytes with a capacity of
+/// 0. The C's own checks run up to step 5, the payload length included,
+/// and it returns before it reads the payload or writes `out`.
+fn pack_probe(payload_len: usize, c: &ffi::RimgPackOpts) -> c_int {
+    let mut out = [0u8; 1];
+    let mut len = 0usize;
+    // SAFETY: with `out_cap` 0, below any image length of at least 0x60
+    // bytes, the C returns at the capacity check of step 5 at the latest,
+    // before step 6 writes `out` and step 8 reads the payload, as rimg.h
+    // and IMAGE_FORMAT.md order them. So the dangling, non-null payload
+    // pointer is never read. `out` is a real buffer, so it is not NULL.
+    // `c` and `len` outlive the call.
+    unsafe {
+        ffi::rimg_pack(
+            std::ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+            payload_len,
+            c,
+            out.as_mut_ptr().cast(),
+            0,
+            &mut len,
+        )
+    }
+}
+
+/// What the probe's code means: `RIMG_E_IO` is the capacity, so the full
+/// call may go on; any other code is the C's answer.
+fn pack_decision(rc: c_int) -> Result<(), Error> {
+    if rc == ffi::RIMG_E_IO {
+        Ok(())
+    } else {
+        Err(rimg_error("rimg_pack", rc))
+    }
 }
 
 /// The CRC `rimg_validate` expects in the header of `image`, over its
@@ -571,7 +622,7 @@ pub fn build_card(mib: usize, entries: &[Entry<'_>]) -> Result<Vec<u8>, Error> {
         .map_err(|_| Error::new("build_card", -1, "card size out of range"))?;
     let part_sectors = u32::try_from(sectors - PART_LBA)
         .map_err(|_| Error::new("build_card", -1, "card size out of range"))?;
-    let mut img = vec![0u8; bytes];
+    let mut img = zeroed("build_card", bytes)?;
     let mbr = &mut img[0x1BE..0x1CE];
     mbr[0] = 0x00;
     mbr[1..4].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
@@ -678,7 +729,7 @@ pub fn read_back(img: &mut [u8], path: &str) -> Result<Vec<u8>, Error> {
         fs_check(path, unsafe { ffi::fs_stat(p.as_ptr(), &mut st) })?;
         let size = usize::try_from(st.size)
             .map_err(|_| Error::new(path, -1, "file too large for this system"))?;
-        let mut buf = vec![0u8; size];
+        let mut buf = zeroed(path, size)?;
         let mut n = 0usize;
         // One call is enough: `fs_read_file` loops on `fs_read` itself until
         // `max` bytes, a 0 count or an error. It returns FS_ERR_TOOBIG when
@@ -737,6 +788,56 @@ mod tests {
     fn write_loop_refuses_an_overcount_and_skips_empty_data() {
         assert!(write_loop("t", b"ab", |_| 5).is_err());
         write_loop("t", b"", |_| panic!("no call for empty data")).unwrap();
+    }
+
+    const E_SIZE: c_int = 5;
+
+    /// The C's code for a payload of `len` bytes, with or without META.
+    fn probe(len: usize, meta: bool) -> c_int {
+        let magic = c"ROM1";
+        let texts = SealTexts::new("t", &SealOpts::default()).unwrap();
+        let c = ffi::RimgPackOpts {
+            seal: texts.c_opts(&SealOpts::default()),
+            magic: magic.as_ptr(),
+            subtype: 0,
+            load_addr: 0,
+            has_mem_size: 0,
+            mem_size: 0,
+            has_abi_version: 0,
+            abi_version: 0,
+            meta: c_int::from(meta),
+            entry: 0,
+        };
+        pack_probe(len, &c)
+    }
+
+    #[test]
+    fn the_c_refuses_a_payload_past_32_bits_with_no_buffer() {
+        // 0xFFFFFFFF is the largest file_size; the header is 0x60 bytes,
+        // the header and META 0x120. One over the limit is the C's E_SIZE.
+        for (meta, extra) in [(false, 0x60usize), (true, 0x120)] {
+            let limit = 0xFFFF_FFFFusize - extra;
+            assert_eq!(probe(limit - 1, meta), ffi::RIMG_E_IO);
+            assert_eq!(probe(limit, meta), ffi::RIMG_E_IO);
+            assert_eq!(probe(limit + 1, meta), E_SIZE);
+            assert_eq!(probe(usize::MAX, meta), E_SIZE);
+        }
+    }
+
+    #[test]
+    fn only_the_capacity_code_goes_on_to_allocate() {
+        assert_eq!(pack_decision(ffi::RIMG_E_IO), Ok(()));
+        let e = pack_decision(E_SIZE).unwrap_err();
+        assert_eq!((e.what.as_str(), e.code), ("rimg_pack", E_SIZE));
+        assert!(pack_decision(ffi::RIMG_E_CRC).is_err());
+    }
+
+    #[test]
+    fn a_failed_allocation_is_an_error() {
+        let e = zeroed("x", usize::MAX).unwrap_err();
+        assert_eq!(e.code, -1);
+        assert_eq!(e.text, format!("cannot allocate {} bytes", usize::MAX));
+        assert_eq!(zeroed("x", 3).unwrap(), vec![0u8; 3]);
     }
 
     fn ffi_nospc() -> c_int {
