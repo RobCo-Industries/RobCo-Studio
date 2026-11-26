@@ -1436,7 +1436,7 @@ impl Studio {
                     &mut log.query,
                     "Filter the log",
                     "Filter",
-                    size::FIND_W,
+                    size::LOG_FILTER_W,
                     false,
                 );
                 if let Some(i) = kit.segmented(&mut row, "log-show", &LOG_SHOW, log.show) {

@@ -308,6 +308,8 @@ pub mod size {
     /// The narrowest find or replace field: below it, the find bar's
     /// buttons wrap to a further row.
     pub const FIND_MIN: f32 = 100.0;
+    /// The log's filter field in the bottom pane's tab row.
+    pub const LOG_FILTER_W: f32 = 150.0;
     /// A dialog.
     pub const DIALOG_W: f32 = 440.0;
     /// The width of an empty state's sentence.

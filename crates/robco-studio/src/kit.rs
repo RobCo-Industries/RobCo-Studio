@@ -970,7 +970,9 @@ impl<'a> Kit<'a> {
         // ones, so a fill after the text would hide it.
         ui.painter()
             .rect_filled(rect, self.theme.control_radius(), p.ground);
-        let resp = ui.put(
+        // Placed, not put: the field's own allocation keeps the layout's
+        // gap to the next widget.
+        let resp = ui.place(
             inner,
             egui::TextEdit::singleline(value)
                 .id(id)
@@ -1388,7 +1390,7 @@ impl<'a> Kit<'a> {
         let y = r.center().y - g.size().y / 2.0;
         painter.galley(egui::pos2(r.left() + pad + icon_w, y), g, p.text);
         // In the accessibility tree too: an invisible label over the segment.
-        let resp = ui.put(
+        let resp = ui.place(
             r,
             egui::Label::new(
                 egui::RichText::new(text)

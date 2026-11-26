@@ -842,3 +842,34 @@ fn the_target_is_named_with_a_comma() {
     h.get_by_label("Target: Pip-OS, ABI 1.3");
     h.get_by_label("Pip-OS ABI 1.3");
 }
+
+/// The log filter field leaves the row's gap on both sides: to the
+/// segmented control at its left and to Follow at its right.
+#[test]
+fn the_log_filter_keeps_the_rows_gap() {
+    use robco_studio::theme::size;
+    let mut h = harness(None);
+    h.state_mut().bottom_tab = robco_studio::app::BottomTab::Log;
+    h.run_steps(2);
+    // The node is the text inside the field's padding.
+    let field = h
+        .get_by_label("Filter the log")
+        .rect()
+        .expand2(egui::vec2(size::UNIT * 2.0, size::UNIT));
+    let text = h
+        .query_all_by_label("Text")
+        .find(|n| n.accesskit_node().role() == Role::RadioButton)
+        .unwrap()
+        .rect();
+    let follow = h
+        .query_all_by_label("Follow")
+        .find(|n| n.accesskit_node().role() == Role::Button)
+        .unwrap()
+        .rect();
+    let gap = size::UNIT * 2.0;
+    let before = field.left() - text.right();
+    let after = follow.left() - field.right();
+    assert!(before >= gap - 0.5, "{text:?} {field:?}");
+    assert!(after >= gap - 0.5, "{field:?} {follow:?}");
+    assert_eq!(field.width(), size::LOG_FILTER_W);
+}
