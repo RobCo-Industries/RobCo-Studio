@@ -3,19 +3,15 @@
 //! `robco sdk install`, by "robco sdk install" of RobCo-Core
 //! `docs/spec/STUDIO_CLI.md`.
 //!
-//! `studio_core::install` downloads, checks and installs an item in one
-//! call. The `step` lines come from a transport that wraps the real one:
-//! `download` opens when the fetch starts and closes when it ends, and
-//! `verify` opens right after. When the call returns `Ok`, `verify` closes
-//! and `install` opens and closes. An item the call finds in the cache was
-//! never fetched: it writes one `install` line with `skip`. A failure
-//! leaves the step it happened in open, as "step" allows.
+//! `studio_core::install` tells the command each step as it begins and
+//! ends, and the command writes one `step` line per transition. A failure
+//! leaves the step it happened in open, a `start` with no `done`, as
+//! "step" allows, and the error line follows. An item the cache holds
+//! writes one `install` line with `skip`.
 
-use std::cell::{Cell, RefCell};
-use std::io::Write;
 use std::path::Path;
 
-use studio_core::install::{self, LocalFiles, Pin, State, Transport};
+use studio_core::install::{self, LocalFiles, Phase, Pin, Progress, State};
 use studio_core::resolve::{self, InstallPick, PIPOS, Root};
 
 use crate::Failure;
@@ -36,51 +32,30 @@ pub struct Request<'a> {
     pub host: Option<&'a str>,
 }
 
-/// A transport that writes the `download` and `verify` start lines.
-struct Watch<'a, 'm, 'o> {
-    inner: &'a dyn Transport,
-    out: &'a RefCell<&'m mut Out<'o>>,
+/// Writes the `step` lines of one item.
+struct Lines<'a, 'o> {
+    out: &'a mut Out<'o>,
     item: &'a str,
-    fetched: Cell<bool>,
 }
 
-impl Transport for Watch<'_, '_, '_> {
-    fn fetch(&self, url: &str, sink: &mut dyn Write) -> Result<(), String> {
-        self.fetched.set(true);
-        self.out.borrow_mut().step("download", self.item, "start");
-        let r = self.inner.fetch(url, sink);
-        if r.is_ok() {
-            let mut out = self.out.borrow_mut();
-            out.step("download", self.item, "done");
-            out.step("verify", self.item, "start");
-        }
-        r
+fn word(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Download => "download",
+        Phase::Verify => "verify",
+        Phase::Install => "install",
     }
 }
 
-/// Runs one install call with its `step` lines.
-fn watched<'m, 'o>(
-    out: &RefCell<&'m mut Out<'o>>,
-    transport: &dyn Transport,
-    item: &str,
-    call: impl FnOnce(&dyn Transport) -> Result<State, install::Error>,
-) -> Result<State, Failure> {
-    let watch = Watch {
-        inner: transport,
-        out,
-        item,
-        fetched: Cell::new(false),
-    };
-    let state = call(&watch).map_err(|e| Failure::of(&e))?;
-    let mut out = out.borrow_mut();
-    if watch.fetched.get() {
-        out.step("verify", item, "done");
-        out.step("install", item, "start");
-        out.step("install", item, "done");
-    } else {
-        out.step("install", item, "skip");
+impl Progress for Lines<'_, '_> {
+    fn start(&mut self, phase: Phase) {
+        self.out.step(word(phase), self.item, "start");
     }
-    Ok(state)
+    fn done(&mut self, phase: Phase) {
+        self.out.step(word(phase), self.item, "done");
+    }
+    fn skip(&mut self) {
+        self.out.step("install", self.item, "skip");
+    }
 }
 
 fn state_word(s: State) -> &'static str {
@@ -129,24 +104,29 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     out.step("resolve", "", "done");
 
     // Step 4. `resolve_requires` sorts the packages by name in byte order.
-    let cell = RefCell::new(out);
     let mut done_packages = Vec::new();
     for p in &packages {
         let item = format!("{}@{}", p.name, p.version);
-        let state = watched(&cell, &transport, &item, |t| {
-            install::package(cache, p, t, Pin::Index)
-        })?;
+        let mut lines = Lines { out, item: &item };
+        let state = install::package_watched(cache, p, &transport, Pin::Index, &mut lines)
+            .map_err(|e| Failure::of(&e))?;
         done_packages.push((p.name.clone(), p.version.to_string(), state));
     }
     let mut done_tools = Vec::new();
     for (t, host, archive) in &tools {
         let item = format!("{}@{}/{host}", t.name, t.version);
-        let state = watched(&cell, &transport, &item, |tr| {
-            install::tool(cache, &t.name, &t.version, host, archive, tr, Pin::Index)
-        })?;
+        let mut lines = Lines { out, item: &item };
+        let state = install::tool_watched(
+            cache,
+            [&t.name, &t.version, host],
+            archive,
+            &transport,
+            Pin::Index,
+            &mut lines,
+        )
+        .map_err(|e| Failure::of(&e))?;
         done_tools.push((t.name.clone(), t.version.clone(), (*host).to_owned(), state));
     }
-    let out = cell.into_inner();
 
     for (name, version, state) in &done_packages {
         out.text(&format!("package {name} {version} {}", state_word(*state)));

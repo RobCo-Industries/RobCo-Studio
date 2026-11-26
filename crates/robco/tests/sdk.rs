@@ -66,10 +66,32 @@ fn opts() -> SimpleFileOptions {
     SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)
 }
 
+/// The files of "Layout of pipos", `sdk.json` aside.
 const FILES: &[(&str, &[u8])] = &[
     ("LICENSES/MIT.txt", b"MIT licence text\n"),
     ("boot.json", b"{\"format\": 1}\n"),
+    ("boot/PIPOS.CFG", b"cfg\n"),
+    ("boot/PIPOS.IMG", b"img\n"),
+    ("boot/RUNNER.ROM", b"rom\n"),
+    ("boot/config.txt", b"config\n"),
+    ("boot/fwstub.bin", b"stub\n"),
+    ("boot/pipos.elf", b"elf\n"),
+    ("docs/API.md", b"api\n"),
     ("flags.json", b"{\"format\": 1}\n"),
+    ("include/pipos/abi.h", b"h\n"),
+    ("include/pipos/crc32.h", b"h\n"),
+    ("include/pipos/crt0.h", b"h\n"),
+    ("include/pipos/heap.h", b"h\n"),
+    ("include/pipos/ini.h", b"h\n"),
+    ("include/pipos/pip.h", b"h\n"),
+    ("include/pipos/printf.h", b"h\n"),
+    ("include/pipos/selftest.h", b"h\n"),
+    ("include/pipos/string.h", b"h\n"),
+    ("include/pipos/syscall.h", b"h\n"),
+    ("lib/crt0.S", b"s\n"),
+    ("lib/holotape.ld", b"ld\n"),
+    ("lib/libpip.a", b"a\n"),
+    ("lib/rom.ld", b"ld\n"),
 ];
 
 /// The `sdk.json` of `pipos` 1.4.0. `qemu` is the version it names.
@@ -612,4 +634,49 @@ fn sdk_refuses_a_cache_it_cannot_use() {
         "io: write"
     };
     refused(&f, INSTALL, code, Some(file.as_os_str()));
+}
+
+#[test]
+fn sdk_install_fails_in_the_install_step() {
+    // The archive passes its hash and breaks a rule of "The archive".
+    let mut f = Fixture::new("install-step");
+    f.replace_package(&package_zip(
+        &sdk_json("10.1.2"),
+        &[(".robco-archive", b"x")],
+    ));
+    let out = install_json(&f);
+    assert_eq!(out.status.code(), Some(4));
+    let stdout = text(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    let want = [
+        r#"{"v":1,"kind":"step","step":"resolve","item":"","state":"start"}"#,
+        r#"{"v":1,"kind":"step","step":"resolve","item":"","state":"done"}"#,
+        r#"{"v":1,"kind":"step","step":"download","item":"pipos@1.4.0","state":"start"}"#,
+        r#"{"v":1,"kind":"step","step":"download","item":"pipos@1.4.0","state":"done"}"#,
+        r#"{"v":1,"kind":"step","step":"verify","item":"pipos@1.4.0","state":"start"}"#,
+        r#"{"v":1,"kind":"step","step":"verify","item":"pipos@1.4.0","state":"done"}"#,
+        r#"{"v":1,"kind":"step","step":"install","item":"pipos@1.4.0","state":"start"}"#,
+    ];
+    assert_eq!(lines[..lines.len() - 2], want, "{stdout}");
+    let error: Value = serde_json::from_str(lines[lines.len() - 2]).unwrap();
+    assert_eq!(error["code"], "package: archive", "{stdout}");
+}
+
+#[test]
+fn sdk_refuses_a_pipos_package_without_flags_json() {
+    let mut f = Fixture::new("no-flags");
+    let mut sdk = sdk_json("10.1.2");
+    sdk["files"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|e| e["path"] != "flags.json");
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    z.start_file("sdk.json", opts()).unwrap();
+    z.write_all(sdk.to_string().as_bytes()).unwrap();
+    for (name, bytes) in FILES.iter().filter(|(p, _)| *p != "flags.json") {
+        z.start_file(*name, opts()).unwrap();
+        z.write_all(bytes).unwrap();
+    }
+    f.replace_package(&z.finish().unwrap().into_inner());
+    refused(&f, INSTALL, "package: manifest", None);
 }
