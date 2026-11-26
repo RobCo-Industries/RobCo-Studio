@@ -1463,6 +1463,8 @@ fn rows() -> Vec<Row> {
         keep: ("ember-2.toml", "Ember"),
         stored: "ember.toml",
     };
+    // Only Unix adds a row below.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut v = vec![
         Row {
             way: Way::Ships,
