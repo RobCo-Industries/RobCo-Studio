@@ -111,37 +111,6 @@ fn every_region_has_its_name() {
 }
 
 #[test]
-fn the_four_jobs_cannot_act() {
-    let d = sample("jobs").unwrap();
-    let mut h = harness(Some(&*d));
-    for job in ["Build", "Run", "Debug", "Write card"] {
-        let buttons: Vec<_> = h
-            .query_all_by_label(job)
-            .filter(|n| n.accesskit_node().role() == Role::Button)
-            .collect();
-        assert!(!buttons.is_empty(), "{job}");
-        for b in buttons {
-            assert!(b.accesskit_node().is_disabled(), "{job} looks able to act");
-            assert!(
-                b.accesskit_node()
-                    .description()
-                    .is_some_and(|s| s.contains("Nothing") || s.contains("No ")),
-                "{job} says why"
-            );
-        }
-    }
-    let before = h.state().status.clone();
-    for b in h
-        .query_all_by_label("Run")
-        .filter(|n| n.accesskit_node().role() == Role::Button)
-    {
-        b.click();
-    }
-    h.run_steps(2);
-    assert_eq!(h.state().status, before, "a click changed nothing");
-}
-
-#[test]
 fn the_rail_switches_pages() {
     let mut h = harness(None);
     h.get_by_label(
@@ -822,4 +791,39 @@ fn the_gutter_stays_put_across_and_follows_down() {
         "{after:?}"
     );
     assert!((y - (row_top + line_h / 2.0)).abs() < 1.0, "{after:?}");
+}
+
+/// The four jobs are drawn ready. A click on one, in the toolbar or in the
+/// simulator's empty state, says on the status line that it is not here yet.
+#[test]
+fn the_jobs_act_and_say_they_are_not_here_yet() {
+    let d = sample("jobs").unwrap();
+    let mut h = harness(Some(&*d));
+    for job in ["Build", "Run", "Debug", "Write card"] {
+        let b = h
+            .query_all_by_label(job)
+            .find(|n| {
+                n.accesskit_node().role() == Role::Button && !n.accesskit_node().is_disabled()
+            })
+            .unwrap_or_else(|| panic!("{job} is not an able button"));
+        b.click();
+        h.run_steps(3);
+        h.get_by_label(&format!("{job} is not in this version yet."));
+    }
+    h.state_mut().status = (robco_studio::kit::Level::Info, "Ready.".to_owned());
+    h.run_steps(2);
+    // The simulator's own Run, below the toolbar.
+    let runs: Vec<_> = h
+        .query_all_by_label("Run")
+        .filter(|n| n.accesskit_node().role() == Role::Button)
+        .map(|n| n.rect())
+        .collect();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let low = runs.iter().map(|r| r.top()).fold(f32::MIN, f32::max);
+    h.query_all_by_label("Run")
+        .find(|n| n.accesskit_node().role() == Role::Button && n.rect().top() == low)
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    h.get_by_label("Run is not in this version yet.");
 }

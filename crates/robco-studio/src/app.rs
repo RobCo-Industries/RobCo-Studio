@@ -395,7 +395,11 @@ impl Studio {
             Command::EffectsOff => self.theme.effects = Effects::Off,
             Command::EffectsSoft => self.theme.effects = Effects::Soft,
             Command::HighLegibility => self.theme.high_legibility = !self.theme.high_legibility,
-            _ => {}
+            c => {
+                if let Some(name) = menus::not_yet(c) {
+                    self.status = (Level::Info, menus::not_yet_news(name));
+                }
+            }
         }
     }
 
@@ -745,20 +749,24 @@ impl Studio {
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
         acts.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
-        for (text, icon, why) in [
-            ("Write card", Icon::WriteCard, menus::NO_CARD),
-            ("Debug", Icon::Debug, menus::NO_DEBUG),
-            ("Run", Icon::Run, menus::NO_RUN),
-            ("Build", Icon::Build, menus::NO_BUILD),
+        for (text, icon, c) in [
+            ("Write card", Icon::WriteCard, Command::WriteCard),
+            ("Debug", Icon::Debug, Command::Debug),
+            ("Run", Icon::Run, Command::Run),
+            ("Build", Icon::Build, Command::Build),
         ] {
-            kit.button(
-                &mut acts,
-                Button::quiet(text)
-                    .kind(ButtonKind::Filled)
-                    .icon(icon)
-                    .width(size::TOOLBAR_ACTION_W)
-                    .unavailable(why),
-            );
+            if kit
+                .button(
+                    &mut acts,
+                    Button::quiet(text)
+                        .kind(ButtonKind::Filled)
+                        .icon(icon)
+                        .width(size::TOOLBAR_ACTION_W),
+                )
+                .clicked()
+            {
+                self.pending.push(c);
+            }
         }
     }
 
@@ -1027,17 +1035,20 @@ impl Studio {
                 egui::Vec2::from(size::DEVICE_SCREEN) * z,
             );
             painter.rect_filled(screen, CornerRadius::ZERO, p.ground);
-            let run = Button::quiet("Run")
-                .kind(ButtonKind::Filled)
-                .icon(Icon::Run)
-                .unavailable(menus::NO_RUN);
-            kit.empty_state(
-                ui,
-                screen,
-                Icon::Wrist,
-                "No machine is running. Run builds the tape, boots it in the emulator and shows the screen here.",
-                &[run],
-            );
+            let run = Button::quiet("Run").kind(ButtonKind::Filled).icon(Icon::Run);
+            if kit
+                .empty_state(
+                    ui,
+                    screen,
+                    Icon::Wrist,
+                    "No machine is running. Run builds the tape, boots it in the emulator and shows the screen here.",
+                    &[run],
+                )
+                .iter()
+                .any(|r| r.clicked())
+            {
+                self.pending.push(Command::Run);
+            }
             let line = Rect::from_min_size(
                 egui::pos2(
                     rect.left() + size::PAD_SIDE,

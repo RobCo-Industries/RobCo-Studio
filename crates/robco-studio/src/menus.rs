@@ -143,12 +143,28 @@ pub struct Menu {
 pub const LATER: &str = "Not in this release of Studio. Nothing was done.";
 /// Said by Build.
 pub const NO_BUILD: &str = "Build is not in this release of Studio. Nothing was built.";
-/// Said by Run.
-pub const NO_RUN: &str = "Run is not in this release of Studio. No tape ran.";
 /// Said by Debug.
 pub const NO_DEBUG: &str = "Debug is not in this release of Studio. No debugger started.";
-/// Said by Write card.
-pub const NO_CARD: &str = "Write card is not in this release of Studio. Nothing was written.";
+
+/// The jobs drawn ready whose commands do not exist yet, with their
+/// names. Their buttons and menu items act, and the act only says so on
+/// the status line. A real command takes its job out of this list.
+pub const NOT_YET: [(Command, &str); 4] = [
+    (Command::Build, "Build"),
+    (Command::Run, "Run"),
+    (Command::Debug, "Debug"),
+    (Command::WriteCard, "Write card"),
+];
+
+/// The name of `c` when it is a job of [`NOT_YET`].
+pub fn not_yet(c: Command) -> Option<&'static str> {
+    NOT_YET.iter().find(|(n, _)| *n == c).map(|(_, name)| *name)
+}
+
+/// What a job of [`NOT_YET`] says when it is asked to act.
+pub fn not_yet_news(name: &str) -> String {
+    format!("{name} is not in this version yet.")
+}
 /// Said by Open folder.
 pub const NO_DIALOG: &str =
     "Studio has no folder dialog yet. Start it with a folder: robco-studio PATH.";
@@ -278,9 +294,9 @@ pub fn menus() -> Vec<Menu> {
         Menu {
             title: "Build",
             items: vec![
-                it("Build", C::Build, sc(M::Cmd, "B"), Some(NO_BUILD)),
-                it("Run", C::Run, sc(M::Cmd, "R"), Some(NO_RUN)),
-                it("Debug", C::Debug, sc(M::CmdShift, "D"), Some(NO_DEBUG)),
+                it("Build", C::Build, sc(M::Cmd, "B"), None),
+                it("Run", C::Run, sc(M::Cmd, "R"), None),
+                it("Debug", C::Debug, sc(M::CmdShift, "D"), None),
                 it("Stop", C::Stop, sc(M::Cmd, "."), l),
                 it("Run tests", C::RunTests, sc(M::Cmd, "T"), l),
                 it("Next error", C::NextError, sc(M::None, "F8"), l),
@@ -291,12 +307,7 @@ pub fn menus() -> Vec<Menu> {
                     sc(M::None, "F9"),
                     l,
                 ),
-                it(
-                    "Write card",
-                    C::WriteCard,
-                    sc(M::CmdShift, "K"),
-                    Some(NO_CARD),
-                ),
+                it("Write card", C::WriteCard, sc(M::CmdShift, "K"), None),
             ],
         },
         Menu {
@@ -408,16 +419,14 @@ mod tests {
     }
 
     #[test]
-    fn jobs_say_why() {
+    fn jobs_not_here_yet_act_and_say_so() {
         let all: Vec<_> = menus().into_iter().flat_map(|m| m.items).collect();
-        for c in [
-            Command::Build,
-            Command::Run,
-            Command::Debug,
-            Command::WriteCard,
-        ] {
+        for (c, name) in NOT_YET {
             let i = all.iter().find(|i| i.command == c).unwrap();
-            assert!(i.unavailable.is_some());
+            assert!(i.unavailable.is_none(), "{name}");
+            assert_eq!(i.text, name);
+            assert_eq!(not_yet(c), Some(name));
         }
+        assert_eq!(not_yet_news("Build"), "Build is not in this version yet.");
     }
 }
