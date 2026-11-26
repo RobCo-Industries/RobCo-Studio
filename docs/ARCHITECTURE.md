@@ -196,14 +196,14 @@ Known limits:
 
 `tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, with effects on at the left and off at the right.
 
-The drawings live in `crates/robco-studio/assets/art/`. Each was drawn for Studio and carries its SPDX lines and a provenance line.
+The drawings live in `crates/robco-studio/assets/art/`. Each carries its SPDX lines and a provenance line. The two wordmarks, the atom and the skyline are traced from a reference picture supplied by the project owner. The application icon is built from the traced atom and letter R, on a tile drawn for Studio. The other drawings are drawn for Studio.
 
 | File | What |
 |---|---|
-| `wordmark.svg` | "RobCo Studio", for the header |
-| `wordmark-industries.svg` | "RobCo Industries", for the footer |
-| `atom.svg` | The atom mark |
-| `skyline.svg` | The works skyline at the right of the header |
+| `wordmark.svg` | "RobCo Studio", for the header. Traced. |
+| `wordmark-industries.svg` | "RobCo Industries", for the footer. Traced. |
+| `atom.svg` | The atom mark. Traced. |
+| `skyline.svg` | The works skyline at the right of the header, standing on the header's rule. Traced. |
 | `device-frame.svg` | The wrist device around the simulator's screen, with ids for its keys, dial, slot and lamps |
 | `holotape.svg` | The tape |
 | `card.svg` | The memory card |

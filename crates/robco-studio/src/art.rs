@@ -1044,8 +1044,14 @@ mod tests {
 
     #[test]
     fn sizes_and_offsets_follow_the_files() {
-        assert_eq!(Art::mark_size(Mark::Wordmark).x.round(), 321.0);
-        assert_eq!(Art::mark_size(Mark::Industries).x.round(), 154.0);
+        assert_eq!(Art::mark_size(Mark::Wordmark).x.round(), 276.0);
+        assert_eq!(Art::mark_size(Mark::WordmarkCompact).x.round(), 157.0);
+        assert_eq!(Art::mark_size(Mark::Industries).x.round(), 146.0);
+        assert_eq!(
+            Art::mark_size(Mark::Atom),
+            egui::vec2(size::ATOM, size::ATOM)
+        );
+        assert_eq!(Drawing::Skyline.view_box(), [0.0, 0.0, 392.0, 60.0]);
         assert_eq!(
             Art::mark_size(Mark::Skyline),
             egui::Vec2::from(size::SKYLINE)
@@ -1177,5 +1183,132 @@ mod tests {
             (total - 16.0).abs() < 1.0,
             "the blur loses or adds light: {total}"
         );
+    }
+
+    /// The dark regions of `img`, alpha under `dark`, that touch no edge:
+    /// the counters. Returns each one's pixel count.
+    fn counters(img: &ColorImage, dark: u8) -> Vec<usize> {
+        let [w, h] = img.size;
+        let mut seen = vec![false; w * h];
+        let mut out = Vec::new();
+        for start in 0..w * h {
+            if seen[start] || img.pixels[start].a() >= dark {
+                continue;
+            }
+            let (mut stack, mut n, mut edge) = (vec![start], 0, false);
+            seen[start] = true;
+            while let Some(i) = stack.pop() {
+                n += 1;
+                let (x, y) = (i % w, i / w);
+                edge |= x == 0 || y == 0 || x + 1 == w || y + 1 == h;
+                let mut near = Vec::new();
+                if x > 0 {
+                    near.push(i - 1);
+                }
+                if x + 1 < w {
+                    near.push(i + 1);
+                }
+                if y > 0 {
+                    near.push(i - w);
+                }
+                if y + 1 < h {
+                    near.push(i + w);
+                }
+                for j in near {
+                    if !seen[j] && img.pixels[j].a() < dark {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            if !edge {
+                out.push(n);
+            }
+        }
+        out
+    }
+
+    /// The alpha at a point given in file units, for a mark at a scale.
+    fn alpha_at_unit(m: Mark, ppp: f32, u: [f32; 2]) -> u8 {
+        let d = m.drawing();
+        let r = render(d, m.box_h(), ppp, Effects::Off).unwrap();
+        let s = m.box_h() * ppp / d.box_units().y;
+        let [x, y] = [(u[0] * s) as usize, (u[1] * s) as usize];
+        r.image.pixels[y * r.image.size[0] + x].a()
+    }
+
+    /// The counters stay open at the sizes the window draws, at display
+    /// scales 1 and 2: a point inside the R's counter is dark, and each
+    /// mark keeps at least its number of closed dark regions.
+    #[test]
+    fn the_counters_stay_open() {
+        // The middle of the R's counter, in file units.
+        let r_studio = [35.6, 22.8];
+        let r_industries = [30.8, 22.0];
+        // Inside the upright orbit, above the nucleus.
+        let atom_gap = [32.0, 14.0];
+        let cases = [
+            (Mark::Wordmark, r_studio, 6),
+            (Mark::WordmarkCompact, r_studio, 6),
+            (Mark::Industries, r_industries, 6),
+            (Mark::Atom, atom_gap, 8),
+            (Mark::AtomCompact, atom_gap, 1),
+        ];
+        for (m, at, holes) in cases {
+            for ppp in [1.0, 2.0] {
+                let a = alpha_at_unit(m, ppp, at);
+                assert!(a < 96, "{m:?} at {ppp}: the counter is shut, alpha {a}");
+                let r = render(m.drawing(), m.box_h(), ppp, Effects::Off).unwrap();
+                let c = counters(&r.image, 128);
+                assert!(
+                    c.len() >= holes,
+                    "{m:?} at {ppp}: {} counters {c:?}",
+                    c.len()
+                );
+            }
+        }
+    }
+
+    /// Nothing sharp reaches out of the view box, so no part is cut: the
+    /// file drawn with 8 more units on each side lights nothing outside it.
+    #[test]
+    fn no_sharp_part_is_cut_by_the_view_box() {
+        for d in [
+            Drawing::Wordmark,
+            Drawing::Industries,
+            Drawing::Atom,
+            Drawing::Skyline,
+        ] {
+            let [x, y, w, h] = d.view_box();
+            let pad = 8.0;
+            let wide = prepare(d.source(), Effects::Off).replacen(
+                &format!("viewBox=\"{x} {y} {w} {h}\" width=\"{w}\" height=\"{h}\""),
+                &format!(
+                    "viewBox=\"{} {} {} {}\" width=\"{}\" height=\"{}\"",
+                    x - pad,
+                    y - pad,
+                    w + 2.0 * pad,
+                    h + 2.0 * pad,
+                    w + 2.0 * pad,
+                    h + 2.0 * pad
+                ),
+                1,
+            );
+            assert_ne!(wide, prepare(d.source(), Effects::Off), "{d:?}");
+            let (pw, ph) = ((w + 2.0 * pad) as u32, (h + 2.0 * pad) as u32);
+            let px = rasterise_bytes(&wide, pw, ph).unwrap();
+            let inside = |i: usize| {
+                let (px_, py) = ((i as u32 % pw) as f32, (i as u32 / pw) as f32);
+                px_ >= pad - 1.0 && py >= pad - 1.0 && px_ <= pad + w && py <= pad + h
+            };
+            let out = px
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| p[3] > 0 && !inside(*i))
+                .count();
+            assert_eq!(out, 0, "{d:?} reaches out of its view box");
+        }
     }
 }

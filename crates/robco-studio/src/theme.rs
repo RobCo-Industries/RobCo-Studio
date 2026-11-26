@@ -236,11 +236,14 @@ pub mod size {
     /// The Studio wordmark in the compact header.
     pub const WORDMARK_COMPACT_H: f32 = 32.0;
     /// The atom mark in the tall header, square.
-    pub const ATOM: f32 = 44.0;
+    pub const ATOM: f32 = 52.0;
     /// The atom mark in the compact header, square.
     pub const ATOM_COMPACT: f32 = 24.0;
     /// The skyline at the right of the header.
-    pub const SKYLINE: [f32; 2] = [420.0, 60.0];
+    pub const SKYLINE: [f32; 2] = [392.0, 60.0];
+    /// The middle of the skyline's own rule, in its file's units from its
+    /// top. It lies on the header's rule.
+    pub const SKYLINE_RULE_Y: f32 = 59.0;
     /// The one width of the four action buttons of the toolbar.
     pub const TOOLBAR_ACTION_W: f32 = 132.0;
     /// The space at each side of a divider in the toolbar.
