@@ -12,7 +12,7 @@ use crate::document::{self, Doc};
 use crate::kit::{Button, ButtonKind, Kit};
 use crate::theme::{Type, size, stroke};
 use eframe::egui::{
-    self, Color32, CornerRadius, Id, Key, Modifiers, Rect, Sense, StrokeKind, text::CCursor,
+    self, Color32, CornerRadius, Id, Key, Rect, Sense, StrokeKind, text::CCursor,
     text::CCursorRange, text::LayoutJob, text::TextFormat,
 };
 use std::path::Path;
@@ -62,7 +62,7 @@ pub struct Find {
     /// What to put in its place.
     pub replace: String,
     /// The bar was just opened: give its field focus.
-    focus: bool,
+    pub(crate) focus: bool,
 }
 
 /// The editor model.
@@ -97,7 +97,7 @@ impl Editor {
         self.active.and_then(|i| self.docs.get(i))
     }
 
-    fn current_mut(&mut self) -> Option<&mut Doc> {
+    pub(crate) fn current_mut(&mut self) -> Option<&mut Doc> {
         self.active.and_then(|i| self.docs.get_mut(i))
     }
 
@@ -309,8 +309,7 @@ impl Editor {
         if !q.is_empty() && d.text.get(s..e) == Some(q.as_str()) {
             let id = d.id;
             if let Some(d) = self.current_mut() {
-                d.text.replace_range(s..e, &document::to_lf(&rep));
-                let c = d.text[..s].chars().count() + rep.chars().count();
+                let c = replace_range(&mut d.text, s..e, &rep);
                 d.pending_sel = Some((c, c));
             }
             // Text changed under the widget: keep its caret in step.
@@ -371,39 +370,10 @@ impl Editor {
 
     /// Keys the editor takes whatever has focus inside it.
     pub fn keys(&mut self, ctx: &egui::Context) {
-        let (find, sf3, f3, save, save_all, close, esc) = ctx.input_mut(|i| {
-            (
-                i.consume_key(Modifiers::COMMAND, Key::F),
-                // Shift first: F3 alone also matches Shift+F3.
-                i.consume_key(Modifiers::SHIFT, Key::F3),
-                i.consume_key(Modifiers::NONE, Key::F3),
-                i.consume_key(Modifiers::COMMAND, Key::S),
-                i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::S),
-                i.consume_key(Modifiers::COMMAND, Key::W),
-                self.find.open && i.key_pressed(Key::Escape),
-            )
-        });
-        if find {
-            self.find.open = true;
-            self.find.focus = true;
-        }
+        // Find, F3, save and close are app commands, dispatched on every page.
+        let esc = ctx.input(|i| self.find.open && i.key_pressed(Key::Escape));
         if esc {
             self.find.open = false;
-        }
-        if f3 {
-            self.find_step(ctx, true);
-        }
-        if sf3 {
-            self.find_step(ctx, false);
-        }
-        if save_all {
-            self.save_all();
-        } else if save {
-            self.save();
-        }
-        if close && let Some(d) = self.current() {
-            let id = d.id;
-            self.close(id);
         }
     }
 
@@ -695,5 +665,26 @@ impl Editor {
             self.find_step(ui.ctx(), true);
             r.request_focus();
         }
+    }
+}
+
+/// Put `rep`, made LF, in place of `range`. Gives the caret after it, in chars.
+fn replace_range(text: &mut String, range: std::ops::Range<usize>, rep: &str) -> usize {
+    let rep = document::to_lf(rep);
+    let start = range.start;
+    text.replace_range(range, &rep);
+    text[..start].chars().count() + rep.chars().count()
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use super::replace_range;
+
+    #[test]
+    fn caret_counts_inserted_text() {
+        let mut t = String::from("ab FOO cd");
+        let c = replace_range(&mut t, 3..6, "x\r\ny");
+        assert_eq!(t, "ab x\ny cd");
+        assert_eq!(c, 6);
     }
 }

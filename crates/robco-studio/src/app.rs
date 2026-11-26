@@ -263,6 +263,7 @@ impl Studio {
             Command::Find => {
                 self.page = Page::Project;
                 self.editor.find.open = true;
+                self.editor.find.focus = true;
             }
             Command::FindNext => self.editor.find_step(ctx, true),
             Command::FindPrevious => self.editor.find_step(ctx, false),
@@ -303,6 +304,18 @@ impl Studio {
                 Key::F,
                 Command::ToggleFiles,
             );
+            // After Cmd+Shift+F, which Cmd+F would also match.
+            k(Modifiers::COMMAND, Key::F, Command::Find);
+            k(Modifiers::SHIFT, Key::F3, Command::FindPrevious);
+            k(Modifiers::NONE, Key::F3, Command::FindNext);
+            // Cmd+Alt+S first: Cmd+S would also match it.
+            k(
+                Modifiers::COMMAND | Modifiers::ALT,
+                Key::S,
+                Command::SaveAll,
+            );
+            k(Modifiers::COMMAND, Key::S, Command::Save);
+            k(Modifiers::COMMAND, Key::W, Command::CloseTab);
             k(Modifiers::COMMAND, Key::J, Command::ToggleBottom);
             k(
                 Modifiers::COMMAND | Modifiers::SHIFT,
@@ -1125,5 +1138,54 @@ fn stroke_w() -> f32 {
 impl eframe::App for Studio {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         Studio::ui(self, ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(s: &mut Studio, ctx: &egui::Context, key: Key, modifiers: Modifiers) {
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        s.keys(ctx);
+        ctx.end_pass().textures_delta.clear();
+    }
+
+    #[test]
+    fn editor_shortcuts_work_on_every_page() {
+        let d = std::env::temp_dir().join(format!("robco-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("main.c");
+        std::fs::write(&f, b"old\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut s = Studio::new(None);
+        s.open_file(&f);
+        s.page = Page::Card;
+        if let Some(doc) = s.editor.current_mut() {
+            doc.text = "new\n".into();
+        }
+        press(&mut s, &ctx, Key::S, Modifiers::COMMAND);
+        assert_eq!(std::fs::read(&f).unwrap(), b"new\n");
+
+        s.page = Page::Device;
+        press(&mut s, &ctx, Key::F, Modifiers::COMMAND);
+        assert_eq!(s.page, Page::Project);
+        assert!(s.editor.find.open);
+
+        s.page = Page::Sdk;
+        press(&mut s, &ctx, Key::W, Modifiers::COMMAND);
+        assert!(s.editor.current().is_none());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }
