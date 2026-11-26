@@ -2296,7 +2296,10 @@ mod tests {
             h.state_mut().set_screen(from);
             h.run_steps(2);
             let made = |h: &egui_kittest::Harness<'_, Studio>| {
-                h.state().art.as_ref().map(|a| (a.halos(), a.has_scanlines()))
+                h.state()
+                    .art
+                    .as_ref()
+                    .map(|a| (a.halos(), a.has_scanlines()))
             };
             let soft = from == Screen::Soft;
             assert_eq!(made(&h), Some((soft, soft)));

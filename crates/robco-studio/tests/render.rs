@@ -474,7 +474,10 @@ fn a_level_entered_later_draws_as_at_start() {
                 (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
             }
         }
-        assert_eq!(differ, 0, "{to:?} from {from:?}: {differ} pixels differ in {x0},{y0} to {x1},{y1}");
+        assert_eq!(
+            differ, 0,
+            "{to:?} from {from:?}: {differ} pixels differ in {x0},{y0} to {x1},{y1}"
+        );
     }
 }
 
