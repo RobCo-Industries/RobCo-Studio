@@ -966,6 +966,7 @@ impl Studio {
                 let (tr, out) = kit.tab(
                     ui,
                     egui::pos2(x, r.header.center().y),
+                    ("bottom", name),
                     name,
                     Some(icon),
                     tab == t,

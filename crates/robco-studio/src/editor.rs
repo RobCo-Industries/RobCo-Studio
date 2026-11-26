@@ -267,7 +267,12 @@ impl Editor {
     }
 
     /// Select the next match after the caret, or the one before it.
+    /// Wraps round the ends of the text.
     pub fn find_step(&mut self, ctx: &egui::Context, forward: bool) {
+        self.step(ctx, forward, true);
+    }
+
+    fn step(&mut self, ctx: &egui::Context, forward: bool, wrap: bool) {
         let ms = self.matches();
         let Some(d) = self.current() else { return };
         if ms.is_empty() {
@@ -275,10 +280,11 @@ impl Editor {
         }
         let hit = if forward {
             let from = Self::caret_byte(d, ctx, true);
-            ms.iter()
-                .find(|m| m.start >= from)
-                .unwrap_or(&ms[0])
-                .clone()
+            match ms.iter().find(|m| m.start >= from) {
+                Some(m) => m.clone(),
+                None if wrap => ms[0].clone(),
+                None => return,
+            }
         } else {
             let to = Self::caret_byte(d, ctx, false);
             ms.iter()
@@ -294,7 +300,9 @@ impl Editor {
         }
     }
 
-    /// Replace the selected match, then select the next one.
+    /// Replace the selected match, then select the next one after the
+    /// inserted text. Stops after the last match: Next wraps, Replace does
+    /// not, so the inserted text is never searched again.
     pub fn replace_one(&mut self, ctx: &egui::Context) {
         if self.question.is_some() {
             return;
@@ -308,17 +316,21 @@ impl Editor {
         );
         if !q.is_empty() && d.text.get(s..e) == Some(q.as_str()) {
             let id = d.id;
-            if let Some(d) = self.current_mut() {
+            let c = if let Some(d) = self.current_mut() {
                 let c = replace_range(&mut d.text, s..e, &rep);
                 d.pending_sel = Some((c, c));
-            }
+                c
+            } else {
+                return;
+            };
             // Text changed under the widget: keep its caret in step.
             let mut st =
                 egui::text_edit::TextEditState::load(ctx, Self::text_id(id)).unwrap_or_default();
-            st.cursor.set_char_range(None);
+            st.cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(c))));
             st.store(ctx, Self::text_id(id));
         }
-        self.find_step(ctx, true);
+        self.step(ctx, true, false);
     }
 
     /// Replace every match in the document shown.
@@ -338,7 +350,7 @@ impl Editor {
         n
     }
 
-    fn layout_job(&mut self, kit: &Kit<'_>, doc: u64, text: &str) -> LayoutJob {
+    fn layout_job(&mut self, kit: &Kit<'_>, doc: u64, c: bool, text: &str) -> LayoutJob {
         let p = kit.p();
         let font = kit.theme.font(Type::Code);
         if let Some((d, t, f, c, job)) = &self.cache
@@ -351,7 +363,7 @@ impl Editor {
         }
         let mut job = LayoutJob::default();
         let line = kit.theme.code_line();
-        for (r, class) in c_lex::spans(text) {
+        for (r, class) in spans(text, c) {
             let (font, color) = match class {
                 Class::Plain => (kit.theme.font(Type::Code), p.text),
                 Class::Keyword => (kit.theme.font(Type::CodeBold), p.bright),
@@ -382,6 +394,7 @@ impl Editor {
         let mut x = header.left();
         let mut chosen = None;
         let mut close = None;
+        let labels = tab_labels(&self.docs);
         for (i, d) in self.docs.iter().enumerate() {
             let icon = if d.path.extension().is_some_and(|e| e == "c" || e == "h") {
                 Icon::FileC
@@ -393,7 +406,8 @@ impl Editor {
             let (r, out) = kit.tab(
                 ui,
                 egui::pos2(x, header.center().y),
-                &d.name(),
+                ("doc", d.id),
+                &labels[i],
                 Some(icon),
                 self.active == Some(i),
                 false,
@@ -470,6 +484,7 @@ impl Editor {
         let mut text = std::mem::take(&mut doc.text);
         let before = locked.then(|| text.clone());
         let doc_id = doc.id;
+        let is_c = is_c(&doc.path);
         let shown = doc.shown.clone();
         let mut caret = None;
         let line_h = kit.theme.code_line();
@@ -487,7 +502,7 @@ impl Editor {
                         ui.allocate_exact_size(egui::vec2(size::GUTTER_W, line_h), Sense::hover());
                     let bg = ui.painter().add(egui::Shape::Noop);
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                        let mut job = self.layout_job(kit, doc_id, buf.as_str());
+                        let mut job = self.layout_job(kit, doc_id, is_c, buf.as_str());
                         job.wrap.max_width = wrap;
                         ui.fonts_mut(|f| f.layout_job(job))
                     };
@@ -668,6 +683,60 @@ impl Editor {
     }
 }
 
+/// The name each tab shows: the file name, or, when two open files share
+/// it, as many trailing folders as tell them apart.
+fn tab_labels(docs: &[Doc]) -> Vec<String> {
+    let parts: Vec<Vec<String>> = docs
+        .iter()
+        .map(|d| {
+            let mut p: Vec<String> = d
+                .path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            p.reverse();
+            p
+        })
+        .collect();
+    let label = |p: &[String], n: usize| -> String {
+        let mut v: Vec<&str> = p.iter().take(n).map(String::as_str).collect();
+        v.reverse();
+        v.join("/")
+    };
+    docs.iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let mine = &parts[i];
+            let mut n = 1;
+            while n < mine.len()
+                && parts
+                    .iter()
+                    .enumerate()
+                    .any(|(j, o)| j != i && label(o, n) == label(mine, n))
+            {
+                n += 1;
+            }
+            if n == 1 { d.name() } else { label(mine, n) }
+        })
+        .collect()
+}
+
+/// A C source or header, by its ending, in any case.
+fn is_c(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("c") || e.eq_ignore_ascii_case("h"))
+}
+
+/// The colour classes of `text`: C tokens for a C file, plain otherwise.
+fn spans(text: &str, c: bool) -> Vec<(std::ops::Range<usize>, Class)> {
+    if c {
+        c_lex::spans(text)
+    } else {
+        vec![(0..text.len(), Class::Plain)]
+    }
+}
+
 /// Put `rep`, made LF, in place of `range`. Gives the caret after it, in chars.
 fn replace_range(text: &mut String, range: std::ops::Range<usize>, rep: &str) -> usize {
     let rep = document::to_lf(rep);
@@ -679,6 +748,19 @@ fn replace_range(text: &mut String, range: std::ops::Range<usize>, rep: &str) ->
 #[cfg(test)]
 mod replace_tests {
     use super::replace_range;
+
+    #[test]
+    fn only_c_files_get_c_colours() {
+        use super::{Class, is_c, spans};
+        use std::path::Path;
+        assert!(is_c(Path::new("src/main.c")));
+        assert!(is_c(Path::new("INC/PIP.H")));
+        assert!(!is_c(Path::new("notes.txt")));
+        assert!(!is_c(Path::new("Makefile")));
+        let t = "return 0;";
+        assert_eq!(spans(t, false), vec![(0..t.len(), Class::Plain)]);
+        assert!(spans(t, true).iter().any(|(_, k)| *k == Class::Keyword));
+    }
 
     #[test]
     fn caret_counts_inserted_text() {

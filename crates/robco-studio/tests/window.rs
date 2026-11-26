@@ -328,3 +328,59 @@ fn the_sample_folder_goes_when_the_test_ends() {
     };
     assert!(!path.exists());
 }
+
+#[test]
+fn two_files_with_one_name_get_their_own_tabs() {
+    let d = sample("samename").unwrap();
+    std::fs::create_dir_all(d.join("tests")).unwrap();
+    std::fs::write(d.join("tests/main.c"), "int t;\n").unwrap();
+    let mut h = harness(Some(&*d));
+    open_main(&mut h);
+    h.query_all_by_label("main.c")
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+        .unwrap()
+        .focus();
+    h.run_steps(2);
+    let tab = h.ctx.memory(|m| m.focused());
+    assert!(tab.is_some(), "the tab took focus");
+    h.state_mut()
+        .editor
+        .open(&d.join("tests/main.c"), "tests/main.c".into());
+    h.run_steps(3);
+    h.get_by_label("src/main.c");
+    h.get_by_label("tests/main.c");
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        tab,
+        "focus stays on the tab whose label grew"
+    );
+    h.get_by_label("Close tests/main.c").click();
+    h.run_steps(2);
+    let docs = &h.state().editor.docs;
+    assert_eq!(docs.len(), 1);
+    assert!(docs[0].path.ends_with("src/main.c"));
+}
+
+#[test]
+fn replace_goes_forward_and_stops_at_the_last_match() {
+    let d = sample("replace").unwrap();
+    std::fs::write(d.join("a.txt"), "x a b a c a\n").unwrap();
+    let mut h = harness(Some(&*d));
+    h.get_by_label("a.txt").click();
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(2);
+    h.state_mut().editor.find.query = "a".into();
+    h.state_mut().editor.find.replace = "aa".into();
+    h.run_steps(1);
+    h.get_by_label("Next").click();
+    h.run_steps(4);
+    for _ in 0..6 {
+        h.query_all_by_label("Replace")
+            .find(|n| n.accesskit_node().role() == Role::Button)
+            .unwrap()
+            .click();
+        h.run_steps(4);
+    }
+    assert_eq!(h.state().editor.current().unwrap().text, "x aa b aa c aa\n");
+}

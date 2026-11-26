@@ -483,12 +483,14 @@ impl<'a> Kit<'a> {
 
     /// A tab standing on a pane's top line. `caps` for the bottom pane's
     /// tabs; otherwise a file tab with an icon, a name, a square when not
-    /// saved and a close button.
+    /// saved and a close button. `key` names the tab apart from its text,
+    /// which two tabs may share.
     #[allow(clippy::too_many_arguments)]
     pub fn tab(
         &self,
         ui: &mut Ui,
         at: Pos2,
+        key: impl std::hash::Hash + std::fmt::Debug,
         text: &str,
         icon: Option<Icon>,
         active: bool,
@@ -521,7 +523,7 @@ impl<'a> Kit<'a> {
         } else {
             text.to_owned()
         };
-        let id = ui.scope_id().with(("tab", text, caps));
+        let id = ui.scope_id().with(("tab", key));
         let resp = ui.interact(rect, id, Sense::click());
         resp.widget_info(|| WidgetInfo::selected(Role::Tab, true, active, &name));
         let painter = ui.painter();
