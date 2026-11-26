@@ -376,18 +376,23 @@ fn main() {
         );
     }
 
-    println!("timing, ms per frame, GPU waited, mean of 120 frames");
+    // K8_FRAMES lowers the count on slow CI adapters; per-effect runs are skipped then.
+    let n: u32 = std::env::var("K8_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    println!("timing, ms per frame, GPU waited, mean of {n} frames");
     for (size, ppp) in [([1280u32, 720u32], 1.0f32), ([2560, 1440], 2.0)] {
-        let scene = time_frames(&g, &mut s, size, ppp, &Params::OFF, false, 120);
-        let all = time_frames(&g, &mut s, size, ppp, &Params::STRONG, true, 120);
-        let off = time_frames(&g, &mut s, size, ppp, &Params::OFF, true, 120);
+        let scene = time_frames(&g, &mut s, size, ppp, &Params::OFF, false, n);
+        let all = time_frames(&g, &mut s, size, ppp, &Params::STRONG, true, n);
+        let off = time_frames(&g, &mut s, size, ppp, &Params::OFF, true, n);
         println!(
             "{}x{}: egui only {scene:.3}, passes all off {off:.3}, passes all strong {all:.3}, passes cost {:.3}",
             size[0],
             size[1],
             all - scene
         );
-        for (name, p) in Params::named() {
+        for (name, p) in Params::named().into_iter().filter(|_| n == 120) {
             let ms = time_frames(&g, &mut s, size, ppp, &p, true, 60);
             println!("  {}x{} only {name}: {ms:.3}", size[0], size[1]);
         }
