@@ -428,6 +428,56 @@ fn render_the_screen_levels() {
     shot(&mut h, &dir, "screen-live-2x.png").unwrap();
 }
 
+/// A level entered from another draws as the same level entered at start:
+/// Soft from Live keeps the drawings' halos and the scanline quad, Off from
+/// Soft drops them. Neither level runs the pass, so pixel for pixel.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_level_entered_later_draws_as_at_start() {
+    use robco_studio::menus::Command;
+    use robco_studio::theme::Screen;
+    let d = sample("entered").unwrap();
+    let dir = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from);
+    for (from, to) in [(Screen::Live, Screen::Soft), (Screen::Soft, Screen::Off)] {
+        let picture = |first: Screen| {
+            let mut h = screen_harness(Some(&d), 1.0, first);
+            assert_eq!(h.state().theme.screen, first, "no hardware adapter here");
+            open_main(&mut h);
+            if first != to {
+                h.state_mut().pending.push(Command::Screen(to));
+            }
+            h.run_steps(4);
+            assert_eq!(h.state().theme.screen, to);
+            h.state_mut().status.1 = "Ready.".to_owned();
+            // The click on main.c went through Live's curve; the same place
+            // for the pointer in both pictures.
+            h.hover_at(egui::pos2(900.0, 500.0));
+            h.run_steps(4);
+            h.render().unwrap()
+        };
+        let start = picture(to);
+        let later = picture(from);
+        if let Some(dir) = &dir {
+            std::fs::create_dir_all(dir).unwrap();
+            let name = format!("screen-{}-from-{}.png", to.name(), from.name()).to_lowercase();
+            later.save(dir.join(name)).unwrap();
+        }
+        assert_eq!(start.dimensions(), later.dimensions());
+        let differ = start
+            .pixels()
+            .zip(later.pixels())
+            .filter(|(a, b)| a != b)
+            .count();
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        for (x, y, a) in start.enumerate_pixels() {
+            if a != later.get_pixel(x, y) {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+        assert_eq!(differ, 0, "{to:?} from {from:?}: {differ} pixels differ in {x0},{y0} to {x1},{y1}");
+    }
+}
+
 /// With every strength at zero the pass draws what egui draws: the code
 /// text, the Spleen labels, the icons, the drawings and the device all
 /// reach the pass's renderer. With the curve, the corners outside it are
