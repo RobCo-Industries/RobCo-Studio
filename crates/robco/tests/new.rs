@@ -1105,3 +1105,37 @@ fn sdk_install_refuses_folders_that_differ_only_in_case() {
     assert!(detail.contains("only in case"), "{detail}");
     assert!(!f.pkg().exists());
 }
+
+/// Old versions whose record cannot be read do not hide the newest
+/// finished install, whatever order the folder listing gives. Twenty old
+/// versions make an order with an old one first all but certain, so the
+/// test fails when the walk reads them.
+#[cfg(unix)]
+#[test]
+fn new_an_old_unreadable_install_does_not_hide_a_newer_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("old-000");
+    f.good();
+    let root = f.cache().join("packages/templates");
+    let old: Vec<PathBuf> = (0..20).map(|i| root.join(format!("0.0.{i}"))).collect();
+    for d in &old {
+        fs::create_dir_all(d).unwrap();
+        fs::set_permissions(d, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let readable = fs::symlink_metadata(old[0].join(".robco-archive")).is_ok();
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    for d in &old {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    if readable {
+        println!("skipped: this process reads a folder without permission");
+        return;
+    }
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    check_project(&f.work().join("PIPES"), "PIPES");
+}

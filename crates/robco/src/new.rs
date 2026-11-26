@@ -267,25 +267,47 @@ fn newest_package(cache: &Path) -> Result<PathBuf, Failure> {
         }
         Err(e) => return Err(read_failure(&dir, &e)),
     };
-    let mut best: Option<Version> = None;
+    let mut names = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| read_failure(&dir, &e))?;
-        let Some(v) = entry.file_name().to_str().and_then(Version::parse) else {
-            continue;
-        };
-        if best.is_some_and(|b| b >= v) {
-            continue;
-        }
-        let Some(folder) = install::package_dir(cache, TEMPLATES, &v.to_string()) else {
-            continue;
-        };
-        if let Cached::Holds(_) = install::cached(&folder).map_err(|e| Failure::of(&e))? {
-            best = Some(v);
-        }
+        names.push(entry.file_name());
     }
-    let v = best.ok_or_else(none)?;
+    let v = choose_newest(
+        names.iter().filter_map(|n| n.to_str()),
+        |v| match install::package_dir(cache, TEMPLATES, &v.to_string()) {
+            None => Ok(false),
+            Some(folder) => match install::cached(&folder).map_err(|e| Failure::of(&e))? {
+                Cached::Holds(_) => Ok(true),
+                Cached::Missing | Cached::Unfinished => Ok(false),
+            },
+        },
+    )?
+    .ok_or_else(none)?;
     install::package_dir(cache, TEMPLATES, &v.to_string())
         .ok_or_else(|| Failure::new("internal", "a cached version has no folder name"))
+}
+
+/// The version step 2 takes, from the folder names of
+/// `<cache>/packages/templates/`. A name that is not `X.Y.Z` is ignored:
+/// the spec gives the cache no rule for it. The versions are walked from
+/// the highest, by the order of [`Version`], and `finished` tells whether
+/// a version holds a finished install. The first that does is the answer,
+/// and no lower one is read, so an old record that cannot be read never
+/// hides a newer install. A record that cannot be read above every
+/// finished install fails. The order of `names` does not matter.
+fn choose_newest<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    mut finished: impl FnMut(Version) -> Result<bool, Failure>,
+) -> Result<Option<Version>, Failure> {
+    let mut versions: Vec<Version> = names.into_iter().filter_map(Version::parse).collect();
+    versions.sort_unstable_by(|a, b| b.cmp(a));
+    versions.dedup();
+    for v in versions {
+        if finished(v)? {
+            return Ok(Some(v));
+        }
+    }
+    Ok(None)
 }
 
 /// The code of a bad `sdk.json`, by "Reading sdk.json".
@@ -954,6 +976,60 @@ mod tests {
     }
 
     use super::*;
+
+    /// Every order of `items`.
+    fn orders<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+        if items.len() <= 1 {
+            return vec![items.to_vec()];
+        }
+        let mut out = Vec::new();
+        for i in 0..items.len() {
+            let mut rest = items.to_vec();
+            let first = rest.remove(i);
+            for mut o in orders(&rest) {
+                o.insert(0, first.clone());
+                out.push(o);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn choose_newest_does_not_depend_on_the_listing_order() {
+        let v = |s| Version::parse(s).unwrap();
+        // 1.0.0 cannot be read, 1.2.0 is unfinished, 1.10.0 is finished.
+        let state = |x: Version| {
+            if x == v("1.0.0") {
+                Err(Failure::new("io: read", "1.0.0/.robco-archive"))
+            } else {
+                Ok(x == v("1.10.0") || x == v("1.9.0"))
+            }
+        };
+        let names = ["1.0.0", "1.2.0", "1.10.0", "1.9.0", "notes", "1.03.0"];
+        for o in orders(&names) {
+            let got = choose_newest(o.iter().copied(), state).unwrap();
+            assert_eq!(got, Some(v("1.10.0")), "{o:?}");
+        }
+        // An unreadable record above every finished install fails, in
+        // every order; below one it is never read.
+        for o in orders(&["1.0.0", "0.9.0", "x"]) {
+            let e = choose_newest(o.iter().copied(), |x| {
+                if x == v("1.0.0") {
+                    Err(Failure::new("io: read", "r"))
+                } else {
+                    Ok(true)
+                }
+            })
+            .unwrap_err();
+            assert_eq!(e.code, "io: read", "{o:?}");
+        }
+        for o in orders(&["1.2.0", "notes"]) {
+            assert_eq!(
+                choose_newest(o.iter().copied(), |_| Ok(false)).unwrap(),
+                None
+            );
+        }
+    }
 
     #[test]
     fn only_name_is_replaced_and_nothing_else_changes() {
