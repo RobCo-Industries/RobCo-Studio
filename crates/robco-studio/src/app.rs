@@ -566,11 +566,16 @@ impl Studio {
         self.focus_request = Some(next);
     }
 
-    /// Run a menu command.
+    /// Run a menu command, from the window's menus, a shortcut or the
+    /// native menu bar. A command runs after this frame's `prepare` and may
+    /// change what it checked: the level, the scheme, high legibility, the
+    /// strengths, the page. So every command asks for the next frame, which
+    /// draws its effect even when nothing moves and no input comes.
     pub fn run(&mut self, ctx: &egui::Context, c: Command) {
         if self.choosing() {
             return;
         }
+        ctx.request_repaint();
         match c {
             Command::OpenFolder => {
                 // A question on the screen comes first; a switch then asks
@@ -2316,6 +2321,24 @@ mod tests {
             let soft = to == Screen::Soft;
             assert_eq!(made(&h), Some((soft, soft)), "{from:?} to {to:?}");
         }
+    }
+
+    /// A native menu command that switches Soft to Off, with no input and
+    /// nothing moving, asks for the next frame, and that frame is Off's.
+    #[test]
+    fn a_native_level_change_asks_for_its_frame() {
+        let mut h = egui_kittest::Harness::builder()
+            .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(None));
+        h.state_mut().set_screen(Screen::Soft);
+        h.run_steps(4);
+        h.step();
+        assert!(!h.ctx.has_requested_repaint(), "Soft at rest asks for nothing");
+        h.state_mut().pending.push(Command::Screen(Screen::Off));
+        h.step();
+        assert!(h.ctx.has_requested_repaint(), "the change asks for a frame");
+        h.step();
+        let art = h.state().art.as_ref().map(|a| (a.halos(), a.has_scanlines()));
+        assert_eq!(art, Some((false, false)));
     }
 
     fn press(s: &mut Studio, ctx: &egui::Context, key: Key, modifiers: Modifiers) {
