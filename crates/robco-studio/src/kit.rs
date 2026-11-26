@@ -71,6 +71,10 @@ pub struct Button<'a> {
     pub small: bool,
     /// A fixed width, or None to fit the label.
     pub width: Option<f32>,
+    /// The narrowest a button that fits its label gets.
+    pub min_width: f32,
+    /// The padding at each side of the icon and label.
+    pub pad: f32,
     /// A job is running: the label names it and the hourglass shows.
     pub busy: bool,
     /// Why it cannot act, or None when it can.
@@ -86,6 +90,8 @@ impl<'a> Button<'a> {
             icon: None,
             small: false,
             width: None,
+            min_width: size::SMALL_H,
+            pad: size::LABEL_PAD,
             busy: false,
             unavailable: None,
         }
@@ -112,6 +118,15 @@ impl<'a> Button<'a> {
     /// The same button at a fixed width.
     pub fn width(mut self, w: f32) -> Self {
         self.width = Some(w);
+        self
+    }
+
+    /// The same button fit to its label, with `pad` at each side and no
+    /// narrower than `min`.
+    pub fn fitted(mut self, pad: f32, min: f32) -> Self {
+        self.width = None;
+        self.pad = pad;
+        self.min_width = min;
         self
     }
 
@@ -412,9 +427,8 @@ impl<'a> Kit<'a> {
         } else {
             0.0
         };
-        b.width.unwrap_or(
-            (size::LABEL_PAD * 2.0 + icon_w + self.caps_width(ui, b.text)).max(size::SMALL_H),
-        )
+        b.width
+            .unwrap_or((b.pad * 2.0 + icon_w + self.caps_width(ui, b.text)).max(b.min_width))
     }
 
     /// The zoom group: Smaller, the step's name, Larger, as one outlined
@@ -508,16 +522,13 @@ impl<'a> Kit<'a> {
         } else {
             size::CONTROL_H
         };
-        let pad = size::LABEL_PAD;
         let icon_w = if b.icon.is_some() || b.busy {
             size::ICON + size::ICON_GAP
         } else {
             0.0
         };
         let label_w = self.caps_width(ui, b.text);
-        let w = b
-            .width
-            .unwrap_or((pad * 2.0 + icon_w + label_w).max(size::SMALL_H));
+        let w = self.button_width(ui, &b);
         let sense = if b.unavailable.is_some() || b.busy {
             Sense::focusable_noninteractive()
         } else {
@@ -807,8 +818,71 @@ impl<'a> Kit<'a> {
         parts: &[&str],
         chosen: usize,
     ) -> Option<usize> {
+        self.segments(ui, key, parts, chosen, None)
+    }
+
+    /// The segmented control as a tab list named `name`, `FIELD_H` high and
+    /// with no tick. It is one stop in the Tab order: only the chosen part
+    /// takes focus, and the left and right arrows move to the part beside
+    /// it. Each part is a tab named by its text. Returns the part chosen
+    /// this frame.
+    pub fn segmented_tabs(
+        &self,
+        ui: &mut Ui,
+        name: &str,
+        parts: &[&str],
+        chosen: usize,
+    ) -> Option<usize> {
+        let w = self.segmented_tabs_width(ui, parts);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, size::FIELD_H), Sense::hover());
+        let mut list = ui.new_child(
+            UiBuilder::new()
+                .id_salt(("tabs", name))
+                .max_rect(rect)
+                .sense(Sense::hover())
+                .accessibility_label(name)
+                .accessibility_role(Role::TabList)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        // A list that only hovers gets no bounds of its own.
+        list.ctx().accesskit_node_builder(list.unique_id(), |n| {
+            n.set_bounds(egui::accesskit::Rect {
+                x0: rect.min.x.into(),
+                y0: rect.min.y.into(),
+                x1: rect.max.x.into(),
+                y1: rect.max.y.into(),
+            });
+        });
+        self.segments(&mut list, name, parts, chosen, Some(name))
+    }
+
+    /// The width [`Kit::segmented_tabs`] takes for `parts`.
+    pub fn segmented_tabs_width(&self, ui: &Ui, parts: &[&str]) -> f32 {
+        parts
+            .iter()
+            .map(|t| self.caps_width(ui, t) + size::LABEL_PAD * 2.0)
+            .sum()
+    }
+
+    fn segments(
+        &self,
+        ui: &mut Ui,
+        key: &str,
+        parts: &[&str],
+        chosen: usize,
+        tabs: Option<&str>,
+    ) -> Option<usize> {
         let p = self.p();
-        let tick = size::ICON + size::UNIT;
+        let tick = if tabs.is_some() {
+            0.0
+        } else {
+            size::ICON + size::UNIT
+        };
+        let h = if tabs.is_some() {
+            size::FIELD_H
+        } else {
+            size::SMALL_H
+        };
         let widths: Vec<f32> = parts
             .iter()
             .enumerate()
@@ -819,16 +893,36 @@ impl<'a> Kit<'a> {
             })
             .collect();
         let total: f32 = widths.iter().sum();
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(total, size::SMALL_H), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(total, h), Sense::hover());
         let cr = self.theme.control_radius();
         let painter = ui.painter();
         let mut out = None;
         let mut x = rect.left();
+        let last = parts.len().saturating_sub(1);
         for (i, (t, w)) in parts.iter().zip(&widths).enumerate() {
             let r = Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(*w, rect.height()));
-            let resp = ui.interact(r, ui.scope_id().with((key, i)), Sense::click());
             let on = i == chosen;
-            resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, on, *t));
+            let id = ui.scope_id().with((key, i));
+            // A tab list is one stop: the parts not chosen only click.
+            let sense = if tabs.is_some() && !on {
+                Sense::CLICK
+            } else {
+                Sense::click()
+            };
+            let resp = ui.interact(r, id, sense);
+            if on && ui.data_mut(|d| d.remove_temp::<bool>(id.with("focus"))) == Some(true) {
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+            let role = if tabs.is_some() {
+                Role::Tab
+            } else {
+                Role::RadioButton
+            };
+            resp.widget_info(|| WidgetInfo::selected(role, true, on, *t));
+            if tabs.is_some() {
+                ui.ctx()
+                    .accesskit_node_builder(resp.id, |n| n.set_selected(on));
+            }
             let fg = if on {
                 if let Some(h) = self.theme.halo() {
                     painter.add(h.as_shape(r, cr));
@@ -844,7 +938,7 @@ impl<'a> Kit<'a> {
                 p.text
             };
             let mut lx = r.left() + size::LABEL_PAD;
-            if on {
+            if on && tick > 0.0 {
                 self.art.icon(
                     painter,
                     Rect::from_min_size(
@@ -868,6 +962,36 @@ impl<'a> Kit<'a> {
                     && ui.input(|k| k.key_pressed(Key::Enter) || k.key_pressed(Key::Space)))
             {
                 out = Some(i);
+            }
+            if tabs.is_some() && resp.has_focus() {
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        id,
+                        egui::EventFilter {
+                            horizontal_arrows: true,
+                            ..Default::default()
+                        },
+                    );
+                });
+                let (left, right) = ui.input(|k| {
+                    (
+                        k.key_pressed(Key::ArrowLeft),
+                        k.key_pressed(Key::ArrowRight),
+                    )
+                });
+                let to = if left {
+                    Some(if i == 0 { last } else { i - 1 })
+                } else if right {
+                    Some(if i == last { 0 } else { i + 1 })
+                } else {
+                    None
+                };
+                if let Some(to) = to {
+                    // That part takes focus once it is the chosen one.
+                    let next = ui.scope_id().with((key, to)).with("focus");
+                    ui.data_mut(|d| d.insert_temp(next, true));
+                    out = Some(to);
+                }
             }
             x += w;
         }
@@ -1281,63 +1405,6 @@ impl<'a> Kit<'a> {
             child.memory_mut(|m| m.request_focus(id));
         }
         child
-    }
-
-    /// A page button of the rail: an icon over a caps label, in the look of
-    /// a tab. The current page is filled, with a halo.
-    pub fn rail_item(
-        &self,
-        ui: &mut Ui,
-        rect: Rect,
-        icon: Icon,
-        name: &str,
-        current: bool,
-    ) -> Response {
-        let p = self.p();
-        let resp = ui.interact(rect, ui.scope_id().with(("rail", name)), Sense::click());
-        resp.widget_info(|| WidgetInfo::selected(Role::Tab, true, current, name));
-        let painter = ui.painter();
-        let cr = self.theme.control_radius();
-        let fg = if current {
-            if let Some(h) = self.theme.halo() {
-                painter.add(h.as_shape(rect, cr));
-            }
-            painter.rect_filled(rect, cr, p.bright);
-            p.ink
-        } else {
-            let fill = if resp.is_pointer_button_down_on() {
-                p.select
-            } else if resp.hovered() {
-                p.raised
-            } else {
-                p.pane
-            };
-            painter.rect(
-                rect,
-                cr,
-                fill,
-                self.theme.frame(p.frame),
-                StrokeKind::Inside,
-            );
-            p.text
-        };
-        let icon_rect = Rect::from_center_size(
-            egui::pos2(rect.center().x, rect.top() + size::RAIL_ICON_Y),
-            egui::vec2(size::ICON, size::ICON),
-        );
-        self.art.icon(painter, icon_rect, icon, fg);
-        let w = self.caps_width(ui, name);
-        self.caps(
-            painter,
-            rect.center().x - w / 2.0,
-            rect.top() + size::RAIL_LABEL_Y,
-            name,
-            fg,
-        );
-        if resp.has_focus() {
-            self.focus_ring(painter, rect);
-        }
-        resp
     }
 
     /// The width one footer segment wants for `text`, uncut.

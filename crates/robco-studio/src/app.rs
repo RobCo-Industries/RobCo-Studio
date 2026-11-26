@@ -14,7 +14,7 @@ use eframe::egui::{
 };
 use std::path::{Path, PathBuf};
 
-/// The pages of the rail.
+/// The window's pages, chosen in the toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     /// Edit, build and run.
@@ -28,22 +28,13 @@ pub enum Page {
 }
 
 impl Page {
-    /// The page's name, as the rail shows it.
+    /// The page's name, as the pages control shows it.
     pub fn name(self) -> &'static str {
         match self {
             Page::Project => "Project",
             Page::Card => "Card",
             Page::Device => "Device",
             Page::Sdk => "SDK",
-        }
-    }
-
-    fn icon(self) -> Icon {
-        match self {
-            Page::Project => Icon::Bench,
-            Page::Card => Icon::Card,
-            Page::Device => Icon::Cable,
-            Page::Sdk => Icon::Sdk,
         }
     }
 
@@ -55,8 +46,6 @@ impl Page {
 pub enum Place {
     /// The toolbar.
     Toolbar,
-    /// The rail.
-    Rail,
     /// The Files pane.
     Files,
     /// The editor pane.
@@ -78,7 +67,6 @@ impl Place {
     pub fn name(self) -> &'static str {
         match self {
             Place::Toolbar => "Toolbar",
-            Place::Rail => "Rail",
             Place::Files => "Files",
             Place::Editor => "Editor",
             Place::Simulator => "Simulator",
@@ -207,16 +195,14 @@ pub struct Strips {
     pub menu: Option<Rect>,
     /// The toolbar.
     pub toolbar: Rect,
-    /// The rail, at the left of the page.
-    pub rail: Rect,
     /// The page.
     pub page: Rect,
     /// The footer.
     pub footer: Rect,
 }
 
-/// Cut `full` into the strips: header, menu row, toolbar, then rail and
-/// page, then the footer. No strip gets a negative side, down to nothing.
+/// Cut `full` into the strips: header, menu row, toolbar, page, then the
+/// footer. No strip gets a negative side, down to nothing.
 pub fn strips(full: Rect, menu_row: bool, tall: bool) -> Strips {
     let full = Rect::from_min_size(full.min, full.size().max(egui::Vec2::ZERO));
     let (top, bottom) = (full.top(), full.bottom());
@@ -237,20 +223,14 @@ pub fn strips(full: Rect, menu_row: bool, tall: bool) -> Strips {
     let tool_top = menu.map_or(header.bottom(), |m| m.bottom());
     let toolbar = band(tool_top, tool_top + size::TOOLBAR_H);
     let footer = band((bottom - size::FOOTER_H).max(toolbar.bottom()), bottom);
-    let rail_right = (full.left() + size::RAIL_W).min(full.right());
-    let rail = Rect::from_min_max(
-        egui::pos2(full.left(), toolbar.bottom()),
-        egui::pos2(rail_right, footer.top()),
-    );
     let page = Rect::from_min_max(
-        egui::pos2(rail_right, toolbar.bottom()),
+        egui::pos2(full.left(), toolbar.bottom()),
         egui::pos2(full.right(), footer.top()),
     );
     Strips {
         header,
         menu,
         toolbar,
-        rail,
         page,
         footer,
     }
@@ -315,7 +295,7 @@ impl Studio {
     }
 
     fn visible_places(&self) -> Vec<Place> {
-        let mut v = vec![Place::Toolbar, Place::Rail];
+        let mut v = vec![Place::Toolbar];
         if self.page == Page::Project {
             if self.layout.files {
                 v.push(Place::Files);
@@ -499,14 +479,13 @@ impl Studio {
 
         let tall = header_tall(ctx.content_rect().height(), self.compact_header);
         let st = strips(full, self.menu_row, tall);
-        let (tool, rail, page, status) = (st.toolbar, st.rail, st.page, st.footer);
+        let (tool, page, status) = (st.toolbar, st.page, st.footer);
         self.page_rect = page;
         self.header(&kit, ui, st.header, tall);
         if let Some(r) = st.menu {
             self.menu_bar(&kit, ui, r);
         }
         self.toolbar(&kit, ui, tool);
-        self.rail(&kit, ui, rail);
         let mut page_ui = kit.region(ui, page, "Page", Role::Main, p.ground, false);
         match self.page {
             Page::Project => self.project_page(&kit, &mut page_ui, page),
@@ -706,7 +685,7 @@ impl Studio {
             row.add_space(r.width() + size::TOOLBAR_GAP);
         };
         let divider = |row: &mut Ui| {
-            row.add_space(size::HEADER_GAP);
+            row.add_space(size::TOOLBAR_DIVIDER_GAP);
             let x = row.cursor().left();
             row.painter().vline(
                 x,
@@ -716,8 +695,17 @@ impl Studio {
                 ),
                 kit.theme.frame(p.frame),
             );
-            row.add_space(stroke_w() + size::HEADER_GAP);
+            row.add_space(stroke_w() + size::TOOLBAR_DIVIDER_GAP);
         };
+        let names = Page::ALL.map(Page::name);
+        let now = Page::ALL
+            .iter()
+            .position(|&pg| pg == self.page)
+            .unwrap_or(0);
+        if let Some(i) = kit.segmented_tabs(&mut row, "Pages", &names, now) {
+            self.page = Page::ALL[i];
+        }
+        divider(&mut row);
         label(&mut row, "Project:");
         kit.dropdown(
             &mut row,
@@ -739,7 +727,6 @@ impl Studio {
             size::TARGET_DROPDOWN_W,
             &[target.as_str()],
         );
-        divider(&mut row);
         let mut acts = t.new_child(
             UiBuilder::new()
                 .max_rect(Rect::from_min_max(
@@ -761,7 +748,7 @@ impl Studio {
                     Button::quiet(text)
                         .kind(ButtonKind::Filled)
                         .icon(icon)
-                        .width(size::TOOLBAR_ACTION_W),
+                        .fitted(size::TOOLBAR_ACTION_PAD, size::TOOLBAR_ACTION_MIN),
                 )
                 .clicked()
             {
@@ -770,52 +757,9 @@ impl Studio {
         }
     }
 
-    fn rail(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect) {
-        let p = kit.p();
-        let focus = self.focus_request == Some(Place::Rail);
-        let mut r = kit.region(
-            ui,
-            rect,
-            Place::Rail.name(),
-            Role::Navigation,
-            p.ground,
-            focus,
-        );
-        self.places.push((Place::Rail, rect));
-        let mut y = rect.top() + size::PAGE_MARGIN_DOWN;
-        for page in Page::ALL {
-            let item = Rect::from_min_size(
-                egui::pos2(rect.left() + size::RAIL_INSET, y),
-                egui::vec2(size::RAIL_ITEM_W, size::RAIL_ITEM_H),
-            );
-            if kit
-                .rail_item(&mut r, item, page.icon(), page.name(), self.page == page)
-                .clicked()
-            {
-                self.page = page;
-            }
-            y += size::RAIL_ITEM_H + size::RAIL_GAP;
-        }
-        let foot = Rect::from_min_max(
-            egui::pos2(
-                rect.left(),
-                rect.bottom() - size::SMALL_H * 2.0 - size::STEP_24,
-            ),
-            rect.right_bottom(),
-        );
-        r.scope_builder(
-            UiBuilder::new()
-                .max_rect(foot)
-                .layout(egui::Layout::top_down(egui::Align::Center)),
-            |ui| {
-                kit.icon_button(ui, Icon::Settings, "Settings", Some(menus::LATER));
-                kit.icon_button(ui, Icon::Help, "Help", Some(menus::LATER));
-            },
-        );
-    }
-
     /// The footer: the Industries mark, the division, the status line,
-    /// then the SDK, Sim, Link and Position segments.
+    /// then the SDK, Sim, Link and Position segments, then Settings and
+    /// Help at the right end.
     fn status_bar(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect) {
         let p = kit.p();
         let focus = self.focus_request == Some(Place::Status);
@@ -879,9 +823,13 @@ impl Studio {
                 .layout_no_wrap(text.clone(), kit.theme.font(Type::Small), p.text)
                 .size()
                 .x;
+        // Settings and Help hold the right end: the segments give way
+        // before them.
+        let icons_w = size::FOOTER_SEG_PAD * 2.0 + size::SMALL_H * 2.0 + size::UNIT;
+        let icons_left = (rect.right() - icons_w).max(rect.left());
         let lay = status_layout(
             mark.right() + size::FOOTER_SEG_PAD,
-            rect.right(),
+            icons_left,
             Some(div_w),
             &wants,
             &give,
@@ -904,6 +852,20 @@ impl Studio {
             );
             kit.footer_divider(s.painter(), r.right() + size::FOOTER_SEG_PAD, cy);
         }
+        kit.footer_divider(s.painter(), icons_left, cy);
+        s.scope_builder(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    egui::pos2(icons_left + size::FOOTER_SEG_PAD, rect.top()),
+                    rect.right_bottom(),
+                ))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = size::UNIT;
+                kit.icon_button(ui, Icon::Settings, "Settings", Some(menus::LATER));
+                kit.icon_button(ui, Icon::Help, "Help", Some(menus::LATER));
+            },
+        );
         let icon = Rect::from_min_size(
             egui::pos2(lay.msg.0 + size::FOOTER_SEG_PAD, rect.top()),
             egui::vec2(size::ICON, rect.height()),
@@ -1653,8 +1615,8 @@ pub struct Panes {
     pub show_bottom: bool,
 }
 
-/// The page less its margins: 6 at the top and the bottom, 4 after the
-/// rail, 8 at the right. It can come out inside out; [`panes`] mends that.
+/// The page less its margins: 6 at the top and the bottom, 4 at the left,
+/// 8 at the right. It can come out inside out; [`panes`] mends that.
 fn page_area(page: Rect) -> Rect {
     Rect::from_min_max(
         egui::pos2(
@@ -1962,7 +1924,6 @@ mod tests {
                     Some(s.header),
                     s.menu,
                     Some(s.toolbar),
-                    Some(s.rail),
                     Some(s.page),
                     Some(s.footer),
                 ];
@@ -1973,6 +1934,12 @@ mod tests {
                 assert_eq!(s.menu.is_some(), menu);
                 assert!(s.header.bottom() <= s.toolbar.top());
                 assert!(s.toolbar.bottom() <= s.page.top() && s.page.bottom() <= s.footer.top());
+                assert_eq!(
+                    s.page.left(),
+                    full.left(),
+                    "{w}x{h}: the page spans the window"
+                );
+                assert_eq!(s.page.right(), full.right(), "{w}x{h}");
                 let p = panes(&mut Layout::default(), s.page);
                 for r in [p.files, p.editor, p.sim, p.tape, p.bottom] {
                     assert!(r.width() >= 0.0 && r.height() >= 0.0, "{w}x{h}: {r:?}");
@@ -1994,9 +1961,28 @@ mod tests {
         let mut l = Layout::default();
         let p = panes(
             &mut l,
-            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0 - 76.0, 720.0 - 100.0)),
+            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0 - 100.0)),
         );
         assert!(p.show_files && p.editor.width() > size::FILES_MIN);
+    }
+
+    /// The page area starts at the page margin, and the editor takes all
+    /// the width the other panes and the gaps leave.
+    #[test]
+    fn the_page_starts_at_the_margin_and_the_editor_takes_the_rest() {
+        let full = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+        let s = strips(full, true, true);
+        let mut l = Layout::default();
+        let p = panes(&mut l, s.page);
+        assert_eq!(p.area.left(), size::PAGE_MARGIN_LEFT);
+        assert_eq!(p.files.left(), size::PAGE_MARGIN_LEFT);
+        let rest = 1280.0
+            - size::PAGE_MARGIN_LEFT
+            - size::PAGE_MARGIN_RIGHT
+            - size::FILES_W
+            - size::SIM_W
+            - size::GAP_ACROSS * 2.0;
+        assert_eq!(p.editor.width(), rest);
     }
 
     /// Long segment text and narrow bars never give a negative width or

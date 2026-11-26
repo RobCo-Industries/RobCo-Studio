@@ -39,6 +39,16 @@ fn sample(tag: &str) -> std::io::Result<Sample> {
     Ok(d)
 }
 
+/// The sample project with a manifest: PIPES, for Pip-OS ABI 1.3.
+fn pipes(tag: &str) -> std::io::Result<Sample> {
+    let d = sample(tag)?;
+    std::fs::write(
+        d.join("robco.toml"),
+        "format = 1\n\n[project]\nname = \"PIPES\"\ntitle = \"Pipes\"\nversion = \"1.0.0\"\nkind = \"holotape\"\nsubtype = \"game\"\n\n[target]\nplatform = \"pipos\"\nabi = \"1.3\"\n\n[build]\nbackend = \"robco\"\nsources = [\"src/*.c\"]\n",
+    )?;
+    Ok(d)
+}
+
 fn harness(folder: Option<&Path>) -> Harness<'static, Studio> {
     harness_at(folder, 720.0)
 }
@@ -69,7 +79,6 @@ fn every_region_has_its_name() {
     for name in [
         "Menu bar",
         "Toolbar",
-        "Rail",
         "Page",
         "Status bar",
         "Files",
@@ -110,8 +119,52 @@ fn every_region_has_its_name() {
     h.get_by_label("RobCo Studio");
 }
 
+/// The tab of `page` in the pages control.
+fn page_tab<'a>(h: &'a Harness<'static, Studio>, page: &'a str) -> Option<egui_kittest::Node<'a>> {
+    h.query_all_by_label(page)
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+}
+
+/// The pages the control shows selected.
+fn selected_pages(h: &Harness<'static, Studio>) -> Vec<String> {
+    ["Project", "Card", "Device", "SDK"]
+        .into_iter()
+        .filter(|p| page_tab(h, p).is_some_and(|n| n.accesskit_node().is_selected() == Some(true)))
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
-fn the_rail_switches_pages() {
+fn the_pages_control_is_one_named_tab_list_in_the_toolbar() {
+    let h = harness(None);
+    let list = h
+        .query_all_by_label("Pages")
+        .find(|n| n.accesskit_node().role() == Role::TabList)
+        .expect("a tab list named Pages");
+    let tool = h.state().place_rect(Place::Toolbar).unwrap();
+    assert!(tool.contains_rect(list.rect()), "{:?}", list.rect());
+    for p in ["Project", "Card", "Device", "SDK"] {
+        assert!(
+            list.rect().contains_rect(page_tab(&h, p).unwrap().rect()),
+            "{p}"
+        );
+    }
+    assert_eq!(selected_pages(&h), ["Project"]);
+}
+
+#[test]
+fn no_widget_is_named_for_the_rail() {
+    let h = harness(None);
+    assert!(h.query_all_by_label("Rail").next().is_none());
+    assert!(
+        h.query_all(egui_kittest::kittest::by().role(Role::Navigation))
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn the_pages_control_switches_pages() {
     let mut h = harness(None);
     h.get_by_label(
         "No project is open. Make one from a template, or open a folder that holds a robco.toml.",
@@ -131,9 +184,64 @@ fn the_rail_switches_pages() {
         .click();
     h.run_steps(2);
     assert_eq!(h.state().page, Page::Card);
+    assert_eq!(selected_pages(&h), ["Card"]);
     h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
     h.run_steps(2);
     assert_eq!(h.state().page, Page::Project);
+    assert_eq!(selected_pages(&h), ["Project"]);
+}
+
+#[test]
+fn the_arrow_keys_move_between_pages_in_one_tab_stop() {
+    let mut h = harness(None);
+    page_tab(&h, "Project").unwrap().focus();
+    h.run_steps(2);
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert_eq!(h.state().page, Page::Card);
+    assert_eq!(selected_pages(&h), ["Card"]);
+    assert!(
+        page_tab(&h, "Card").unwrap().accesskit_node().is_focused(),
+        "focus follows"
+    );
+    h.key_press(Key::ArrowLeft);
+    h.run_steps(2);
+    h.key_press(Key::ArrowLeft);
+    h.run_steps(2);
+    assert_eq!(h.state().page, Page::Sdk, "the left arrow wraps");
+    // One stop: Tab leaves the control, it does not walk its parts.
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert!(h.ctx.memory(|m| m.focused()).is_some());
+    for p in ["Project", "Card", "Device", "SDK"] {
+        assert!(
+            !page_tab(&h, p).unwrap().accesskit_node().is_focused(),
+            "{p}"
+        );
+    }
+    assert_eq!(h.state().page, Page::Sdk);
+}
+
+#[test]
+fn the_selection_follows_the_view_menu_and_the_shortcuts() {
+    let mut h = harness(None);
+    for (key, page, name) in [
+        (Key::Num2, Page::Card, "Card"),
+        (Key::Num3, Page::Device, "Device"),
+        (Key::Num4, Page::Sdk, "SDK"),
+        (Key::Num1, Page::Project, "Project"),
+    ] {
+        h.key_press_modifiers(Modifiers::COMMAND, key);
+        h.run_steps(2);
+        assert_eq!(h.state().page, page);
+        assert_eq!(selected_pages(&h), [name]);
+    }
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::PageDevice);
+    h.run_steps(2);
+    assert_eq!(h.state().page, Page::Device);
+    assert_eq!(selected_pages(&h), ["Device"]);
 }
 
 #[test]
@@ -253,12 +361,12 @@ fn f6_moves_through_the_panes_in_reading_order() {
     }
     use Place::*;
     let want = [
-        Toolbar, Rail, Files, Editor, Simulator, Tape, Bottom, Status, Toolbar,
+        Toolbar, Files, Editor, Simulator, Tape, Bottom, Status, Toolbar, Files,
     ];
     assert_eq!(seen, want.map(Some).to_vec());
     h.key_press_modifiers(Modifiers::SHIFT, Key::F6);
     h.run_steps(2);
-    assert_eq!(h.state().focused_place(&h.ctx), Some(Status));
+    assert_eq!(h.state().focused_place(&h.ctx), Some(Toolbar));
 }
 
 #[test]
@@ -563,18 +671,109 @@ fn the_menu_row_is_absent_where_the_system_has_a_menu_bar() {
     );
 }
 
+/// The rectangles of the toolbar's controls, left to right.
+fn toolbar_controls(h: &Harness<'static, Studio>) -> Option<Vec<(String, egui::Rect)>> {
+    let mut v = vec![(
+        "Pages".to_owned(),
+        h.query_all_by_label("Pages")
+            .find(|n| n.accesskit_node().role() == Role::TabList)?
+            .rect(),
+    )];
+    for (name, role) in [
+        ("Project: PIPES", Role::ComboBox),
+        ("Target: Pip-OS, ABI 1.3", Role::ComboBox),
+        ("Build", Role::Button),
+        ("Run", Role::Button),
+        ("Debug", Role::Button),
+        ("Write card", Role::Button),
+    ] {
+        let n = h
+            .query_all_by_label(name)
+            .find(|n| n.accesskit_node().role() == role)?;
+        v.push((name.to_owned(), n.rect()));
+    }
+    Some(v)
+}
+
 #[test]
-fn the_toolbar_has_four_actions_of_one_width() {
+fn the_toolbar_fits_1280_points_with_no_overlap() {
     use robco_studio::theme::size;
-    let h = harness(None);
-    for job in ["Build", "Run", "Debug", "Write card"] {
+    let d = pipes("toolbar").unwrap();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(
+            |ui, s: &mut Studio| {
+                // The whole screen, as eframe gives it, with no margin.
+                let r = ui.ctx().content_rect();
+                ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| s.ui(ui));
+            },
+            Studio::new(Some(&*d)),
+        );
+    h.run_steps(3);
+    let tool = h.state().place_rect(Place::Toolbar).unwrap();
+    assert_eq!(tool.width(), 1280.0);
+    let all = toolbar_controls(&h).unwrap();
+    for (name, r) in &all {
+        assert!(tool.contains_rect(*r), "{name} {r:?} outside {tool:?}");
+    }
+    for w in all.windows(2) {
         assert!(
-            h.query_all_by_label(job).any(|n| {
-                n.accesskit_node().role() == Role::Button
-                    && n.rect().width() == size::TOOLBAR_ACTION_W
-                    && n.rect().height() == size::CONTROL_H
-            }),
-            "{job}"
+            w[0].1.right() + size::TOOLBAR_GAP <= w[1].1.left(),
+            "{} {:?} crowds {} {:?}",
+            w[0].0,
+            w[0].1,
+            w[1].0,
+            w[1].1
+        );
+    }
+    for (name, _) in &all[3..] {
+        let b = h
+            .query_all_by_label(name.as_str())
+            .find(|n| n.accesskit_node().role() == Role::Button)
+            .unwrap()
+            .rect();
+        assert!(b.width() >= size::TOOLBAR_ACTION_MIN, "{name}");
+        assert_eq!(b.height(), size::CONTROL_H, "{name}");
+    }
+    // The dropdowns' widths hold the longest target name whole.
+    assert!(
+        all[2].1.width() >= size::TARGET_DROPDOWN_W,
+        "{:?}",
+        all[2].1
+    );
+}
+
+/// The rectangle of the footer button `name`.
+fn footer_button(h: &Harness<'static, Studio>, name: &str) -> Option<egui::Rect> {
+    h.query_all_by_label(name)
+        .find(|n| n.accesskit_node().role() == Role::Button)
+        .map(|n| n.rect())
+}
+
+#[test]
+fn settings_and_help_stand_at_the_right_end_of_the_footer() {
+    let h = harness(None);
+    let foot = h.state().place_rect(Place::Status).unwrap();
+    let set = footer_button(&h, "Settings").unwrap();
+    let help = footer_button(&h, "Help").unwrap();
+    assert!(foot.contains_rect(set) && foot.contains_rect(help));
+    assert!(set.right() <= help.left());
+    let link = h.get_by_label("Link off").rect();
+    assert!(link.right() <= set.left(), "after the last segment");
+}
+
+#[test]
+fn settings_and_help_are_the_last_to_give_way() {
+    let h = harness_sized(None, egui::vec2(400.0, 720.0));
+    let foot = h.state().place_rect(Place::Status).unwrap();
+    assert!(
+        h.query_by_label("Link off").is_none(),
+        "the window is narrow enough that segments gave way"
+    );
+    for name in ["Settings", "Help"] {
+        assert!(
+            foot.contains_rect(footer_button(&h, name).unwrap()),
+            "{name}"
         );
     }
 }
@@ -832,15 +1031,14 @@ fn the_jobs_act_and_say_they_are_not_here_yet() {
 /// NEEDS row states the same ABI as a bare fact.
 #[test]
 fn the_target_is_named_with_a_comma() {
-    let d = sample("target").unwrap();
-    std::fs::write(
-        d.join("robco.toml"),
-        "format = 1\n\n[project]\nname = \"PIPES\"\ntitle = \"Pipes\"\nversion = \"1.0.0\"\nkind = \"holotape\"\nsubtype = \"game\"\n\n[target]\nplatform = \"pipos\"\nabi = \"1.3\"\n\n[build]\nbackend = \"robco\"\nsources = [\"src/*.c\"]\n",
-    )
-    .unwrap();
-    let h = harness(Some(&*d));
+    let d = pipes("target").unwrap();
+    let mut h = harness(Some(&*d));
     h.get_by_label("Target: Pip-OS, ABI 1.3");
     h.get_by_label("Pip-OS ABI 1.3");
+    // The dropdown shows the name whole: no tooltip gives it in full.
+    h.get_by_label("Target: Pip-OS, ABI 1.3").hover();
+    h.run_steps(90);
+    assert_eq!(h.query_all_by_label("Pip-OS, ABI 1.3").count(), 0);
 }
 
 /// The log filter field leaves the row's gap on both sides: to the

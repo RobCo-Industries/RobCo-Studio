@@ -191,10 +191,6 @@ pub mod size {
     pub const STEP_24: f32 = 24.0;
     /// 32.
     pub const STEP_32: f32 = 32.0;
-    /// The centre of a rail item's icon, from its top.
-    pub const RAIL_ICON_Y: f32 = 15.0;
-    /// The centre of a rail item's label, from its top.
-    pub const RAIL_LABEL_Y: f32 = 33.0;
     /// The unsaved-file dialog.
     pub const DIALOG_H: f32 = 108.0;
     /// Gap between panes, across.
@@ -245,16 +241,15 @@ pub mod size {
     pub const ATOM_COMPACT: f32 = 24.0;
     /// The skyline at the right of the header.
     pub const SKYLINE: [f32; 2] = [420.0, 60.0];
-    /// One of the four action buttons of the toolbar.
-    pub const TOOLBAR_ACTION_W: f32 = 148.0;
+    /// The narrowest of the four action buttons of the toolbar. Each fits
+    /// its icon and label.
+    pub const TOOLBAR_ACTION_MIN: f32 = 84.0;
+    /// The padding at each side of an action button's icon and label.
+    pub const TOOLBAR_ACTION_PAD: f32 = 12.0;
+    /// The space at each side of a divider in the toolbar.
+    pub const TOOLBAR_DIVIDER_GAP: f32 = 16.0;
     /// A divider in the toolbar.
     pub const TOOLBAR_DIVIDER_H: f32 = 26.0;
-    /// The rail.
-    pub const RAIL_W: f32 = 68.0;
-    /// A page button of the rail.
-    pub const RAIL_ITEM_H: f32 = 46.0;
-    /// A page button of the rail, across.
-    pub const RAIL_ITEM_W: f32 = 60.0;
     /// The footer.
     pub const FOOTER_H: f32 = 28.0;
     /// The Industries wordmark in the footer.
@@ -298,9 +293,9 @@ pub mod size {
     /// Indent of one tree level.
     pub const TREE_INDENT: f32 = 14.0;
     /// The project dropdown in the toolbar.
-    pub const PROJECT_DROPDOWN_W: f32 = 190.0;
+    pub const PROJECT_DROPDOWN_W: f32 = 160.0;
     /// The target dropdown in the toolbar.
-    pub const TARGET_DROPDOWN_W: f32 = 200.0;
+    pub const TARGET_DROPDOWN_W: f32 = 192.0;
     /// A menu popup.
     pub const MENU_POPUP_W: f32 = 300.0;
     /// The find field.
@@ -332,7 +327,7 @@ pub mod size {
     pub const DIVIDER: f32 = 8.0;
     /// The page margin at the top and the bottom.
     pub const PAGE_MARGIN_DOWN: f32 = 6.0;
-    /// The page margin after the rail.
+    /// The page margin at the left.
     pub const PAGE_MARGIN_LEFT: f32 = 4.0;
     /// The page margin at the right.
     pub const PAGE_MARGIN_RIGHT: f32 = 8.0;
@@ -355,10 +350,6 @@ pub mod size {
     pub const TAB_INSET: f32 = 6.0;
     /// The space between two tabs.
     pub const TAB_GAP: f32 = 4.0;
-    /// The rail's page buttons, from the rail's sides.
-    pub const RAIL_INSET: f32 = 4.0;
-    /// The space between two page buttons of the rail.
-    pub const RAIL_GAP: f32 = 6.0;
     /// The padding of a footer segment.
     pub const FOOTER_SEG_PAD: f32 = 9.0;
     /// The middle part of the zoom group, which names the step.
