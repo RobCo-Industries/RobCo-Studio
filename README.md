@@ -29,14 +29,13 @@ What works today:
 - The editor edits plain text and C, with line numbers and colours for C. It saves with Cmd or Ctrl+S, finds and replaces with Cmd or Ctrl+F, and keeps a file's CRLF line endings. A file it cannot open as text is refused with the reason, and nothing changes.
 - A tab with unsaved edits shows a square after its name. Closing it, or quitting, asks "Save ... before closing?" first.
 - F6 and Shift+F6 move between the panes. Every control takes keyboard focus and has a name for a screen reader.
-- The green, amber, blue and white schemes and high legibility, from the View menu.
-- View, Screen: Off, Soft, Still, Live and Arcade, and Adjust with a slider for each effect. Still, Live and Arcade pass the whole window through a CRT shader: bloom, vignette, scanlines, a curved glass, and in Live and Arcade persistence, noise, flicker and a rolling band. Live and Arcade animate only while the window has focus. Studio starts in Live on a graphics adapter, in Still when the system asks for reduced motion, which only macOS tells it, and in Soft on a software adapter. `--screen LEVEL` starts at a level.
+- View, Theme and high legibility. Six themes ship: Green, Amber, Blue, White, Arcade and Flat. Edit theme makes your own from a base colour and the sliders, and saves, renames or deletes it. A theme's screen passes the whole window through a CRT shader: bloom, vignette, scanlines, a curved glass, persistence, noise, flicker and a rolling band. It moves only while the window has focus. Studio shows a theme still when the system asks for reduced motion, which only macOS tells it, and without the shader on a software adapter. `--theme NAME` starts in a theme.
 
 What does not work yet, and says so:
 
 - Build, Run, Debug and Write card do nothing. They are drawn with a dashed frame, and their tooltip says why: nothing was built, no tape ran, nothing was written. Nothing in the window pretends a job ran.
 - The simulator, the tape pane and the bottom pane show their empty states. The Card, Device and SDK pages say they come in a later release.
-- There is no settings file, no recent projects list, and no "Go to line". Studio does not notice a file changed by another program.
+- There is no recent projects list and no "Go to line". Show the themes folder says it is not in this version yet. Studio does not notice a file changed by another program.
 
 The window writes a file you save in the editor, and its own settings and your themes in its settings folder. It opens no network connection and starts no process.
 
