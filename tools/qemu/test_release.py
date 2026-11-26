@@ -398,6 +398,48 @@ class Scan(unittest.TestCase):
         with self.assertRaises(release.Refused):
             release.scan(self.pkg, [], hosts=["ab"])
 
+    def test_each_user_form_found_in_both_encodings(self):
+        forms = ["/home/builder/x", "\\home\\builder\\x", "/Users/builder/x", "\\Users\\builder\\x",
+                 "C:\\Users\\builder\\x", "ssh builder@host"]
+        for form in forms:
+            for enc in ("utf-8", "utf-16-le"):
+                with self.subTest(form=form, enc=enc):
+                    self.put(b"\x00" + form.encode(enc) + b"\x00")
+                    self.assertEqual([h[0] for h in release.scan(self.pkg, [], caseless=False, users=["builder"])],
+                                     ["bin/qemu"])
+
+    def test_user_forms_compare_without_case_where_the_system_does(self):
+        self.put(b"\x00c:\\USERS\\Builder\\x\x00")
+        self.assertEqual(release.scan(self.pkg, [], caseless=False, users=["builder"]), [])
+        self.assertEqual(len(release.scan(self.pkg, [], caseless=True, users=["builder"])), 1)
+
+    def test_bare_user_name_not_found(self):
+        self.put(b"\x00builder\x00" + "builder".encode("utf-16-le"))
+        for caseless in (False, True):
+            self.assertEqual(release.scan(self.pkg, [], caseless=caseless, users=["builder"]), [])
+
+    def test_short_user_name_refused(self):
+        with self.assertRaises(release.Refused):
+            release.scan(self.pkg, [], users=["bob"])
+
+    def test_runner_word_passes_until_its_home_is_planted(self):
+        (self.pkg / "README").write_text("the runner starts each test runner in turn\n")
+        (self.pkg / "fmt.json").write_text('{"runner": "tcg", "runners": ["a"]}\n')
+        self.assertEqual(release.scan(self.pkg, [], users=["runner"]), [])
+        (self.pkg / "planted").write_text("/home/runner/x\n")
+        self.assertEqual([h[0] for h in release.scan(self.pkg, [], users=["runner"])], ["planted"])
+
+    def test_main_reads_the_user_from_the_system(self):
+        (self.pkg / "NOTICE").write_text("by builder@host\n")
+        with unittest.mock.patch.object(release, "this_user", return_value="builder"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(release.main(["scan", str(self.pkg), "--forbid-user"]), 1)
+        self.assertIn("FAIL: NOTICE holds builder@\n", out.getvalue())
+
+    def test_this_user_names_the_account(self):
+        self.assertTrue(release.this_user())
+
     def test_context_shows_the_string_around_each_hit(self):
         self.put(b"\x01\x02/home/builder/qemu-10.1.2/build/x.h\x00\xff"
                  b"abc\x00assert /home/builder/y.c\x00")

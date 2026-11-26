@@ -4,10 +4,15 @@
 SHA-256. Standard library only, no network.
 
   release.py scan <package-dir> [--forbid TEXT] [--forbid-env NAME] [--forbid-host]
-      Fails when a file of the package holds one of the texts: the paths,
-      user and host names of the machine that built it. --forbid-env reads
-      a text from the environment, where no shell can rewrite it, and
-      --forbid-host adds this machine's host name. Each path is searched
+                   [--forbid-user]
+      Fails when a file of the package holds one of the texts: the paths
+      and the host name of the machine that built it, and its user name in
+      a home path or before an @. --forbid-env reads a text from the
+      environment, where no shell can rewrite it, --forbid-host adds this
+      machine's host name and --forbid-user the name of the account this
+      runs under. The user name is searched only as /home/<name>,
+      /Users/<name> and <name>@, never alone: a name such as "runner" is
+      an ordinary word. Each path is searched
       with either slash; a path with a drive letter in each of its
       spellings, C:\\x, C:/x, /c/x and /cygdrive/c/x, with the drive in
       either case and without regard to case. Paths also compare without
@@ -57,6 +62,10 @@ import os
 import pathlib
 import re
 import socket
+try:
+    import pwd
+except ImportError:  # Windows
+    pwd = None
 import sys
 import tarfile
 import zipfile
@@ -121,12 +130,28 @@ def variants(text):
     return [(t, True) for t in [text] + sorted(out)]
 
 
-def needles(forbid, caseless=CASELESS, hosts=()):
+def user_forms(user):
+    """The forms in which a tool writes a user name: its home folder on
+    Linux and on macOS or Windows, and before an @. Never the bare name."""
+    return [f"/home/{user}", f"/Users/{user}", f"{user}@"]
+
+
+def this_user():
+    """The name of the account this process runs under, from the system and
+    not from the environment: the password database on Linux and macOS,
+    GetUserNameW through os.getlogin on Windows."""
+    if pwd is not None:
+        return pwd.getpwuid(os.getuid()).pw_name
+    return os.getlogin()
+
+
+def needles(forbid, caseless=CASELESS, hosts=(), users=()):
     """The byte strings to search for: (group, label, bytes, caseless) for each
     spelling of each forbidden path, in UTF-8 and in UTF-16 little endian,
-    and each host name as it is, in both. A caseless needle is lower case
-    and is searched in the lower-cased file. Refuses a text shorter than
-    4 characters: it would match everywhere and mean nothing."""
+    each host name as it is, in both, and each form of each user name of
+    user_forms, in both. A caseless needle is lower case and is searched in
+    the lower-cased file. Refuses a text or user name shorter than 4
+    characters: it would match everywhere and mean nothing."""
     out, seen = [], set()
 
     def add(group, label, text, nocase):
@@ -138,7 +163,7 @@ def needles(forbid, caseless=CASELESS, hosts=()):
                 seen.add((b, nocase))
                 out.append((group, label + tag, b, nocase))
 
-    for t in list(forbid) + list(hosts):
+    for t in list(forbid) + list(hosts) + list(users):
         if len(t) < 4:
             raise Refused(f"forbidden text {t!r} is shorter than 4 characters")
     for i, t in enumerate(forbid):
@@ -146,6 +171,12 @@ def needles(forbid, caseless=CASELESS, hosts=()):
             add(i, v, v, drive or caseless)
     for i, h in enumerate(hosts, len(forbid)):
         add(i, h, h, False)
+    group = len(forbid) + len(hosts)
+    for u in users:
+        for form in user_forms(u):
+            for v, _ in variants(form):
+                add(group, v, v, caseless)
+            group += 1
     return out
 
 
@@ -194,10 +225,10 @@ def context(path, needle, nocase=False, limit=5, width=100):
     return out
 
 
-def scan(package, forbid, caseless=CASELESS, hosts=()):
+def scan(package, forbid, caseless=CASELESS, hosts=(), users=()):
     """The (file, label, needle, caseless) hits: in each file, the first
-    spelling found of each forbidden text."""
-    ns = needles(forbid, caseless, hosts)
+    spelling found of each forbidden text and of each form of a user name."""
+    ns = needles(forbid, caseless, hosts, users)
     hits = []
     for rel, p in files_of(package):
         data = p.read_bytes()
@@ -556,6 +587,7 @@ def main(argv=None):
     s.add_argument("--forbid", action="append", default=[])
     s.add_argument("--forbid-env", action="append", default=[], metavar="NAME")
     s.add_argument("--forbid-host", action="store_true")
+    s.add_argument("--forbid-user", action="store_true")
     g = sub.add_parser("gather")
     g.add_argument("--in", dest="src", required=True)
     g.add_argument("--out", required=True)
@@ -575,16 +607,17 @@ def main(argv=None):
                     raise Refused(f"the environment variable {name} is not set")
                 forbid.append(os.environ[name])
             hosts = [socket.gethostname()] if a.forbid_host else []
-            if not forbid and not hosts:
+            users = [this_user()] if a.forbid_user else []
+            if not forbid and not hosts and not users:
                 raise Refused("nothing to search for")
-            hits = scan(a.package, forbid, hosts=hosts)
+            hits = scan(a.package, forbid, hosts=hosts, users=users)
             for rel, label, n, nocase in hits:
                 print(f"FAIL: {rel} holds {label}")
                 for at, around in context(pathlib.Path(a.package) / rel, n, nocase):
                     print(f"  at byte {at}: {around}")
             if hits:
                 return 1
-            print(f"No file of {a.package} holds a path or name of this machine.")
+            print(f"No file of {a.package} holds a path, the host name or a home path or user@ of this machine.")
         else:
             v = gather(a.src, a.out, a.repo, a.tag, a.base_url)
             for p in sorted(pathlib.Path(a.out).iterdir()):
