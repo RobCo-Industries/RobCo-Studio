@@ -621,6 +621,8 @@ fn the_afterglow_starts_empty_when_the_pass_resumes() {
     struct Shown {
         page: egui::Color32,
         pass: bool,
+        /// The frame's first pass is discarded and run again.
+        discard: bool,
     }
     let picture = |frames: &[Shown]| {
         let rs = create_render_state(default_wgpu_setup(), Default::default());
@@ -639,6 +641,9 @@ fn the_afterglow_starts_empty_when_the_pass_resumes() {
                 move |ui, shown: &mut Shown| {
                     let r = ui.ctx().content_rect();
                     ui.painter().rect_filled(r, 0.0, shown.page);
+                    if shown.discard && !ui.ctx().will_discard() {
+                        ui.ctx().request_discard("test");
+                    }
                     let mut l = link.lock().unwrap();
                     l.frame = shown.pass.then_some(Frame {
                         strengths: Strengths {
@@ -660,8 +665,16 @@ fn the_afterglow_starts_empty_when_the_pass_resumes() {
         }
         last
     };
-    let live = |page| Shown { page, pass: true };
-    let soft = |page| Shown { page, pass: false };
+    let live = |page| Shown {
+        page,
+        pass: true,
+        discard: false,
+    };
+    let soft = |page| Shown {
+        page,
+        pass: false,
+        discard: false,
+    };
     let dark = egui::Color32::from_rgb(10, 20, 30);
     let resumed = picture(&[
         live(egui::Color32::WHITE),
@@ -680,4 +693,17 @@ fn the_afterglow_starts_empty_when_the_pass_resumes() {
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(differ, 0, "{differ} pixels keep the old picture");
+    // A frame run twice, its first pass discarded, still keeps the
+    // afterglow of the frame before.
+    let rerun = Shown {
+        discard: true,
+        ..live(dark)
+    };
+    let Some(kept) = picture(&[live(egui::Color32::WHITE), rerun]) else {
+        return;
+    };
+    assert_ne!(
+        kept, fresh,
+        "the afterglow is kept through a discarded pass"
+    );
 }

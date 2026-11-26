@@ -186,9 +186,6 @@ struct Plugin {
     pending: Option<Arc<Pending>>,
     /// What egui was last told is down.
     down: Down,
-    /// The number of outputs seen, this one included. The pass's
-    /// afterglow is valid only after the output just before its own.
-    seq: u64,
 }
 
 /// What egui was told is down: the pointer's buttons, the keys and the
@@ -362,7 +359,6 @@ impl egui::Plugin for Plugin {
             let mut link = lock(&self.link);
             (link.frame.take(), link.curvature)
         };
-        self.seq = self.seq.wrapping_add(1);
         // The pointer is mapped back through the curve whether or not the
         // pass draws, so the tree's rectangles follow it the same way.
         if let Some(update) = &mut output.platform_output.accesskit_update {
@@ -381,7 +377,9 @@ impl egui::Plugin for Plugin {
         let callback = Callback {
             prims,
             frame,
-            seq: self.seq,
+            // Every pass of a frame has the frame's number: a pass that is
+            // discarded and run again does not break the afterglow.
+            seq: ctx.cumulative_frame_nr(),
             pending: Arc::clone(pending),
         };
         output.shapes = vec![ClippedShape::new(
@@ -432,7 +430,6 @@ pub fn plug(ctx: &egui::Context, link: Shared, gpu: Option<&RenderState>) {
         link,
         pending,
         down: Down::default(),
-        seq: 0,
     });
 }
 
@@ -440,7 +437,7 @@ pub fn plug(ctx: &egui::Context, link: Shared, gpu: Option<&RenderState>) {
 struct Callback {
     prims: Vec<ClippedPrimitive>,
     frame: Frame,
-    /// The output this frame came with, as counted by the plugin.
+    /// The number of the frame, as egui counts them.
     seq: u64,
     pending: Arc<Pending>,
 }
@@ -723,7 +720,7 @@ impl Pass {
     /// Draw egui's picture into the scene texture and run the passes.
     ///
     /// The last output is the afterglow's history only when the pass drew
-    /// the output just before this one, `seq`, at this size and display
+    /// the frame just before this one, number `seq`, at this size and display
     /// scale. After any frame it did not draw, a level without the pass,
     /// a frame dropped, new targets, a new scale or the first frame, the
     /// history is empty and the frame keeps nothing of it.
