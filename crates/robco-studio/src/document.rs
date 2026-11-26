@@ -387,8 +387,11 @@ fn plain_create_perms(dir: &Path, name: &str) -> std::io::Result<std::fs::Permis
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::cell::RefCell;
 
+    // Only the Unix seam and test read the temp file's bits.
+    #[cfg(unix)]
     thread_local! {
         static TMP_MODES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     }

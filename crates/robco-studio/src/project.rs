@@ -211,17 +211,17 @@ mod tests {
     }
 
     /// Removes its folder when dropped, so a failing test cleans up too.
+    /// Only the Unix tests use it.
+    #[cfg(unix)]
     struct TempDir(PathBuf);
+    #[cfg(unix)]
     impl Drop for TempDir {
         fn drop(&mut self) {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    self.0.join("robco.toml"),
-                    std::fs::Permissions::from_mode(0o644),
-                );
-            }
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                self.0.join("robco.toml"),
+                std::fs::Permissions::from_mode(0o644),
+            );
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
