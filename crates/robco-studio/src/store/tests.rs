@@ -681,3 +681,197 @@ fn a_long_destination_name_writes() {
         assert_eq!(std::fs::read(d.0.join(&file)).unwrap(), b"x", "{len}");
     }
 }
+
+/// What a number read from a file gives: a value with or without a
+/// warning, or a refusal with its reason.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Got {
+    /// Kept as it is, with no warning.
+    Kept(f64),
+    /// Brought to this value, with a warning.
+    Moved(f64),
+    /// Refused, with this reason.
+    Refused(&'static str),
+}
+
+/// The values every numeric key is tried with, as TOML text.
+const EXTREMES: [&str; 11] = [
+    "-9223372036854775808",
+    "9223372036854775807",
+    "-1",
+    "0",
+    "0.5",
+    "1",
+    "nan",
+    "inf",
+    "-inf",
+    "1e308",
+    "-0.0",
+];
+
+#[test]
+fn every_number_from_a_file_is_checked_before_it_is_used() {
+    use Got::*;
+    let not_number = Refused("is not a number");
+    // A strength: 0 to 1, floats or integers.
+    let strength: &[(&str, Got)] = &[
+        (EXTREMES[0], Moved(0.0)),
+        (EXTREMES[1], Moved(1.0)),
+        (EXTREMES[2], Moved(0.0)),
+        (EXTREMES[3], Kept(0.0)),
+        (EXTREMES[4], Kept(0.5)),
+        (EXTREMES[5], Kept(1.0)),
+        (EXTREMES[6], not_number),
+        (EXTREMES[7], not_number),
+        (EXTREMES[8], not_number),
+        (EXTREMES[9], Moved(1.0)),
+        (EXTREMES[10], Kept(0.0)),
+        ("-0.01", Moved(0.0)),
+        ("1.01", Moved(1.0)),
+        ("\"0.5\"", not_number),
+    ];
+    for key in STRENGTH_KEYS {
+        for (v, want) in strength {
+            let text = format!("version = 1\nbase = \"#ff7a1a\"\n[screen]\n{key} = {v}\n");
+            let got = match read_theme("t.toml", text.as_bytes()) {
+                Ok(l) => {
+                    let i = STRENGTH_KEYS.iter().position(|k| *k == key).unwrap();
+                    let s = f64::from(l.spec.strengths.get(i).unwrap());
+                    // -0.0 equals 0.0, so the sign is checked on its own.
+                    assert!(s.is_sign_positive(), "{key} = {v}: {s}");
+                    if l.notes.is_empty() {
+                        Kept(s)
+                    } else {
+                        Moved(s)
+                    }
+                }
+                Err(n) => {
+                    assert!(
+                        n.text.contains(&format!("{key} is not a number")),
+                        "{key} = {v}: {}",
+                        n.text
+                    );
+                    not_number
+                }
+            };
+            assert_eq!(got, *want, "{key} = {v}");
+        }
+    }
+
+    // `rate`: a whole number, the nearest of 15, 30 and 60.
+    let whole = Refused("rate is not a whole number");
+    let rate: &[(&str, Got)] = &[
+        (EXTREMES[0], Moved(15.0)),
+        (EXTREMES[1], Moved(60.0)),
+        (EXTREMES[2], Moved(15.0)),
+        (EXTREMES[3], Moved(15.0)),
+        (EXTREMES[4], whole),
+        (EXTREMES[5], Moved(15.0)),
+        (EXTREMES[6], whole),
+        (EXTREMES[7], whole),
+        (EXTREMES[8], whole),
+        (EXTREMES[9], whole),
+        (EXTREMES[10], whole),
+        ("30.0", whole),
+        ("14", Moved(15.0)),
+        ("15", Kept(15.0)),
+        ("16", Moved(15.0)),
+        ("29", Moved(30.0)),
+        ("31", Moved(30.0)),
+        ("59", Moved(60.0)),
+        ("60", Kept(60.0)),
+        ("61", Moved(60.0)),
+        ("-9223372036854775807", Moved(15.0)),
+        ("9223372036854775806", Moved(60.0)),
+    ];
+    for (v, want) in rate {
+        let text = format!("version = 1\nbase = \"#ff7a1a\"\n[screen]\nrate = {v}\n");
+        let got = match read_theme("t.toml", text.as_bytes()) {
+            Ok(l) => {
+                let r = f64::from(l.spec.rate);
+                match l.notes.first() {
+                    None => Kept(r),
+                    Some(n) => {
+                        assert_eq!(
+                            n.text,
+                            format!(
+                                "%STUDIO-W-THEMERANGE, t.toml asks for rate {v}, Studio has 15, 30 and 60. Studio uses {r}."
+                            )
+                        );
+                        Moved(r)
+                    }
+                }
+            }
+            Err(n) => {
+                assert!(
+                    n.text.contains("rate is not a whole number"),
+                    "{v}: {}",
+                    n.text
+                );
+                whole
+            }
+        };
+        assert_eq!(got, *want, "rate = {v}");
+        // `[unsaved]` of `settings.toml` reads the same keys by the same
+        // rule. A refused value there means no changed theme.
+        let s = format!("[unsaved]\nfrom = \"Green\"\nbase = \"#ff7a1a\"\nrate = {v}\n");
+        let u = Settings::parse(s.as_bytes()).unwrap().unsaved();
+        match want {
+            Kept(r) | Moved(r) => assert_eq!(f64::from(u.unwrap().spec.rate), *r, "{v}"),
+            Refused(_) => assert_eq!(u, None, "{v}"),
+        }
+    }
+
+    // `version`: 1 only. A newer whole number says so, the rest is not 1.
+    let versions: &[(&str, Result<(), &str>)] = &[
+        (EXTREMES[0], Err("version is not 1")),
+        (
+            EXTREMES[1],
+            Err("uses theme format 9223372036854775807, this Studio knows 1"),
+        ),
+        (EXTREMES[2], Err("version is not 1")),
+        (EXTREMES[3], Err("version is not 1")),
+        (EXTREMES[4], Err("version is not 1")),
+        (EXTREMES[5], Ok(())),
+        (EXTREMES[6], Err("version is not 1")),
+        (EXTREMES[7], Err("version is not 1")),
+        (EXTREMES[8], Err("version is not 1")),
+        (EXTREMES[9], Err("version is not 1")),
+        (EXTREMES[10], Err("version is not 1")),
+        ("1.0", Err("version is not 1")),
+        ("2", Err("uses theme format 2, this Studio knows 1")),
+    ];
+    for (v, want) in versions {
+        let text = format!("version = {v}\nbase = \"#ff7a1a\"\n");
+        let got = read_theme("t.toml", text.as_bytes()).map(|_| ());
+        match want {
+            Ok(()) => assert!(got.is_ok(), "version = {v}"),
+            Err(why) => {
+                let t = got.unwrap_err().text;
+                assert!(t.contains(why), "version = {v}: {t}");
+            }
+        }
+        let s = Settings::parse(format!("version = {v}\n").as_bytes()).map(|_| ());
+        match want {
+            Ok(()) => assert_eq!(s, Ok(()), "settings version = {v}"),
+            Err(why) if why.starts_with("uses") => {
+                let s = s.unwrap_err();
+                assert!(s.starts_with("it uses settings format"), "{v}: {s}");
+            }
+            Err(_) => assert_eq!(s, Err("version is not 1".to_owned()), "{v}"),
+        }
+    }
+
+    // `base`: `#` and six hex digits. A number is not a colour.
+    for v in EXTREMES {
+        let text = format!("version = 1\nbase = {v}\n");
+        let t = read_theme("t.toml", text.as_bytes()).unwrap_err().text;
+        assert!(t.contains("base is not a colour"), "base = {v}: {t}");
+        let s = format!("[unsaved]\nfrom = \"Green\"\nbase = {v}\n");
+        assert_eq!(
+            Settings::parse(s.as_bytes()).unwrap().unsaved(),
+            None,
+            "{v}"
+        );
+    }
+}

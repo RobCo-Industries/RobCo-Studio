@@ -300,6 +300,9 @@ fn parse(bytes: &[u8]) -> Result<Table, String> {
 fn number(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 {
         format!("{}", v as i64)
+    } else if v.abs() >= 1e15 {
+        // A huge number reads as a short exponent, not 300 digits.
+        format!("{v:e}")
     } else {
         format!("{v}")
     }
@@ -333,7 +336,8 @@ fn screen_of(
             Some(Value::Float(f)) if f.is_finite() => *f,
             Some(_) => return Err(format!("{key} is not a number")),
         };
-        let kept = v.clamp(0.0, 1.0);
+        // Adding 0.0 turns -0.0 into 0.0, so a file cannot keep a sign.
+        let kept = v.clamp(0.0, 1.0) + 0.0;
         if kept != v {
             let (edge, word) = if v < 0.0 { (0, "least") } else { (1, "most") };
             notes.push(warn(format!(
@@ -357,7 +361,8 @@ fn screen_of(
             let near = crt::RATES
                 .iter()
                 .copied()
-                .min_by_key(|r| (i64::from(*r) - n).unsigned_abs())
+                // `abs_diff` cannot overflow, whatever the file holds.
+                .min_by_key(|r| n.abs_diff(i64::from(*r)))
                 .unwrap_or(crt::RATE);
             if i64::from(near) != *n {
                 notes.push(warn(format!(
