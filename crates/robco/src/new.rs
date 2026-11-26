@@ -259,9 +259,11 @@ fn newest_package(cache: &Path) -> Result<PathBuf, Failure> {
     let dir = cache.join("packages").join(TEMPLATES);
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Err(none()),
-        // A file there, where a folder belongs, holds no package.
-        Err(_) if !dir.is_dir() => return Err(none()),
+        // Only a folder that is truly absent, or a file where a folder
+        // belongs, holds no package. A refusal is not an absence.
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return Err(none());
+        }
         Err(e) => return Err(read_failure(&dir, &e)),
     };
     let mut best: Option<Version> = None;

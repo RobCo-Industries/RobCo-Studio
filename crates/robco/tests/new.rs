@@ -949,3 +949,26 @@ fn new_and_install_agree_on_the_sdk_json_limit() {
     let d = refused(&f, "holotape-c", "PIPES", "package: manifest", 4);
     assert!(d.contains(&max.to_string()), "{d}");
 }
+
+/// A `packages` folder the host will not search is `io: read`, not
+/// `templates: none`: the package may be there.
+#[cfg(unix)]
+#[test]
+fn new_a_cache_folder_the_host_will_not_read_is_io_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("cache-000");
+    f.good();
+    let packages = f.cache().join("packages");
+    fs::set_permissions(&packages, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::read_dir(packages.join("templates")).is_ok();
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    fs::set_permissions(&packages, fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        println!("skipped: this process reads a folder without permission");
+        return;
+    }
+    let (code, detail, exit) = failure(&o);
+    assert_eq!((code.as_str(), exit), ("io: read", 9), "{detail}");
+    assert!(detail.contains("packages"), "{detail}");
+    assert!(f.in_work().is_empty());
+}
