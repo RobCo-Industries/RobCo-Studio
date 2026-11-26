@@ -1585,6 +1585,43 @@ fn the_scale_items_follow_the_panes_room() {
     assert_eq!(h.state().unavailable(&it), None);
 }
 
+/// The room comes from the layout, not from drawing the pane: on the Card
+/// page a resize changes the scale items with no Project page drawn, and
+/// a chosen 2x that stops fitting becomes 1x with one status line.
+#[test]
+fn the_scale_items_follow_a_resize_on_another_page() {
+    use robco_studio::app::Page;
+    use robco_studio::menus::Command;
+    let mut h = harness(None);
+    h.state_mut().layout.sim_w = 1000.0;
+    h.state_mut().layout.files = false;
+    h.state_mut().layout.bottom = false;
+    h.state_mut().page = Page::Card;
+    h.run_steps(2);
+    assert!(scale_items(&mut h).unwrap()[1].is_some());
+    h.set_size(egui::vec2(1400.0, 1200.0));
+    h.run_steps(2);
+    assert_eq!(scale_items(&mut h).unwrap()[1], None);
+    h.state_mut()
+        .run(&egui::Context::default(), Command::SimZoom(2));
+    h.run_steps(2);
+    assert_eq!(h.state().sim_zoom, 2);
+    h.state_mut().status.1.clear();
+    h.set_size(egui::vec2(1280.0, 720.0));
+    h.run_steps(1);
+    assert_eq!(h.state().sim_zoom, 1);
+    assert_eq!(
+        h.state().status.1,
+        "2x no longer fits. The simulator is at 1x."
+    );
+    // Once: a later frame does not say it again.
+    h.state_mut().status.1.clear();
+    h.run_steps(2);
+    assert!(h.state().status.1.is_empty());
+    assert!(scale_items(&mut h).unwrap()[1].is_some());
+    assert_eq!(h.state().page, Page::Card);
+}
+
 #[test]
 fn the_empty_states_open_folder_opens_the_chooser() {
     let b = sample("empty-open-to").unwrap();

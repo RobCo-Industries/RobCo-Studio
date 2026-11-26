@@ -165,8 +165,8 @@ pub struct Studio {
     pub compact_header: bool,
     /// The simulator's zoom step, 1 to 3.
     pub sim_zoom: u8,
-    /// The largest zoom step the simulator pane had room for when last
-    /// drawn.
+    /// The largest zoom step the simulator pane has room for, from the
+    /// layout of this frame's page, whichever page shows.
     sim_room: u8,
     /// Commands chosen in a menu outside the window, run next frame.
     pub pending: Vec<Command>,
@@ -668,6 +668,7 @@ impl Studio {
         let st = strips(full, self.menu_row, tall);
         let (tool, page, status) = (st.toolbar, st.page, st.footer);
         self.page_rect = page;
+        self.fit_sim(page);
         self.header(&kit, ui, st.header, tall);
         if let Some(r) = st.menu {
             self.menu_bar(&kit, ui, r);
@@ -1153,14 +1154,32 @@ impl Studio {
         }
     }
 
+    /// Work out the simulator's room from the layout of `page`, on every
+    /// page, so the scale items follow a resize made on any page. A chosen
+    /// step that no longer fits becomes the largest that does, at once,
+    /// and the status line says so once.
+    fn fit_sim(&mut self, page: Rect) {
+        let mut l = self.layout;
+        self.sim_room = sim_fit(panes(&mut l, page).sim);
+        if self.sim_zoom > self.sim_room {
+            let was = self.sim_zoom;
+            self.sim_zoom = self.sim_room;
+            self.status = (
+                Level::Info,
+                format!(
+                    "{was}x no longer fits. The simulator is at {}x.",
+                    self.sim_room
+                ),
+            );
+        }
+    }
+
     /// The simulator pane: the device, idle at 62 percent with the empty
     /// state in its screen opening, the honest line, and Stop, Reset, Fit
     /// and the zoom group.
     fn sim_pane(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect, focus: bool) {
         let p = kit.p();
-        let fit = sim_fit(rect);
-        self.sim_room = fit;
-        self.sim_zoom = self.sim_zoom.clamp(1, fit);
+        let fit = self.sim_room;
         let zoom = self.sim_zoom;
         let mut new_zoom = zoom;
         kit.pane(ui, rect, Place::Simulator.name(), true, focus, |ui, r| {
