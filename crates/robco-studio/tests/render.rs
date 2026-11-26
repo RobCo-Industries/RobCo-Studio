@@ -3,8 +3,9 @@
 //! Pictures of the window, rendered with no display.
 //!
 //! Ignored by default: run with `STUDIO_SHOTS=<folder> cargo test -p
-//! robco-studio --test render -- --ignored`. It needs a GPU or a software
-//! adapter that wgpu can find. The pictures are not compared with anything:
+//! robco-studio --test render -- --ignored`. Point it at a folder of its
+//! own: it writes `window-*.png` and `sheet-green.png` there. It needs a GPU
+//! or a software adapter that wgpu can find. The pictures are not compared with anything:
 //! they differ between machines.
 
 use eframe::egui;
@@ -44,9 +45,28 @@ int pip_main(const pip_startup_t *startup)
 }
 "#;
 
-fn sample() -> std::io::Result<PathBuf> {
-    let d = std::env::temp_dir().join(format!("robco-studio-shots-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+/// A sample project in a folder of its own, removed when the test ends,
+/// pass or fail.
+struct Sample(PathBuf);
+
+impl std::ops::Deref for Sample {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Sample {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn sample(tag: &str) -> std::io::Result<Sample> {
+    let d = Sample(
+        std::env::temp_dir().join(format!("robco-studio-shots-{tag}-{}", std::process::id())),
+    );
+    let _ = std::fs::remove_dir_all(&*d);
     std::fs::create_dir_all(d.join("src"))?;
     std::fs::create_dir_all(d.join("assets"))?;
     std::fs::write(d.join("robco.toml"), MANIFEST)?;
@@ -64,15 +84,38 @@ fn shot(h: &mut Harness<'static, Studio>, dir: &Path, name: &str) -> Result<(), 
 }
 
 fn harness(folder: Option<&Path>) -> Harness<'static, Studio> {
+    harness_at(folder, 720.0)
+}
+
+fn harness_at(folder: Option<&Path>, height: f32) -> Harness<'static, Studio> {
     let mut h = Harness::builder()
-        .with_size(egui::vec2(1280.0, 720.0))
+        .with_size(egui::vec2(1280.0, height))
         .with_pixels_per_point(1.0)
         .wgpu()
-        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(folder));
+        .build_ui_state(full_window, Studio::new(folder));
     h.run_steps(3);
     h
 }
 
+/// Draw the window over the whole screen, as eframe gives it, and not
+/// inside the harness's margin.
+fn full_window(ui: &mut egui::Ui, s: &mut Studio) {
+    let r = ui.ctx().content_rect();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+        ui.set_clip_rect(r);
+        s.ui(ui);
+    });
+}
+
+fn open_main(h: &mut Harness<'static, Studio>) {
+    h.get_by_label("src").click();
+    h.run_steps(2);
+    h.get_by_label("main.c").click();
+    h.run_steps(2);
+}
+
+/// The Project page with the sample project in each scheme, the compact
+/// header, the find bar, and two empty pages.
 #[test]
 #[ignore = "writes PNG files; needs a wgpu adapter"]
 fn render_the_window() {
@@ -80,25 +123,30 @@ fn render_the_window() {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
-    let d = sample().unwrap();
+    let d = sample("window").unwrap();
     let mut h = harness(Some(&d));
-    h.get_by_label("src").click();
-    h.run_steps(2);
-    h.get_by_label("main.c").click();
-    h.run_steps(2);
-    shot(&mut h, &dir, "project-green.png").unwrap();
+    open_main(&mut h);
+    shot(&mut h, &dir, "window-green.png").unwrap();
     h.state_mut().theme.scheme = Scheme::Amber;
-    shot(&mut h, &dir, "project-amber.png").unwrap();
+    shot(&mut h, &dir, "window-amber.png").unwrap();
     h.state_mut().theme.scheme = Scheme::Blue;
-    shot(&mut h, &dir, "project-blue.png").unwrap();
+    shot(&mut h, &dir, "window-blue.png").unwrap();
     h.state_mut().theme.scheme = Scheme::White;
-    shot(&mut h, &dir, "project-white.png").unwrap();
+    shot(&mut h, &dir, "window-white.png").unwrap();
+    h.state_mut().theme.scheme = Scheme::Green;
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run_steps(2);
+    h.state_mut().editor.find.query = "game".into();
+    shot(&mut h, &dir, "window-find.png").unwrap();
+
+    let mut h = harness_at(Some(&d), 700.0);
+    open_main(&mut h);
+    shot(&mut h, &dir, "window-compact.png").unwrap();
 
     let mut h = harness(None);
-    shot(&mut h, &dir, "no-project-green.png").unwrap();
+    shot(&mut h, &dir, "window-no-project.png").unwrap();
     h.state_mut().page = Page::Sdk;
-    shot(&mut h, &dir, "sdk-empty-green.png").unwrap();
-    std::fs::remove_dir_all(&d).unwrap();
+    shot(&mut h, &dir, "window-sdk.png").unwrap();
 }
 
 /// The find fields show their text: inside each field's rectangle some
@@ -106,19 +154,9 @@ fn render_the_window() {
 #[test]
 #[ignore = "needs a wgpu adapter"]
 fn find_fields_show_their_text() {
-    let d = sample().unwrap();
-    struct Gone(PathBuf);
-    impl Drop for Gone {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _gone = Gone(d.clone());
+    let d = sample("find").unwrap();
     let mut h = harness(Some(&d));
-    h.get_by_label("src").click();
-    h.run_steps(2);
-    h.get_by_label("main.c").click();
-    h.run_steps(2);
+    open_main(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
     h.run_steps(2);
     h.state_mut().editor.find.query = "return".into();

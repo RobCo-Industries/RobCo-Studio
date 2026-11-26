@@ -40,8 +40,12 @@ fn sample(tag: &str) -> std::io::Result<Sample> {
 }
 
 fn harness(folder: Option<&Path>) -> Harness<'static, Studio> {
+    harness_at(folder, 720.0)
+}
+
+fn harness_at(folder: Option<&Path>, height: f32) -> Harness<'static, Studio> {
     let mut h = Harness::builder()
-        .with_size(egui::vec2(1280.0, 720.0))
+        .with_size(egui::vec2(1280.0, height))
         .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(folder));
     h.run_steps(3);
     h
@@ -510,4 +514,69 @@ fn tabs_past_the_header_scroll_into_view() {
         h.query_all_by_label(&names[0])
             .any(|n| n.accesskit_node().role() == Role::MenuItem)
     );
+}
+
+/// The header's one image, and its height.
+fn header_h(h: &Harness<'static, Studio>) -> f32 {
+    let n = h
+        .query_all_by_label("RobCo Studio")
+        .find(|n| n.accesskit_node().role() == Role::Image)
+        .expect("the header is an image named RobCo Studio");
+    n.rect().height()
+}
+
+#[test]
+fn the_header_is_compact_under_720_points_and_by_choice() {
+    use robco_studio::theme::{size, stroke};
+    let band = |h: f32| h - stroke::FRAME;
+    let mut h = harness(None);
+    assert_eq!(header_h(&h), band(size::HEADER_H));
+    h.state_mut().run(
+        &egui::Context::default(),
+        robco_studio::menus::Command::CompactHeader,
+    );
+    h.run_steps(2);
+    assert_eq!(header_h(&h), band(size::HEADER_COMPACT_H));
+    let h = harness_at(None, 700.0);
+    assert_eq!(header_h(&h), band(size::HEADER_COMPACT_H));
+}
+
+#[test]
+fn the_view_menu_has_compact_header() {
+    let view = robco_studio::menus::menus()
+        .into_iter()
+        .find(|m| m.title == "View")
+        .unwrap();
+    assert!(view.items.iter().any(|i| i.text == "Compact header"
+        && i.command == robco_studio::menus::Command::CompactHeader
+        && i.unavailable.is_none()));
+}
+
+#[test]
+fn the_menu_row_is_absent_where_the_system_has_a_menu_bar() {
+    let mut h = harness(None);
+    assert!(h.query_by_label("Menu bar").is_some());
+    h.state_mut().menu_row = false;
+    h.run_steps(2);
+    assert!(h.query_by_label("Menu bar").is_none());
+    assert!(
+        h.query_all_by_label("File")
+            .all(|n| n.accesskit_node().role() != Role::MenuItem)
+    );
+}
+
+#[test]
+fn the_toolbar_has_four_actions_of_one_width() {
+    use robco_studio::theme::size;
+    let h = harness(None);
+    for job in ["Build", "Run", "Debug", "Write card"] {
+        assert!(
+            h.query_all_by_label(job).any(|n| {
+                n.accesskit_node().role() == Role::Button
+                    && n.rect().width() == size::TOOLBAR_ACTION_W
+                    && n.rect().height() == size::CONTROL_H
+            }),
+            "{job}"
+        );
+    }
 }

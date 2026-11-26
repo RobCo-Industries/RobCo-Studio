@@ -755,7 +755,7 @@ impl Editor {
             self.find.open = false;
         }
         if kit
-            .button(ui, Button::quiet("Next").small().kind(ButtonKind::Quiet))
+            .button(ui, Button::quiet("Next").small().kind(ButtonKind::Outlined))
             .clicked()
         {
             self.find_step(ui.ctx(), true);

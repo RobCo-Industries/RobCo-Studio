@@ -51,12 +51,11 @@ impl Level {
 /// The kinds of button of the design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
-    /// The next step: `bright` fill, `ink` label, a halo.
-    Primary,
-    /// Build, Debug, Write card: `select` fill, `bright` label.
-    Toolbar,
+    /// The four toolbar actions and the next step of a pane: `bright`
+    /// fill, `ink` label, a halo.
+    Filled,
     /// Everything else: `frame` stroke, `bright` label, no fill.
-    Quiet,
+    Outlined,
 }
 
 /// A button to draw.
@@ -70,18 +69,24 @@ pub struct Button<'a> {
     pub icon: Option<Icon>,
     /// 24 high in place of 28.
     pub small: bool,
+    /// A fixed width, or None to fit the label.
+    pub width: Option<f32>,
+    /// A job is running: the label names it and the hourglass shows.
+    pub busy: bool,
     /// Why it cannot act, or None when it can.
     pub unavailable: Option<&'a str>,
 }
 
 impl<'a> Button<'a> {
-    /// A quiet button that acts.
+    /// An outlined button that acts.
     pub fn quiet(text: &'a str) -> Self {
         Self {
-            kind: ButtonKind::Quiet,
+            kind: ButtonKind::Outlined,
             text,
             icon: None,
             small: false,
+            width: None,
+            busy: false,
             unavailable: None,
         }
     }
@@ -101,6 +106,18 @@ impl<'a> Button<'a> {
     /// The same button, small.
     pub fn small(mut self) -> Self {
         self.small = true;
+        self
+    }
+
+    /// The same button at a fixed width.
+    pub fn width(mut self, w: f32) -> Self {
+        self.width = Some(w);
+        self
+    }
+
+    /// The same button while its job runs.
+    pub fn busy(mut self) -> Self {
+        self.busy = true;
         self
     }
 
@@ -378,20 +395,23 @@ impl<'a> Kit<'a> {
         } else {
             size::CONTROL_H
         };
-        let pad = size::UNIT * 2.0;
-        let icon_w = if b.icon.is_some() {
-            size::ICON + size::STEP_6
+        let pad = size::LABEL_PAD;
+        let icon_w = if b.icon.is_some() || b.busy {
+            size::ICON + size::ICON_GAP
         } else {
             0.0
         };
-        let w = (pad * 2.0 + icon_w + self.caps_width(ui, b.text)).max(size::SMALL_H);
-        let sense = if b.unavailable.is_some() {
+        let label_w = self.caps_width(ui, b.text);
+        let w = b
+            .width
+            .unwrap_or((pad * 2.0 + icon_w + label_w).max(size::SMALL_H));
+        let sense = if b.unavailable.is_some() || b.busy {
             Sense::focusable_noninteractive()
         } else {
             Sense::click()
         };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), sense);
-        let able = b.unavailable.is_none();
+        let able = b.unavailable.is_none() && !b.busy;
         resp.widget_info(|| WidgetInfo::labeled(Role::Button, able, b.text));
         if let Some(why) = b.unavailable {
             ui.ctx().accesskit_node_builder(resp.id, |n| {
@@ -403,51 +423,56 @@ impl<'a> Kit<'a> {
         let pressed = resp.is_pointer_button_down_on();
         let hovered = resp.hovered();
         let cr = self.theme.control_radius();
-        let fg = match (b.unavailable, b.kind) {
-            (Some(_), _) => {
-                self.dashed_rect(painter, rect, p.frame);
-                p.dim
-            }
-            (None, ButtonKind::Primary) => {
-                if !pressed && let Some(h) = self.theme.halo() {
-                    painter.add(h.as_shape(rect, cr));
+        let fg = if b.unavailable.is_some() {
+            self.dashed_rect(painter, rect, p.frame);
+            p.dim
+        } else if b.busy {
+            painter.rect(
+                rect,
+                cr,
+                p.select,
+                self.theme.frame(p.bright),
+                StrokeKind::Inside,
+            );
+            p.bright
+        } else {
+            match b.kind {
+                ButtonKind::Filled => {
+                    if !pressed && let Some(h) = self.theme.halo() {
+                        painter.add(h.as_shape(rect, cr));
+                    }
+                    let fill = if pressed {
+                        self.theme.pressed(p.bright)
+                    } else if hovered {
+                        self.theme.hovered(p.bright)
+                    } else {
+                        p.bright
+                    };
+                    painter.rect_filled(rect, cr, fill);
+                    p.ink
                 }
-                let fill = if pressed {
-                    p.text
-                } else if hovered {
-                    self.theme.hovered(p.bright)
-                } else {
+                ButtonKind::Outlined => {
+                    let fill = if pressed {
+                        p.select
+                    } else if hovered {
+                        p.raised
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    painter.rect(
+                        rect,
+                        cr,
+                        fill,
+                        self.theme.frame(p.frame),
+                        StrokeKind::Inside,
+                    );
                     p.bright
-                };
-                painter.rect_filled(rect, cr, fill);
-                p.ink
-            }
-            (None, ButtonKind::Toolbar) => {
-                let fill = if pressed {
-                    p.frame_dim
-                } else if hovered {
-                    p.raised
-                } else {
-                    p.select
-                };
-                painter.rect_filled(rect, cr, fill);
-                p.bright
-            }
-            (None, ButtonKind::Quiet) => {
-                let fill = if pressed {
-                    p.select
-                } else if hovered {
-                    p.raised
-                } else {
-                    Color32::TRANSPARENT
-                };
-                painter.rect_filled(rect, cr, fill);
-                painter.rect_stroke(rect, cr, self.theme.frame(p.frame), StrokeKind::Inside);
-                p.bright
+                }
             }
         };
-        let mut x = rect.left() + pad;
-        if let Some(i) = b.icon {
+        let mut x = rect.center().x - (icon_w + label_w) / 2.0;
+        let icon = if b.busy { Some(Icon::Wait) } else { b.icon };
+        if let Some(i) = icon {
             let r = Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(size::ICON, h));
             self.art.icon(painter, r, i, fg);
             x += icon_w;

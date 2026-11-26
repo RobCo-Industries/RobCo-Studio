@@ -3,7 +3,7 @@
 //! The window: its regions, its pages, the panes of the Project page, focus
 //! from pane to pane, and the one dialog this release has.
 
-use crate::art::{Art, Icon};
+use crate::art::{Art, Icon, Mark};
 use crate::editor::{Answer, Editor};
 use crate::kit::{Button, ButtonKind, Kit, Level};
 use crate::menus::{self, Command};
@@ -146,6 +146,10 @@ pub struct Studio {
     pub status: (Level, String),
     /// Draw the menu row in the window. False where the system shows the menus.
     pub menu_row: bool,
+    /// The header is compact at any window size, by the View menu.
+    pub compact_header: bool,
+    /// The simulator's zoom step, 1 to 3.
+    pub sim_zoom: u8,
     /// Commands chosen in a menu outside the window, run next frame.
     pub pending: Vec<Command>,
     art: Option<(Art, f32, Effects)>,
@@ -159,6 +163,73 @@ pub struct Studio {
 
 const READY: &str = "Ready";
 
+/// The header's caps line, in two lines when the header is tall.
+const HEADER_LINES: [&str; 2] = ["Application & system", "Development environment"];
+
+/// The header is tall from 720 points of inner height up, unless a person
+/// chose the compact header.
+pub fn header_tall(inner_h: f32, compact: bool) -> bool {
+    !compact && inner_h >= size::HEADER_TALL_FROM
+}
+
+/// The window's strips, top to bottom.
+#[derive(Debug, Clone, Copy)]
+pub struct Strips {
+    /// The header band.
+    pub header: Rect,
+    /// The menu row, where the system has no menu bar.
+    pub menu: Option<Rect>,
+    /// The toolbar.
+    pub toolbar: Rect,
+    /// The rail, at the left of the page.
+    pub rail: Rect,
+    /// The page.
+    pub page: Rect,
+    /// The footer.
+    pub footer: Rect,
+}
+
+/// Cut `full` into the strips: header, menu row, toolbar, then rail and
+/// page, then the footer. No strip gets a negative side, down to nothing.
+pub fn strips(full: Rect, menu_row: bool, tall: bool) -> Strips {
+    let full = Rect::from_min_size(full.min, full.size().max(egui::Vec2::ZERO));
+    let (top, bottom) = (full.top(), full.bottom());
+    let down = |y: f32| y.clamp(top, bottom);
+    let band = |a: f32, b: f32| {
+        Rect::from_min_max(
+            egui::pos2(full.left(), down(a)),
+            egui::pos2(full.right(), down(b)),
+        )
+    };
+    let header_h = if tall {
+        size::HEADER_H
+    } else {
+        size::HEADER_COMPACT_H
+    };
+    let header = band(top, top + header_h);
+    let menu = menu_row.then(|| band(header.bottom(), header.bottom() + size::MENU_H));
+    let tool_top = menu.map_or(header.bottom(), |m| m.bottom());
+    let toolbar = band(tool_top, tool_top + size::TOOLBAR_H);
+    let footer = band((bottom - size::FOOTER_H).max(toolbar.bottom()), bottom);
+    let rail_right = (full.left() + size::RAIL_W).min(full.right());
+    let rail = Rect::from_min_max(
+        egui::pos2(full.left(), toolbar.bottom()),
+        egui::pos2(rail_right, footer.top()),
+    );
+    let page = Rect::from_min_max(
+        egui::pos2(rail_right, toolbar.bottom()),
+        egui::pos2(full.right(), footer.top()),
+    );
+    Strips {
+        header,
+        menu,
+        toolbar,
+        rail,
+        page,
+        footer,
+    }
+}
+
 impl Studio {
     /// A window on `folder`, or on no project.
     pub fn new(folder: Option<&Path>) -> Self {
@@ -171,6 +242,8 @@ impl Studio {
             bottom_tab: BottomTab::Build,
             status: (Level::Info, READY.to_owned()),
             menu_row: true,
+            compact_header: false,
+            sim_zoom: 1,
             pending: Vec::new(),
             art: None,
             styled: None,
@@ -287,6 +360,8 @@ impl Studio {
             Command::ToggleFiles => self.layout.files = !self.layout.files,
             Command::ToggleBottom => self.layout.bottom = !self.layout.bottom,
             Command::ResetLayout => self.layout = Layout::default(),
+            Command::CompactHeader => self.compact_header = !self.compact_header,
+            Command::SimZoom(z) => self.sim_zoom = z.clamp(1, 3),
             Command::NextPane => self.move_focus(ctx, true),
             Command::PreviousPane => self.move_focus(ctx, false),
             Command::Phosphor(s) => self.theme.scheme = s,
@@ -391,30 +466,14 @@ impl Studio {
         let p = kit.p();
         ui.painter().rect_filled(full, CornerRadius::ZERO, p.ground);
 
-        let mut y = full.top();
-        if self.menu_row {
-            let r = Rect::from_min_size(full.min, egui::vec2(full.width(), size::MENU_H));
-            self.menu_bar(&kit, ui, r);
-            y = r.bottom();
-        }
-        let tool = Rect::from_min_max(
-            egui::pos2(full.left(), y),
-            egui::pos2(full.right(), y + size::TOOLBAR_H),
-        );
-        let status = Rect::from_min_max(
-            egui::pos2(full.left(), full.bottom() - size::FOOTER_H),
-            full.right_bottom(),
-        );
-        let rail = Rect::from_min_max(
-            egui::pos2(full.left(), tool.bottom()),
-            egui::pos2(full.left() + size::RAIL_W, status.top()),
-        );
-        let page = Rect::from_min_max(
-            egui::pos2(rail.right(), tool.bottom()),
-            egui::pos2(full.right(), status.top()),
-        );
+        let tall = header_tall(ctx.content_rect().height(), self.compact_header);
+        let st = strips(full, self.menu_row, tall);
+        let (tool, rail, page, status) = (st.toolbar, st.rail, st.page, st.footer);
         self.page_rect = page;
-
+        self.header(&kit, ui, st.header, tall);
+        if let Some(r) = st.menu {
+            self.menu_bar(&kit, ui, r);
+        }
         self.toolbar(&kit, ui, tool);
         self.rail(&kit, ui, rail);
         let mut page_ui = kit.region(ui, page, "Page", Role::Main, p.ground, false);
@@ -443,32 +502,105 @@ impl Studio {
         self.art = Some((art, ctx.pixels_per_point(), self.theme.effects()));
     }
 
+    /// The header band: wordmark, atom, divider, the caps line and the
+    /// skyline over a rule. One image for a screen reader, and no focus.
+    fn header(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect, tall: bool) {
+        let p = kit.p();
+        let painter = ui.painter().with_clip_rect(rect);
+        let rule = rect.bottom() - stroke_w() / 2.0;
+        painter.hline(rect.x_range(), rule, kit.theme.frame(p.frame));
+        let band = Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.right(), rect.bottom() - stroke_w()),
+        );
+        let cy = band.center().y;
+        let (wm, atom, div_h) = if tall {
+            (Mark::Wordmark, Mark::Atom, size::HEADER_DIVIDER_H)
+        } else {
+            (
+                Mark::WordmarkCompact,
+                Mark::AtomCompact,
+                size::HEADER_DIVIDER_COMPACT_H,
+            )
+        };
+        let ws = Art::mark_size(wm);
+        let wr = kit.art.mark(
+            &painter,
+            wm,
+            egui::pos2(rect.left() + size::HEADER_PAD, cy - ws.y / 2.0),
+            p.bright,
+        );
+        let a = Art::mark_size(atom);
+        let ar = kit.art.mark(
+            &painter,
+            atom,
+            egui::pos2(wr.right() + size::HEADER_MARK_GAP, cy - a.y / 2.0),
+            p.bright,
+        );
+        let dx = ar.right() + size::HEADER_GAP;
+        painter.vline(
+            dx,
+            egui::Rangef::new(cy - div_h / 2.0, cy + div_h / 2.0),
+            kit.theme.frame(p.frame),
+        );
+        let tx = dx + stroke_w() + size::HEADER_GAP;
+        let track = crate::theme::text::LABEL_TRACKING;
+        let mut text_right = tx;
+        if tall {
+            let step = (crate::theme::text::LABEL_CELL_H + size::HEADER_LINE_GAP) / 2.0;
+            for (line, y) in [(HEADER_LINES[0], cy - step), (HEADER_LINES[1], cy + step)] {
+                let r = kit.caps_styled(&painter, egui::pos2(tx, y), line, p.bright, track, true);
+                text_right = text_right.max(r.right());
+            }
+            let sky = Art::mark_size(Mark::Skyline);
+            let at = egui::pos2(
+                rect.right() - size::HEADER_MARK_GAP - sky.x,
+                band.bottom() - sky.y,
+            );
+            if at.x - text_right >= size::SKYLINE_ROOM {
+                kit.art.mark(&painter, Mark::Skyline, at, p.bright);
+            }
+        } else {
+            let line = format!("{} {}", HEADER_LINES[0], HEADER_LINES[1]);
+            kit.caps_styled(&painter, egui::pos2(tx, cy), &line, p.bright, track, true);
+        }
+        let resp = ui.interact(band, Id::unique("header"), Sense::hover());
+        resp.widget_info(|| egui::WidgetInfo::labeled(Role::Image, true, "RobCo Studio"));
+    }
+
     fn menu_bar(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect) {
         let p = kit.p();
         let bar = kit.region(ui, rect, "Menu bar", Role::MenuBar, p.ground, false);
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
-        let mut x = rect.left() + size::UNIT * 2.0;
+        let mut x = rect.left() + size::UNIT;
         for m in menus::menus() {
-            let g = bar.painter().layout_no_wrap(
-                m.title.to_owned(),
-                kit.theme.font(Type::Body),
-                p.text,
-            );
+            let w = kit.caps_width(&bar, m.title) + size::LABEL_PAD * 2.0;
             let r = Rect::from_min_size(
-                egui::pos2(x, rect.top()),
-                egui::vec2(g.size().x + size::STEP_16, rect.height()),
+                egui::pos2(x, rect.center().y - size::MENU_ITEM_H / 2.0),
+                egui::vec2(w, size::MENU_ITEM_H),
             );
             x = r.right();
             let resp = bar.interact(r, Id::unique(("menu", m.title)), Sense::click());
             resp.widget_info(|| egui::WidgetInfo::labeled(Role::MenuItem, true, m.title));
-            if resp.hovered() || resp.has_focus() {
-                bar.painter().rect_filled(r, CornerRadius::ZERO, p.raised);
-            }
-            bar.painter().galley(
-                egui::pos2(r.left() + size::UNIT * 2.0, r.center().y - g.size().y / 2.0),
-                g,
-                p.text,
+            let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+            let cr = kit.theme.control_radius();
+            let fg = if open {
+                bar.painter().rect_filled(r, cr, p.bright);
+                p.ink
+            } else {
+                if resp.hovered() {
+                    bar.painter().rect_filled(r, cr, p.raised);
+                }
+                p.bright
+            };
+            kit.caps_styled(
+                bar.painter(),
+                egui::pos2(r.left() + size::LABEL_PAD, r.center().y),
+                m.title,
+                fg,
+                0.0,
+                !open && !resp.hovered(),
             );
             if resp.has_focus() {
                 kit.focus_ring(bar.painter(), r);
@@ -509,26 +641,13 @@ impl Studio {
             focus,
         );
         self.places.push((Place::Toolbar, rect));
-        t.painter().line_segment(
-            [rect.left_bottom(), rect.right_bottom()],
-            kit.theme.frame(p.frame_dim),
-        );
         let inner = rect.shrink2(egui::vec2(size::STEP_12, 0.0));
-        let ws = kit.art.wordmark_size();
-        let wm = Rect::from_min_size(egui::pos2(inner.left(), rect.center().y - ws.y / 2.0), ws);
-        kit.art.wordmark(t.painter(), wm.min, p.bright);
-        t.put(
-            wm,
-            egui::Label::new(egui::RichText::new("RobCo Studio").color(egui::Color32::TRANSPARENT)),
-        );
         let mut row = t.new_child(
             UiBuilder::new()
-                .max_rect(Rect::from_min_max(
-                    egui::pos2(wm.right() + size::STEP_24, rect.top()),
-                    inner.right_bottom(),
-                ))
+                .max_rect(inner)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
+        row.spacing_mut().item_spacing.x = 0.0;
         let (name, target) = match &self.project {
             Some(pr) => (
                 pr.name(),
@@ -539,49 +658,78 @@ impl Studio {
             ),
             None => ("None".to_owned(), "None".to_owned()),
         };
-        let x = row.cursor().left();
-        kit.caps(row.painter(), x, rect.center().y, "Project", p.dim);
-        row.add_space(kit.caps_width(&row, "Project") + size::UNIT * 2.0);
+        let track = crate::theme::text::LABEL_TRACKING;
+        let label = |row: &mut Ui, text: &str| {
+            let x = row.cursor().left();
+            let r = kit.caps_styled(
+                row.painter(),
+                egui::pos2(x, rect.center().y),
+                text,
+                p.bright,
+                track,
+                true,
+            );
+            row.add_space(r.width() + size::TOOLBAR_GAP);
+        };
+        let divider = |row: &mut Ui| {
+            row.add_space(size::HEADER_GAP);
+            let x = row.cursor().left();
+            row.painter().vline(
+                x,
+                egui::Rangef::new(
+                    rect.center().y - size::TOOLBAR_DIVIDER_H / 2.0,
+                    rect.center().y + size::TOOLBAR_DIVIDER_H / 2.0,
+                ),
+                kit.theme.frame(p.frame),
+            );
+            row.add_space(stroke_w() + size::HEADER_GAP);
+        };
+        label(&mut row, "Project:");
         kit.dropdown(
             &mut row,
             "Project",
-            Icon::Tape,
+            Icon::Folder,
             &name,
             self.project.is_none(),
             size::PROJECT_DROPDOWN_W,
             &[name.as_str()],
         );
-        row.add_space(size::UNIT * 2.0);
-        let x = row.cursor().left();
-        kit.caps(row.painter(), x, rect.center().y, "For", p.dim);
-        row.add_space(kit.caps_width(&row, "For") + size::UNIT * 2.0);
+        divider(&mut row);
+        label(&mut row, "Target:");
         kit.dropdown(
             &mut row,
-            "For",
+            "Target",
             Icon::Wrist,
             &target,
             target == "None",
             size::TARGET_DROPDOWN_W,
             &[target.as_str()],
         );
-        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            for (text, icon, kind, why) in [
-                (
-                    "Write card",
-                    Icon::WriteCard,
-                    ButtonKind::Toolbar,
-                    menus::NO_CARD,
-                ),
-                ("Debug", Icon::Debug, ButtonKind::Toolbar, menus::NO_DEBUG),
-                ("Run", Icon::Run, ButtonKind::Primary, menus::NO_RUN),
-                ("Build", Icon::Build, ButtonKind::Toolbar, menus::NO_BUILD),
-            ] {
-                kit.button(
-                    ui,
-                    Button::quiet(text).kind(kind).icon(icon).unavailable(why),
-                );
-            }
-        });
+        divider(&mut row);
+        let mut acts = t.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    rect.min,
+                    egui::pos2(rect.right() - size::TOOLBAR_GAP, rect.bottom()),
+                ))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        acts.spacing_mut().item_spacing.x = size::TOOLBAR_GAP;
+        for (text, icon, why) in [
+            ("Write card", Icon::WriteCard, menus::NO_CARD),
+            ("Debug", Icon::Debug, menus::NO_DEBUG),
+            ("Run", Icon::Run, menus::NO_RUN),
+            ("Build", Icon::Build, menus::NO_BUILD),
+        ] {
+            kit.button(
+                &mut acts,
+                Button::quiet(text)
+                    .kind(ButtonKind::Filled)
+                    .icon(icon)
+                    .width(size::TOOLBAR_ACTION_W)
+                    .unavailable(why),
+            );
+        }
     }
 
     fn rail(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect) {
@@ -712,7 +860,7 @@ impl Studio {
         self.editor_pane(kit, ui, editor);
         let fr = self.focus_request;
         let run = Button::quiet("Run")
-            .kind(ButtonKind::Primary)
+            .kind(ButtonKind::Filled)
             .icon(Icon::Run)
             .unavailable(menus::NO_RUN);
         kit.pane(ui, sim, Place::Simulator.name(), true, fr == Some(Place::Simulator), |ui, r| {
@@ -720,7 +868,7 @@ impl Studio {
         });
         self.places.push((Place::Simulator, sim));
         let build = Button::quiet("Build")
-            .kind(ButtonKind::Toolbar)
+            .kind(ButtonKind::Filled)
             .icon(Icon::Build)
             .unavailable(menus::NO_BUILD)
             .small();
@@ -926,7 +1074,7 @@ impl Studio {
                 body.min.y = b.min_rect().bottom() + size::UNIT * 2.0;
             }
             if no_project {
-                let new = Button::quiet("New project").kind(ButtonKind::Primary).icon(Icon::Add).unavailable(menus::LATER);
+                let new = Button::quiet("New project").kind(ButtonKind::Filled).icon(Icon::Add).unavailable(menus::LATER);
                 let open = Button::quiet("Open folder").icon(Icon::Folder).unavailable(menus::NO_DIALOG);
                 kit.empty_state(ui, body, Icon::Tape, "No project is open. Make one from a template, or open a folder that holds a robco.toml.", &[new, open]);
             } else if !has_docs {
@@ -984,7 +1132,7 @@ impl Studio {
                 }
                 BottomTab::Debug => {
                     let b = Button::quiet("Debug")
-                        .kind(ButtonKind::Toolbar)
+                        .kind(ButtonKind::Filled)
                         .icon(Icon::Debug)
                         .unavailable(menus::NO_DEBUG)
                         .small();
@@ -1085,7 +1233,7 @@ impl Studio {
                         let overwrite = matches!(q, crate::editor::Question::Overwrite { .. });
                         let yes = if overwrite { "Overwrite" } else { "Save" };
                         if kit
-                            .button(ui, Button::quiet(yes).kind(ButtonKind::Primary))
+                            .button(ui, Button::quiet(yes).kind(ButtonKind::Filled))
                             .clicked()
                         {
                             answer = Some(Answer::Save);
@@ -1311,6 +1459,43 @@ mod tests {
                 assert!(p.editor.right() <= p.sim.left(), "{w}x{h}");
             }
         }
+        // The strips stay in the window and in order, down to nothing.
+        for (w, h) in sizes {
+            for (menu, tall) in [(true, true), (true, false), (false, true), (false, false)] {
+                let full = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h));
+                let s = strips(full, menu, tall);
+                let all = [
+                    Some(s.header),
+                    s.menu,
+                    Some(s.toolbar),
+                    Some(s.rail),
+                    Some(s.page),
+                    Some(s.footer),
+                ];
+                for r in all.into_iter().flatten() {
+                    assert!(r.width() >= 0.0 && r.height() >= 0.0, "{w}x{h}: {r:?}");
+                    assert!(full.contains_rect(r), "{w}x{h}: {r:?}");
+                }
+                assert_eq!(s.menu.is_some(), menu);
+                assert!(s.header.bottom() <= s.toolbar.top());
+                assert!(s.toolbar.bottom() <= s.page.top() && s.page.bottom() <= s.footer.top());
+                let p = panes(&mut Layout::default(), s.page);
+                for r in [p.files, p.editor, p.sim, p.tape, p.bottom] {
+                    assert!(r.width() >= 0.0 && r.height() >= 0.0, "{w}x{h}: {r:?}");
+                }
+            }
+        }
+        // At 1280 by 720 the header is tall, and under 720 points compact.
+        assert!(header_tall(size::HEADER_TALL_FROM, false));
+        assert!(!header_tall(size::HEADER_TALL_FROM, true));
+        assert!(!header_tall(size::HEADER_TALL_FROM - 1.0, false));
+        let s = strips(
+            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0)),
+            true,
+            true,
+        );
+        assert_eq!(s.header.height(), size::HEADER_H);
+        assert_eq!(s.footer.height(), size::FOOTER_H);
         // At the smallest window every pane is drawn, side by side.
         let mut l = Layout::default();
         let p = panes(
