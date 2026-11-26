@@ -31,6 +31,10 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 [lints]
 workspace = true
 
+# O_NONBLOCK, so opening a named pipe does not wait for a writer. MIT OR Apache-2.0.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # The native menu bar on macOS. Apache-2.0 OR MIT.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.17", default-features = false }

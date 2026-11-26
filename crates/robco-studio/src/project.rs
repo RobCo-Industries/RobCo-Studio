@@ -64,9 +64,22 @@ impl Project {
                 root.display()
             ));
         }
-        let manifest = match std::fs::read(root.join("robco.toml")) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::Missing,
-            Err(e) => Manifest::Unreadable(e.to_string()),
+        let path = root.join("robco.toml");
+        let manifest = match crate::document::read_regular(&path, crate::document::MAX_FILE) {
+            Err(_)
+                if std::fs::metadata(&path)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Manifest::Missing
+            }
+            Err(crate::document::LoadError::Read(e)) => Manifest::Unreadable(e),
+            Err(crate::document::LoadError::TooLarge) => Manifest::Unreadable(format!(
+                "it is larger than {} MiB, the most Studio reads.",
+                crate::document::MAX_FILE / (1024 * 1024)
+            )),
+            Err(_) => Manifest::Unreadable(
+                "it is not a regular file. Studio opens regular files only.".to_owned(),
+            ),
             Ok(bytes) => match studio_core::manifest::parse(&bytes) {
                 Ok(m) => Manifest::Read {
                     name: m.project.name.clone(),
@@ -238,6 +251,29 @@ mod tests {
             matches!(p.manifest, Manifest::Unreadable(_)),
             "{:?}",
             p.manifest
+        );
+    }
+
+    /// A robco.toml that is a named pipe does not hang the open.
+    #[cfg(unix)]
+    #[test]
+    fn manifest_pipe_does_not_hang() {
+        use crate::document::tests::{mkfifo, within_time};
+        let d = TempDir(
+            std::env::temp_dir().join(format!("robco-studio-manifest-fifo-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&d.0);
+        std::fs::create_dir_all(&d.0).unwrap();
+        if !mkfifo(&d.0.join("robco.toml")) {
+            return;
+        }
+        let root = d.0.clone();
+        let p = within_time(move || Project::open(&root).map(|p| p.manifest))
+            .expect("opening a project whose robco.toml is a pipe hung")
+            .unwrap();
+        assert!(
+            matches!(&p, Manifest::Unreadable(e) if e.contains("regular files only")),
+            "{p:?}"
         );
     }
 }

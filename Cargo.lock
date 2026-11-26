@@ -2880,6 +2880,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "image",
+ "libc",
  "muda",
  "resvg",
  "studio-core",

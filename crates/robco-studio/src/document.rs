@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 pub enum LoadError {
     /// The file could not be read.
     Read(String),
+    /// The path is a folder, a pipe, a device or a socket.
+    NotRegular,
+    /// The file is longer than [`MAX_FILE`].
+    TooLarge,
     /// The file is not UTF-8.
     NotText {
         /// The offset of the first byte that is not UTF-8.
@@ -42,6 +46,15 @@ impl fmt::Display for LoadError {
                 f,
                 "Studio could not read the file: {e}. Nothing was opened."
             ),
+            LoadError::NotRegular => write!(
+                f,
+                "Studio opens regular files only, and this is not one. Nothing was opened."
+            ),
+            LoadError::TooLarge => write!(
+                f,
+                "This file is larger than {} MiB, the most Studio opens. Nothing was opened.",
+                MAX_FILE / (1024 * 1024)
+            ),
             LoadError::NotText { valid_up_to } => write!(
                 f,
                 "This file is not UTF-8 text, from byte {valid_up_to}. Studio has no editor for it. Nothing was opened."
@@ -56,6 +69,40 @@ impl fmt::Display for LoadError {
             ),
         }
     }
+}
+
+/// The largest file Studio reads, in bytes: 16 MiB.
+pub const MAX_FILE: u64 = 16 * 1024 * 1024;
+
+/// Read `path`, a regular file of at most `limit` bytes, links followed.
+///
+/// The file is opened once, and its kind and length come from that handle,
+/// so it cannot change between the check and the read. On Unix the open
+/// does not wait for a writer, so a named pipe is refused, not waited on.
+pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, LoadError> {
+    use std::io::Read;
+    let read = |e: std::io::Error| LoadError::Read(e.to_string());
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut opts, libc::O_NONBLOCK);
+    let file = opts.open(path).map_err(read)?;
+    let meta = file.metadata().map_err(read)?;
+    if !meta.is_file() {
+        return Err(LoadError::NotRegular);
+    }
+    if meta.len() > limit {
+        return Err(LoadError::TooLarge);
+    }
+    // The file may grow after the check: read one byte past the limit to see.
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(read)?;
+    if bytes.len() as u64 > limit {
+        return Err(LoadError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 /// Text for the editor, and whether to write CRLF.
@@ -117,7 +164,7 @@ pub struct Doc {
 impl Doc {
     /// Read `path`.
     pub fn open(id: u64, path: &Path, shown: String) -> Result<Doc, LoadError> {
-        let bytes = std::fs::read(path).map_err(|e| LoadError::Read(e.to_string()))?;
+        let bytes = read_regular(path, MAX_FILE)?;
         let (text, crlf) = decode(&bytes)?;
         Ok(Doc {
             id,
@@ -258,7 +305,7 @@ fn plain_create_perms(dir: &Path, name: &str) -> std::io::Result<std::fs::Permis
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 
@@ -277,6 +324,78 @@ mod tests {
             }
         }
         let _ = tmp;
+    }
+
+    /// Make a named pipe with the `mkfifo` tool. False, with a printed
+    /// line, when the tool is absent.
+    #[cfg(unix)]
+    pub(crate) fn mkfifo(path: &Path) -> bool {
+        match std::process::Command::new("mkfifo").arg(path).status() {
+            Ok(s) if s.success() => true,
+            Ok(s) => panic!("mkfifo failed: {s}"),
+            Err(e) => {
+                eprintln!("skipped: no mkfifo tool: {e}");
+                false
+            }
+        }
+    }
+
+    /// Run `f` on a thread; None if it takes longer than five seconds.
+    pub(crate) fn within_time<T: Send + 'static>(
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).ok()
+    }
+
+    /// A named pipe with no writer is refused at once, not waited on.
+    #[cfg(unix)]
+    #[test]
+    fn named_pipe_is_refused_without_waiting() {
+        let d =
+            Gone(std::env::temp_dir().join(format!("robco-studio-fifo-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&d.0);
+        std::fs::create_dir_all(&d.0).unwrap();
+        let f = d.0.join("pipe");
+        if !mkfifo(&f) {
+            return;
+        }
+        let r = within_time(move || Doc::open(1, &f, "pipe".into()).map(|d| d.text))
+            .expect("opening a named pipe hung");
+        assert_eq!(r.unwrap_err(), LoadError::NotRegular);
+    }
+
+    #[test]
+    fn folder_is_refused() {
+        let d = Gone(std::env::temp_dir().join(format!("robco-studio-dir-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&d.0);
+        std::fs::create_dir_all(&d.0).unwrap();
+        let r = within_time({
+            let p = d.0.clone();
+            move || Doc::open(1, &p, "d".into()).map(|d| d.text)
+        })
+        .expect("hung");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn file_over_the_limit_is_refused() {
+        let d = Gone(std::env::temp_dir().join(format!("robco-studio-big-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&d.0);
+        std::fs::create_dir_all(&d.0).unwrap();
+        let f = d.0.join("big.txt");
+        let file = std::fs::File::create(&f).unwrap();
+        file.set_len(MAX_FILE + 1).unwrap();
+        assert_eq!(
+            Doc::open(1, &f, "big".into()).unwrap_err(),
+            LoadError::TooLarge
+        );
+        assert!(LoadError::TooLarge.to_string().contains("16 MiB"));
+        file.set_len(MAX_FILE).unwrap();
+        assert_eq!(read_regular(&f, MAX_FILE).unwrap().len() as u64, MAX_FILE);
     }
 
     /// Removes a test folder when the test ends, pass or fail.
