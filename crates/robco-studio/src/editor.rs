@@ -92,6 +92,12 @@ pub struct Editor {
     /// The last code layout, keyed by document, language, text and the
     /// whole theme: every colour and font of the layout comes from it.
     cache: Option<(u64, bool, String, Theme, LayoutJob)>,
+    /// How far the tab strip is scrolled to the left, in points.
+    tab_scroll: f32,
+    /// The document whose tab was last brought into view.
+    tab_seen: Option<u64>,
+    /// The tabs did not fit the header in the last frame.
+    tab_overflow: bool,
 }
 
 const TEXT_ID: &str = "editor-text";
@@ -441,11 +447,41 @@ impl Editor {
         }
     }
 
-    /// Draw the tabs in the pane's top line.
+    /// Draw the tabs in the pane's top line. Tabs that do not fit scroll
+    /// sideways, by the wheel over the strip, and the active tab is brought
+    /// into view when it changes. A menu at the end then lists them all.
     pub fn tabs(&mut self, kit: &Kit<'_>, ui: &mut egui::Ui, header: Rect) {
-        let mut x = header.left();
+        let mut strip = header;
+        let mut listed = None;
+        if self.tab_overflow {
+            strip.max.x = (header.right() - size::SMALL_H - size::UNIT).max(header.left());
+            let at = Rect::from_min_max(egui::pos2(strip.right(), header.top()), header.max);
+            let mut m = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(at)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            );
+            let resp = kit.icon_button(&mut m, Icon::ChevDown, "All tabs", None);
+            let labels = tab_labels(&self.docs);
+            egui::Popup::menu(&resp)
+                .width(size::MENU_POPUP_W)
+                .show(|ui| {
+                    for (i, l) in labels.iter().enumerate() {
+                        if kit.menu_row(ui, l, "", None, size::MENU_POPUP_W).clicked() {
+                            listed = Some(i);
+                            ui.close();
+                        }
+                    }
+                });
+        }
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(strip));
+        child.set_clip_rect(strip.intersect(ui.clip_rect()));
+        let ui = &mut child;
+        let origin = strip.left() - self.tab_scroll;
+        let mut x = origin;
         let mut chosen = None;
         let mut close = None;
+        let mut active_span = None;
         let labels = tab_labels(&self.docs);
         for (i, d) in self.docs.iter().enumerate() {
             let icon = if d.path.extension().is_some_and(|e| e == "c" || e == "h") {
@@ -465,6 +501,9 @@ impl Editor {
                 false,
                 d.is_dirty(),
             );
+            if self.active == Some(i) {
+                active_span = Some((r.left() - origin, r.right() - origin));
+            }
             x = r.right() + stroke::FRAME;
             if out.chosen {
                 chosen = Some(i);
@@ -473,7 +512,26 @@ impl Editor {
                 close = Some(d.id);
             }
         }
-        if let Some(i) = chosen {
+        let total = x - origin;
+        if ui.rect_contains_pointer(strip) {
+            let d = ui.input(|i| i.smooth_scroll_delta);
+            self.tab_scroll -= d.x + d.y;
+        }
+        let active_id = self.current().map(|d| d.id);
+        let bring = if active_id != self.tab_seen {
+            self.tab_seen = active_id;
+            active_span
+        } else {
+            None
+        };
+        let before = self.tab_scroll;
+        self.tab_scroll = tab_scroll(self.tab_scroll, strip.width(), total, bring);
+        let overflow = total > header.width();
+        if before != self.tab_scroll || overflow != self.tab_overflow {
+            ui.ctx().request_repaint();
+        }
+        self.tab_overflow = overflow;
+        if let Some(i) = chosen.or(listed) {
             self.active = Some(i);
         }
         if let Some(id) = close {
@@ -787,6 +845,22 @@ fn tab_labels(docs: &[Doc]) -> Vec<String> {
         .collect()
 }
 
+/// The scroll of a tab strip `view` wide holding tabs `total` wide: kept
+/// in range, and moved so that `bring`, a tab's left and right from the
+/// strip's start, is in view.
+fn tab_scroll(scroll: f32, view: f32, total: f32, bring: Option<(f32, f32)>) -> f32 {
+    let mut s = scroll;
+    if let Some((l, r)) = bring {
+        if r - s > view {
+            s = r - view;
+        }
+        if l < s {
+            s = l;
+        }
+    }
+    s.clamp(0.0, (total - view).max(0.0))
+}
+
 /// A C source or header, by its ending, in any case.
 fn is_c(path: &Path) -> bool {
     path.extension()
@@ -960,5 +1034,16 @@ mod replace_tests {
         e.save();
         assert_eq!(e.question, None);
         assert_eq!(std::fs::read(&f).unwrap(), b"again\n");
+    }
+
+    /// The active tab is brought into view from either side, and the
+    /// scroll stays within the strip.
+    #[test]
+    fn tab_scroll_brings_the_tab_into_view() {
+        use super::tab_scroll;
+        assert_eq!(tab_scroll(0.0, 100.0, 500.0, Some((400.0, 450.0))), 350.0);
+        assert_eq!(tab_scroll(350.0, 100.0, 500.0, Some((10.0, 60.0))), 10.0);
+        assert_eq!(tab_scroll(900.0, 100.0, 500.0, None), 400.0);
+        assert_eq!(tab_scroll(-5.0, 100.0, 50.0, None), 0.0);
     }
 }

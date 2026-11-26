@@ -452,3 +452,62 @@ fn an_unlistable_folder_says_so_at_open() {
     assert!(!text.contains("Opened"), "{text}");
     h.get_by_label(text);
 }
+
+/// With more tabs than the header holds, the active tab is drawn inside
+/// the editor, and the menu at the end lists every tab.
+#[test]
+fn tabs_past_the_header_scroll_into_view() {
+    let d = sample("manytabs").unwrap();
+    let names: Vec<String> = (0..30).map(|i| format!("file_number_{i:02}.txt")).collect();
+    for n in &names {
+        std::fs::write(d.join(n), "x\n").unwrap();
+    }
+    let mut h = harness(Some(&*d));
+    for n in &names {
+        let p = d.join(n);
+        h.state_mut().open_file(&p);
+        h.run_steps(2);
+    }
+    let editor = h
+        .state()
+        .place_rect(Place::Editor)
+        .expect("the editor is drawn");
+    let last = names.last().unwrap();
+    let tab = h
+        .query_all_by_label(last)
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+        .expect("the last tab");
+    let r = tab.accesskit_node().bounding_box().expect("a box");
+    assert!(
+        r.x0 >= f64::from(editor.left()) && r.x1 <= f64::from(editor.right()),
+        "{r:?} outside {editor:?}"
+    );
+    // The wheel over the strip scrolls it back towards the first tab.
+    let y = f64::from(r.y0 + r.y1) / 2.0;
+    h.input_mut()
+        .events
+        .push(Event::PointerMoved(egui::pos2(editor.center().x, y as f32)));
+    h.input_mut().events.push(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 400.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+        source: egui::MouseWheelSource::Wheel,
+    });
+    h.run_steps(30);
+    let moved = h
+        .query_all_by_label(last)
+        .find(|n| n.accesskit_node().role() == Role::Tab)
+        .and_then(|n| n.accesskit_node().bounding_box())
+        .expect("the last tab");
+    assert!(
+        moved.x0 > r.x0 + 100.0,
+        "{moved:?} did not scroll from {r:?}"
+    );
+    h.get_by_label("All tabs").click();
+    h.run_steps(2);
+    assert!(
+        h.query_all_by_label(&names[0])
+            .any(|n| n.accesskit_node().role() == Role::MenuItem)
+    );
+}
