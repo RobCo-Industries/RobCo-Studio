@@ -81,6 +81,16 @@ const MAX_FILE: u64 = 16 * 1024 * 1024;
 /// The most entries a template folder may hold.
 const MAX_ENTRIES: usize = 4096;
 
+/// The paths of a project folder that only the tool writes, by "A project
+/// folder" of `docs/spec/STUDIO_PROJECT.md`: a template that lists one, or
+/// a path under one, is refused. Compared in lower case, so a case-blind
+/// file system cannot map another spelling onto them.
+const RESERVED: &[&str] = &["robco.lock", "build"];
+
+/// The file every template holds at its root: it makes the folder a
+/// project.
+const PROJECT_MANIFEST: &str = "robco.toml";
+
 /// The one token a template may hold.
 const NAME_TOKEN: &[u8] = b"@NAME@";
 
@@ -539,6 +549,7 @@ fn template(at: &str, v: &Value) -> Result<Template, Failure> {
             Some(_) => return Err(manifest_error(format!("{fat}.substitute is not a boolean"))),
         };
         check_template_path(&format!("{fat}.path"), path)?;
+        check_not_reserved(&format!("{fat}.path"), path)?;
         if let Some(prev) = files.last()
             && prev.path.as_bytes() >= path.as_bytes()
         {
@@ -556,10 +567,27 @@ fn template(at: &str, v: &Value) -> Result<Template, Failure> {
             substitute,
         });
     }
+    if !files.iter().any(|f| f.path == PROJECT_MANIFEST) {
+        return Err(manifest_error(format!(
+            "{at}.files: {id} lists no {PROJECT_MANIFEST} at its root"
+        )));
+    }
     Ok(Template {
         id: id.to_owned(),
         files,
     })
+}
+
+/// A path whose first component, in lower case, is a path of [`RESERVED`]:
+/// the file itself or anything under it.
+fn check_not_reserved(key: &str, path: &str) -> Result<(), Failure> {
+    let first = path.split('/').next().unwrap_or(path).to_lowercase();
+    if RESERVED.contains(&first.as_str()) {
+        return Err(manifest_error(format!(
+            "{key}: {path:?}: only the tool writes {first} in a project"
+        )));
+    }
+    Ok(())
 }
 
 /// Names Windows keeps for devices, in any case and with any extension.
@@ -954,6 +982,25 @@ mod tests {
             .open(&fifo);
         assert!(matches!(got, Ok(Ok(false))), "{got:?}");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn reserved_paths_are_refused_in_any_case() {
+        for bad in [
+            "robco.lock",
+            "ROBCO.LOCK",
+            "Robco.Lock/x",
+            "build/x",
+            "BUILD/gen/a.c",
+            "build",
+        ] {
+            let e = check_not_reserved("k", bad).unwrap_err();
+            assert_eq!(e.code, "templates: manifest", "{bad}");
+            assert!(e.detail.contains(bad), "{}", e.detail);
+        }
+        for ok in ["robco.toml", "builds/x", "src/build/x", "robco.lock.txt"] {
+            assert!(check_not_reserved("k", ok).is_ok(), "{ok}");
+        }
     }
 
     #[test]

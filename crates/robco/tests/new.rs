@@ -841,3 +841,48 @@ fn new_the_new_project_builds() {
     let tape = fs::read(f.work().join("PIPES/build/PIPES.HTP")).unwrap();
     assert_eq!(&tape[0x20..0x28], b"ROBCO78\0");
 }
+
+/// A template that lists a path only the tool writes: the lock, the build
+/// folder or a path under it, in any case. The package holds each file, so
+/// only the reserved-path rule can refuse it.
+#[test]
+fn new_a_template_that_lists_a_reserved_path_is_refused() {
+    for path in ["build/x", "robco.lock", "ROBCO.LOCK", "Build/x"] {
+        let f = Fixture::new("reserved");
+        let entry = format!("{{\"path\": \"{path}\", \"substitute\": false}},\n        ");
+        // Sorted in byte order: upper case names come first.
+        let text = if path.as_bytes()[0] < b'i' {
+            TEMPLATES_JSON.replacen(
+                "{\"path\": \"icon.pbm\"",
+                &format!("{entry}{{\"path\": \"icon.pbm\""),
+                1,
+            )
+        } else {
+            TEMPLATES_JSON.replacen(
+                "{\"path\": \"src/main.c\"",
+                &format!("{entry}{{\"path\": \"src/main.c\""),
+                1,
+            )
+        };
+        f.installed(&text);
+        f.put(
+            &format!("cache/packages/templates/0.1.0/holotape-c/{path}"),
+            b"x",
+        );
+        let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+        assert!(
+            d.contains(path) && d.contains("only the tool writes"),
+            "{d}"
+        );
+    }
+}
+
+/// A template without `robco.toml` at its root writes no project.
+#[test]
+fn new_a_template_without_robco_toml_is_refused() {
+    let f = Fixture::new("no-toml");
+    f.installed(&TEMPLATES_JSON.replace("{\"path\": \"robco.toml\", \"substitute\": true},\n", ""));
+    fs::remove_file(f.pkg().join("holotape-c/robco.toml")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("robco.toml"), "{d}");
+}
