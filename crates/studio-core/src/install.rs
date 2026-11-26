@@ -846,6 +846,7 @@ fn join(base: &Path, rel: &str) -> PathBuf {
 }
 
 /// One entry of a tool archive, whatever its kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Entry {
     Dir,
     File(Option<u32>),
@@ -978,13 +979,35 @@ fn make_parents(out: &Path, path: &Path, name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Writes one tool entry. A file or link whose name is already taken is
-/// refused: two entries of one name, or a name that only a case-blind file
-/// system folds onto another.
-fn put(out: &Path, name: &str, entry: Entry, data: &mut dyn Read) -> Result<(), Error> {
+/// Writes one tool entry and adds it to `listed`. A link is only checked
+/// and listed: [`make_links`] makes the links once every file and folder
+/// exists. A file or link whose name is already taken is refused: two
+/// entries of one name, or a name that only a case-blind file system folds
+/// onto another.
+fn put(
+    out: &Path,
+    name: &str,
+    entry: Entry,
+    data: &mut dyn Read,
+    listed: &mut Vec<(String, Entry)>,
+) -> Result<(), Error> {
     let Some(path) = tool_path(out, name)? else {
         return Ok(());
     };
+    if let Entry::Link(target) = &entry {
+        if target.is_empty()
+            || target.starts_with('/')
+            || target.starts_with('\\')
+            || target.as_bytes().get(1) == Some(&b':')
+        {
+            return Err(Error::ToolArchive(format!(
+                "{name}: the link leads outside the extraction folder"
+            )));
+        }
+        listed.push((name.to_owned(), entry));
+        return Ok(());
+    }
+    listed.push((name.to_owned(), entry.clone()));
     make_parents(out, &path, name)?;
     let taken = |e: &io::Error| {
         if e.kind() == ErrorKind::AlreadyExists {
@@ -1010,19 +1033,131 @@ fn put(out: &Path, name: &str, entry: Entry, data: &mut dyn Read) -> Result<(), 
             copy_entry(name, &path, data, &mut f)?;
             set_mode(&path, mode)
         }
-        Entry::Link(target) => {
-            if target.is_empty()
-                || target.starts_with('/')
-                || target.starts_with('\\')
-                || target.as_bytes().get(1) == Some(&b':')
-            {
-                return Err(Error::ToolArchive(format!(
-                    "{name}: the link leads outside the extraction folder"
-                )));
-            }
-            symlink(&target, &path).map_err(|e| taken(&e))
+        Entry::Link(_) => Ok(()),
+    }
+}
+
+/// A link to make, with the kind its target has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Link {
+    name: String,
+    target: String,
+    dir: bool,
+}
+
+/// The components of an entry name or a link target, `.` and empty ones
+/// dropped. `\\` counts as a separator, as it does on Windows.
+fn parts(s: &str) -> Vec<&str> {
+    s.split(['/', '\\'])
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect()
+}
+
+/// A path inside the extraction folder, as its components.
+type Key<'a> = Vec<&'a str>;
+
+/// Decides, from the entries alone, the links to make: in an order where
+/// the target of each link exists when it is made, each with the kind its
+/// target really has, whatever the order of the entries. A link that leads
+/// out of the extraction folder or to nothing, or a cycle of links, is
+/// refused with `tool: archive`.
+fn plan_links(listed: &[(String, Entry)]) -> Result<Vec<Link>, Error> {
+    let mut nodes: BTreeMap<Key<'_>, &Entry> = BTreeMap::new();
+    for (name, entry) in listed {
+        let p = parts(name);
+        for i in 1..p.len() {
+            nodes.entry(p[..i].to_vec()).or_insert(&Entry::Dir);
+        }
+        if !p.is_empty() {
+            nodes.insert(p, entry);
         }
     }
+    let mut planner = Planner {
+        nodes: &nodes,
+        done: BTreeMap::new(),
+        visiting: BTreeSet::new(),
+        order: Vec::new(),
+    };
+    for (name, entry) in listed {
+        if let Entry::Link(_) = entry {
+            planner.resolve(&parts(name), name)?;
+        }
+    }
+    Ok(planner.order)
+}
+
+/// The state of [`plan_links`]: the links resolved so far, with the path
+/// and kind their target ends at, and the links being resolved.
+struct Planner<'a, 'n> {
+    nodes: &'n BTreeMap<Key<'a>, &'a Entry>,
+    done: BTreeMap<Key<'a>, (Key<'a>, bool)>,
+    visiting: BTreeSet<Key<'a>>,
+    order: Vec<Link>,
+}
+
+impl<'a> Planner<'a, '_> {
+    /// Resolves the link at `at`, and first each link its target passes
+    /// through, then lists it after them. Returns where it ends and
+    /// whether that is a folder.
+    fn resolve(&mut self, at: &[&'a str], name: &str) -> Result<(Key<'a>, bool), Error> {
+        if let Some(r) = self.done.get(at) {
+            return Ok(r.clone());
+        }
+        let bad = |why: &str| Error::ToolArchive(format!("{name}: the link {why}"));
+        let Some(Entry::Link(target)) = self.nodes.get(at).copied() else {
+            return Err(bad("is not a link"));
+        };
+        if !self.visiting.insert(at.to_vec()) {
+            return Err(bad("is part of a cycle of links"));
+        }
+        let mut cur: Key<'a> = at[..at.len().saturating_sub(1)].to_vec();
+        for c in parts(target) {
+            if c == ".." {
+                if cur.pop().is_none() {
+                    return Err(bad("leads outside the extraction folder"));
+                }
+                continue;
+            }
+            cur.push(c);
+            if let Some(Entry::Link(_)) = self.nodes.get(&cur).copied() {
+                let key = cur.clone();
+                cur = self.resolve(&key, name)?.0;
+            }
+        }
+        let dir = match self.nodes.get(&cur).copied() {
+            _ if cur.is_empty() => true,
+            Some(Entry::Dir) => true,
+            Some(Entry::File(_)) => false,
+            _ => return Err(bad("leads to nothing")),
+        };
+        self.visiting.remove(at);
+        self.done.insert(at.to_vec(), (cur.clone(), dir));
+        self.order.push(Link {
+            name: at.join("/"),
+            target: target.clone(),
+            dir,
+        });
+        Ok((cur, dir))
+    }
+}
+
+/// Makes the links of the extraction once every file and folder exists,
+/// in the order and with the kinds [`plan_links`] decides.
+fn make_links(out: &Path, listed: &[(String, Entry)]) -> Result<(), Error> {
+    for link in plan_links(listed)? {
+        let Some(path) = tool_path(out, &link.name)? else {
+            continue;
+        };
+        make_parents(out, &path, &link.name)?;
+        symlink(&link.target, &path, link.dir).map_err(|e| {
+            if e.kind() == ErrorKind::AlreadyExists {
+                Error::ToolArchive(format!("{}: another entry has this name", link.name))
+            } else {
+                write_err(&path, &e)
+            }
+        })?;
+    }
+    Ok(())
 }
 
 /// Copies the data of one entry. A failure to read is the archive's,
@@ -1065,15 +1200,14 @@ fn set_mode(_path: &Path, _mode: Option<u32>) -> Result<(), Error> {
 }
 
 #[cfg(unix)]
-fn symlink(target: &str, path: &Path) -> io::Result<()> {
+fn symlink(target: &str, path: &Path, _dir: bool) -> io::Result<()> {
     std::os::unix::fs::symlink(target, path)
 }
 
 #[cfg(windows)]
-fn symlink(target: &str, path: &Path) -> io::Result<()> {
+fn symlink(target: &str, path: &Path, dir: bool) -> io::Result<()> {
     let target = target.replace('/', "\\");
-    let is_dir = path.parent().is_some_and(|p| p.join(&target).is_dir());
-    if is_dir {
+    if dir {
         std::os::windows::fs::symlink_dir(&target, path)
     } else {
         std::os::windows::fs::symlink_file(&target, path)
@@ -1081,7 +1215,7 @@ fn symlink(target: &str, path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn symlink(_target: &str, _path: &Path) -> io::Result<()> {
+fn symlink(_target: &str, _path: &Path, _dir: bool) -> io::Result<()> {
     Err(io::Error::from(ErrorKind::Unsupported))
 }
 
@@ -1116,6 +1250,7 @@ fn check_links(folder: &Path, what: &str) -> Result<(), Error> {
 }
 
 fn extract_tool_zip(archive: &Path, out: &Path) -> Result<(), Error> {
+    let mut listed = Vec::new();
     let bad = |d: String| Error::ToolArchive(d);
     let file = File::open(archive).map_err(|e| read_err(archive, &e))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| bad(format!("not a zip archive: {e}")))?;
@@ -1141,15 +1276,16 @@ fn extract_tool_zip(archive: &Path, out: &Path) -> Result<(), Error> {
         } else {
             return Err(bad(format!("{name}: not a file, a folder or a link")));
         };
-        put(out, &name, entry, &mut f)?;
+        put(out, &name, entry, &mut f, &mut listed)?;
     }
-    Ok(())
+    make_links(out, &listed)
 }
 
 fn extract_tool_tar(archive: &Path, out: &Path) -> Result<(), Error> {
     let bad = |d: String| Error::ToolArchive(d);
     let file = File::open(archive).map_err(|e| read_err(archive, &e))?;
     let mut gz = flate2::read::GzDecoder::new(io::BufReader::new(file));
+    let mut listed = Vec::new();
     {
         let mut tar = tar::Archive::new(&mut gz);
         let entries = tar
@@ -1178,12 +1314,12 @@ fn extract_tool_tar(archive: &Path, out: &Path) -> Result<(), Error> {
             } else {
                 return Err(bad(format!("{name}: not a file, a folder or a link")));
             };
-            put(out, &name, entry, &mut e)?;
+            put(out, &name, entry, &mut e, &mut listed)?;
         }
     }
     io::copy(&mut gz, &mut io::sink())
         .map_err(|e| bad(format!("the gzip data cannot be read to the end: {e}")))?;
-    Ok(())
+    make_links(out, &listed)
 }
 
 #[cfg(test)]
