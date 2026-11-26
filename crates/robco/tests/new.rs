@@ -196,7 +196,12 @@ impl Fixture {
     }
 
     fn pkg(&self) -> PathBuf {
-        self.cache().join("packages/templates/0.1.0")
+        // One part per `join`: a `/` inside a part stays a `/` on Windows,
+        // and the tool prints the path with `\`.
+        self.cache()
+            .join("packages")
+            .join("templates")
+            .join("0.1.0")
     }
 
     /// Puts an installed package into the cache as an install leaves it,
