@@ -13,7 +13,10 @@
 #
 #   1. The sources of the result line equal the words of SRCS.
 #   2. The abi of the result line equals the Makefile's ABI.
-#   3. The gcc of the result line equals the release of the compiler Make ran.
+#   3. Make ran the compiler robco build installed: the SHA-256 of the gcc
+#      program Make ran equals the one in robco build's tool folder, and
+#      the release robco build reports equals the gcc entry of the
+#      package's sdk.json, which the archive's file name also holds.
 #   4. The two tapes have the same SHA-256.
 #
 # then 5: rimg.py and the C sealer seal one raw image to the same bytes.
@@ -23,11 +26,18 @@
 #   PIPOS_DIR    a Pip-OS checkout, with its submodule, at the commit the
 #                package was built from
 #   PIPOS_ZIP    that pipos package zip
-#   AGREE_GCC_ARCHIVE  the compiler archive the package names, for this host
-#   AGREE_GCC_ROOT     the folder inside it that holds bin/, empty for the top
-#   CROSS        the compiler prefix Make uses, such as .../bin/arm-none-eabi-
-#   AGREE_GCC_RELEASE  the release of that compiler, such as 15.2.1-1.1
+#   AGREE_GCC_ARCHIVE  the compiler archive the package names, for this host.
+#                Its file name holds the release, such as
+#                xpack-arm-none-eabi-gcc-15.2.1-1.1-linux-x64.tar.gz
+#   AGREE_GCC_ROOT     the folder inside it that holds bin/, empty for the
+#                top: the root of the archive's index entry
+#   CROSS        optional, only to show that check 3 fails: a compiler prefix
+#                for Make in place of the archive's, such as arm-none-eabi-
+#   AGREE_GCC_RELEASE  optional; when set, it must also equal the release
 #   ABI          the target ABI both builds state, such as 1.4
+#   The script unpacks AGREE_GCC_ARCHIVE into OUT/gcc, as robco build
+#   installs it, and runs Make with its bin/arm-none-eabi-. The release
+#   comes from the package's sdk.json, never from the caller.
 #   The AGREE_ names keep off gcc, which reads GCC_ROOT from the
 #   environment and then finds no stddef.h.
 #   OUT          a folder that does not exist yet; everything goes there
@@ -44,11 +54,13 @@
 # PIPOS_DIR and CROSS cannot hold white space, since make reads them.
 #
 # Run it from any folder. It needs bash 3.2 or later, cargo,
-# make, python3, cmp, sed, and the compiler CROSS names. It uses only cd and
+# make, python3, cmp and sed. It uses only cd and
 # pwd to resolve paths, never readlink -f or realpath.
 #
 # `tools/agreement.sh compare-sealed A B` runs only check 5's comparison on
-# two files, with the same exit codes. tools/test_agreement.sh uses it.
+# two files, and `tools/agreement.sh compare-gcc A B` only check 3's
+# program comparison, with the same exit codes. tools/test_agreement.sh
+# uses both.
 set -euo pipefail
 
 die() { echo "agreement: $*" >&2; exit 1; }
@@ -85,6 +97,26 @@ compare_sealed() {
         fail "5. sealers: rimg.py and the C sealer differ, $(first_diff "$1" "$2")"
 }
 
+sha() {
+    if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi |
+        cut -d' ' -f1
+}
+
+# Check 3, the program: the SHA-256 of the gcc Make ran ($1) and of the one
+# robco build installed ($2), both as hex.
+compare_gcc() {
+    [ "$1" = "$2" ] ||
+        fail "3. gcc: the gcc program Make ran has SHA-256 $1, the one robco build installed has $2"
+}
+
+if [ "${1-}" = compare-gcc ]; then
+    [ "$#" -eq 3 ] || die "usage: $0 compare-gcc A B"
+    [ -f "$2" ] && [ -f "$3" ] || die "compare-gcc takes two files"
+    compare_gcc "$(sha "$2")" "$(sha "$3")"
+    echo "agreement: the gcc programs are equal"
+    exit 0
+fi
+
 if [ "${1-}" = compare-sealed ]; then
     [ "$#" -eq 3 ] || die "usage: $0 compare-sealed A B"
     [ -f "$2" ] && [ -f "$3" ] || die "compare-sealed takes two files"
@@ -110,24 +142,17 @@ abs_path() {
     printf '%s/%s\n' "${d%/}" "${p##*/}"
 }
 
-for v in PIPOS_DIR PIPOS_ZIP AGREE_GCC_ARCHIVE CROSS AGREE_GCC_RELEASE ABI OUT; do
+for v in PIPOS_DIR PIPOS_ZIP AGREE_GCC_ARCHIVE ABI OUT; do
     [ -n "${!v:-}" ] || die "$v is not set"
 done
 AGREE_GCC_ROOT=${AGREE_GCC_ROOT-}
+AGREE_GCC_RELEASE=${AGREE_GCC_RELEASE-}
+CROSS=${CROSS-}
+case $AGREE_GCC_ROOT in /* | *..*) die "AGREE_GCC_ROOT is not a plain relative folder: $AGREE_GCC_ROOT" ;; esac
 MAKE_EXTRA=${MAKE_EXTRA-}
 PIPOS_DIR=$(abs_path PIPOS_DIR dir)
 PIPOS_ZIP=$(abs_path PIPOS_ZIP file)
 AGREE_GCC_ARCHIVE=$(abs_path AGREE_GCC_ARCHIVE file)
-# A CROSS with a slash is a path; make runs in another folder. A bare prefix
-# is looked up in PATH and stays as it is.
-case $CROSS in
-    */*)
-        cross_dir=$(CDPATH='' cd -- "${CROSS%/*}/" && pwd -P) ||
-            die "CROSS is not in a folder that exists: $CROSS"
-        CROSS="$cross_dir/${CROSS##*/}"
-        ;;
-esac
-[ -x "${CROSS}gcc" ] || command -v "${CROSS}gcc" >/dev/null || die "CROSS names no compiler: ${CROSS}gcc"
 [ ! -e "$OUT" ] || die "$OUT exists; give a new folder"
 # make splits its paths at white space, so the ones it reads cannot hold it.
 for v in OUT PIPOS_DIR CROSS; do
@@ -135,15 +160,54 @@ for v in OUT PIPOS_DIR CROSS; do
 done
 mkdir -p "$OUT"
 OUT=$(CDPATH='' cd -- "$OUT" && pwd -P)
+
+# The release the package was built with: the gcc entry of its sdk.json.
+release=$(python3 -I -c '
+import json, sys, zipfile
+sdk = json.loads(zipfile.ZipFile(sys.argv[1]).read("sdk.json"))
+v = [t["version"] for t in sdk.get("tools", []) if t.get("name") == "gcc"]
+if len(v) != 1 or not v[0]:
+    sys.exit("sdk.json names no single gcc release")
+print(v[0])' "$PIPOS_ZIP") || die "cannot read the gcc release from $PIPOS_ZIP"
+
+# The archive, unpacked as robco build installs it: bin/ under its root.
+python3 -I -c '
+import os, sys, tarfile, zipfile
+src, dest = sys.argv[1], sys.argv[2]
+if zipfile.is_zipfile(src):
+    with zipfile.ZipFile(src) as z:
+        for i in z.infolist():
+            z.extract(i, dest)
+            mode = i.external_attr >> 16
+            if mode and not i.is_dir():
+                os.chmod(os.path.join(dest, i.filename), mode & 0o755)
+else:
+    with tarfile.open(src) as t:
+        if hasattr(tarfile, "data_filter"):
+            t.extractall(dest, filter="data")
+        else:
+            t.extractall(dest)' "$AGREE_GCC_ARCHIVE" "$OUT/gcc" || die "cannot unpack $AGREE_GCC_ARCHIVE"
+tool_bin="$OUT/gcc/${AGREE_GCC_ROOT:+$AGREE_GCC_ROOT/}bin"
+[ -x "$tool_bin/arm-none-eabi-gcc" ] || die "the archive holds no ${AGREE_GCC_ROOT:+$AGREE_GCC_ROOT/}bin/arm-none-eabi-gcc"
+
+# Make runs the archive's compiler, unless CROSS names another one to show
+# that check 3 fails. A CROSS with a slash is a path; make runs in another
+# folder. A bare prefix is looked up in PATH.
+case $CROSS in
+    "") CROSS="$tool_bin/arm-none-eabi-" ;;
+    */*)
+        cross_dir=$(CDPATH='' cd -- "${CROSS%/*}/" && pwd -P) ||
+            die "CROSS is not in a folder that exists: $CROSS"
+        CROSS="$cross_dir/${CROSS##*/}"
+        ;;
+esac
+make_gcc=${CROSS}gcc
+case $make_gcc in */*) ;; *) make_gcc=$(command -v "$make_gcc") || die "CROSS names no compiler: ${CROSS}gcc" ;; esac
+[ -x "$make_gcc" ] || die "CROSS names no compiler: $make_gcc"
 # Every path is absolute now: work from the root of RobCo-Studio.
 CDPATH='' cd -- "$(dirname -- "$0")/.." || die "cannot enter the root of RobCo-Studio"
 [ -f Cargo.toml ] && [ -f external/robco-core/tools/rimg.py ] ||
     die "$(pwd -P) is not RobCo-Studio with its submodule"
-
-sha() {
-    if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi |
-        cut -d' ' -f1
-}
 
 PROJ="$PIPOS_DIR/sdk/examples/tape"
 [ -f "$PROJ/Makefile" ] || die "$PROJ holds no Makefile"
@@ -201,8 +265,8 @@ ROBCO_TEST_PIPOS="$PIPOS_ZIP" ROBCO_TEST_GCC="$AGREE_GCC_ARCHIVE" ROBCO_TEST_GCC
     cargo test --locked -q -p robco --test build -- --exact build_the_project_the_environment_names \
     >"$OUT/studio.log" 2>&1 || { cat "$OUT/studio.log" >&2; die "robco build failed"; }
 studio_tape="$OUT/studio/$image"
-[ -f "$studio_tape" ] && [ -f "$OUT/studio/result.json" ] ||
-    { cat "$OUT/studio.log" >&2; die "the test wrote no $image or result.json"; }
+[ -f "$studio_tape" ] && [ -f "$OUT/studio/result.json" ] && [ -f "$OUT/studio/gcc.sha256" ] ||
+    { cat "$OUT/studio.log" >&2; die "the test wrote no $image, result.json or gcc.sha256"; }
 
 echo "agreement: one raw image, sealed by rimg.py and by the C sealer"
 mkdir -p "$OUT/seal"
@@ -224,6 +288,8 @@ ROBCO_TEST_SEAL_RAW="$raw" ROBCO_TEST_SEAL_OUT="$OUT/seal/c.bin" \
     echo "$(sha "$studio_tape")  robco/$image"
     echo "$(sha "$OUT/seal/rimg.bin")  sealed-by-rimg.py"
     echo "$(sha "$OUT/seal/c.bin")  sealed-by-c"
+    echo "$(sha "$make_gcc")  gcc-run-by-make"
+    echo "$(cat "$OUT/studio/gcc.sha256")  gcc-installed-by-robco"
 } > "$OUT/hashes.txt"
 cat "$OUT/hashes.txt"
 
@@ -234,13 +300,15 @@ got_srcs=$(field sources)
 [ "$got_srcs" = "$want_srcs" ] ||
     fail "1. sources: robco build has $got_srcs, SRCS has $want_srcs"
 [ "$(field abi)" = "\"$ABI\"" ] || fail "2. abi: robco build has $(field abi), the Makefile has $ABI"
-dump=$("${CROSS}gcc" -dumpversion)
-case $AGREE_GCC_RELEASE in
-    "$dump" | "$dump"-*) ;;
-    *) fail "3. gcc: the compiler Make ran says $dump, not release $AGREE_GCC_RELEASE" ;;
+[ "$(field gcc)" = "\"$release\"" ] ||
+    fail "3. gcc: robco build used $(field gcc), the package's sdk.json names $release"
+case ${AGREE_GCC_ARCHIVE##*/} in
+    *-"$release"-*) ;;
+    *) fail "3. gcc: the archive's name ${AGREE_GCC_ARCHIVE##*/} does not hold release $release" ;;
 esac
-[ "$(field gcc)" = "\"$AGREE_GCC_RELEASE\"" ] ||
-    fail "3. gcc: robco build used $(field gcc), Make ran $AGREE_GCC_RELEASE"
+[ -z "$AGREE_GCC_RELEASE" ] || [ "$AGREE_GCC_RELEASE" = "$release" ] ||
+    fail "3. gcc: AGREE_GCC_RELEASE is $AGREE_GCC_RELEASE, the package's sdk.json names $release"
+compare_gcc "$(sha "$make_gcc")" "$(cat "$OUT/studio/gcc.sha256")"
 cmp -s "$make_tape" "$studio_tape" ||
     fail "4. tapes: $image by Make and by robco build differ, $(first_diff "$make_tape" "$studio_tape")"
 compare_sealed "$OUT/seal/rimg.bin" "$OUT/seal/c.bin"
