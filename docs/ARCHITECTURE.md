@@ -2,7 +2,7 @@
 
 Studio is a core library with a command line, and a window that calls the same library. The core has no window dependency. Every feature lands in the core with a command and a test before the window shows it.
 
-Today every crate is a shell. This page shows where code will go.
+This page shows where the code is and where it will go.
 
 ## Crates
 
@@ -84,7 +84,26 @@ How it keeps the cache whole:
 
 ### robco
 
-The command. It will parse arguments and print JSON events, and leave all work to the core. Today it answers `robco --version` and `robco version`. `unsafe` is forbidden.
+The command. It reads the command line, writes the two output streams and leaves all work to the core. It answers `robco --version`, `robco version`, `robco sdk list` and `robco sdk install`, by [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). `unsafe` is forbidden.
+
+Each part is a module of its own:
+
+- `args` reads the command line by hand. Every wrong form gives `usage`.
+- `cache` finds the cache folder, with `ROBCO_CACHE` first.
+- `index` sorts a `--index` location and reads a local index. An `https://` index fails with `index: read`, since no `https` transport exists yet.
+- `list` and `install` are the two commands.
+- `lines` writes JSON lines with `--json`, and text and the one error line without it.
+
+`studio_core::install` downloads, checks and installs an item in one call. `install` wraps the transport to write the `download` and `verify` lines: `download` opens and closes around the fetch, `verify` opens right after. When the call passes, `verify` closes and `install` opens and closes. An item the cache already holds is never fetched and writes one `install` line with `skip`. A failure leaves its step open.
+
+```mermaid
+flowchart LR
+    A["args"] --> C["cache"]
+    C --> I["index"]
+    I --> R["resolve"]
+    R --> P["install each package, then gcc, then qemu"]
+    P --> L["lines"]
+```
 
 ### robco-studio
 
