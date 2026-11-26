@@ -12,6 +12,8 @@
 //!
 //! - `https` only, also after a redirect. At most [`MAX_REDIRECTS`]
 //!   redirects, to any host.
+//! - A URL is parsed strictly by RFC 3986 and RFC 9110 and never
+//!   repaired. The request line and `Host` hold only its parsed parts.
 //! - Certificates are checked by the system's verifier and trust store.
 //!   Nothing turns that off.
 //! - [`CONNECT_TIMEOUT`] to connect and [`STALL_TIMEOUT`] for a read or a
@@ -26,7 +28,7 @@
 //!   a header.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -182,14 +184,15 @@ impl Https {
         let set = |e: io::Error| format!("{at}: {e}");
         tcp.set_read_timeout(Some(self.stall)).map_err(set)?;
         tcp.set_write_timeout(Some(self.stall)).map_err(set)?;
-        let name = ServerName::try_from(t.host.clone())
-            .map_err(|_| format!("{at}: the host is not a DNS name or an address"))?;
+        let name = t.server_name()?;
         let conn =
             ClientConnection::new(self.tls.clone(), name).map_err(|e| format!("{at}: TLS: {e}"))?;
         let mut tls = StreamOwned::new(conn, tcp);
         let request = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
-            t.path, t.authority, self.user_agent
+            t.path,
+            t.authority(),
+            self.user_agent
         );
         tls.write_all(request.as_bytes())
             .and_then(|()| tls.flush())
@@ -323,7 +326,7 @@ enum Answer {
 fn connect(t: &Target, timeout: Duration, at: &str) -> Result<TcpStream, String> {
     // The spec does not state a time limit for the name lookup; the
     // system's resolver applies its own.
-    let addrs = (t.host.as_str(), t.port)
+    let addrs = (t.host_text().as_str(), t.port)
         .to_socket_addrs()
         .map_err(|e| format!("{at}: the host name was not found: {}", e.kind()))?;
     let mut last = None;
@@ -633,97 +636,259 @@ impl Write for Bounded {
     }
 }
 
+/// The longest path and query a URL may have, in bytes. RFC 9112 3
+/// asks a server to take a request line of at least 8000 bytes.
+pub const MAX_TARGET_BYTES: usize = 8000;
+
+/// The longest host name, in bytes, by RFC 1035 2.3.4 without the
+/// trailing dot.
+const MAX_HOST_BYTES: usize = 253;
+
+/// The longest label of a host name, by RFC 1035 2.3.4.
+const MAX_LABEL_BYTES: usize = 63;
+
+/// The bytes a path or a query may hold raw, besides letters, digits and
+/// a `%` that starts a percent-encoded byte: RFC 3986 3.3 and 3.4,
+/// `unreserved`, `sub-delims`, `:`, `@`, `/` and `?`.
+const PATH_PUNCT: &[u8] = b"-._~!$&'()*+,;=:@/?";
+
+/// The host of a URL, as it was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Host {
+    /// A name of letters, digits, `-` and `.`.
+    Name(String),
+    /// A dotted IPv4 address.
+    V4(Ipv4Addr),
+    /// An IPv6 address, from between brackets.
+    V6(Ipv6Addr),
+}
+
 /// One `https` URL, split for a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Target {
-    /// The host, without the brackets of an IPv6 address.
-    host: String,
+    host: Host,
     port: u16,
-    /// The host and port as the URL gives them, for the `Host` header.
-    authority: String,
-    /// The path and the query, at least `/`.
+    /// The path and the query, at least `/`. Never the fragment.
     path: String,
 }
 
 impl Target {
-    /// Splits an `https://` URL. Refuses every other scheme, user info,
-    /// and any byte that is not printable ASCII.
+    /// Splits an `https://` URL by RFC 3986 and RFC 9110 4.2.2, strictly.
+    /// Nothing is repaired: a URL is taken as given or refused. A refusal
+    /// names the rule and prints no part of the URL but the scheme and a
+    /// host that passed its checks.
     fn parse(url: &str) -> Result<Self, String> {
-        let shown = redact(url);
+        let no = |rule: &str| format!("an https URL: {rule}");
+        // RFC 3986 2 and 7.3: a URL is ASCII. A blank, a control byte, a
+        // CR or LF would reach the request line, so none is taken.
         if !url.bytes().all(|b| (0x21..=0x7E).contains(&b)) {
-            return Err(format!("{shown}: not a URL of printable ASCII"));
+            return Err(no("a byte that is not printable ASCII is refused"));
         }
-        let Some(rest) = url.strip_prefix("https://") else {
-            return Err(format!("{shown}: only https:// is fetched"));
+        // RFC 3986 3.1: the scheme is matched without regard to case.
+        let rest = match url.get(..8) {
+            Some(s) if s.eq_ignore_ascii_case("https://") => &url[8..],
+            _ => return Err("a URL that is not https:// is refused".to_owned()),
         };
-        let rest = rest.split('#').next().unwrap_or("");
+        // RFC 3986 3.5: the fragment is for the client and never sent.
+        let rest = rest.split_once('#').map_or(rest, |(r, _)| r);
+        // RFC 3986 3.2: the authority ends at the first `/` or `?`.
         let end = rest.find(['/', '?']).unwrap_or(rest.len());
         let (authority, path) = rest.split_at(end);
         if authority.contains('@') {
-            // The spec does not state user info in a URL. It could hold a
-            // secret, so it is refused.
-            return Err(format!("{shown}: a URL with user info is refused"));
+            // RFC 9110 4.2.4: user info is deprecated in an https URL,
+            // and it could hold a secret.
+            return Err(no("user info is refused"));
         }
         let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
             let (h, after) = v6
                 .split_once(']')
-                .ok_or_else(|| format!("{shown}: a broken IPv6 host"))?;
-            (h, after.strip_prefix(':'))
+                .ok_or_else(|| no("an IPv6 host with no closing bracket"))?;
+            // RFC 3986 3.2.2: a bracket holds an IPv6 address only. A zone
+            // identifier, RFC 6874, and `IPvFuture` are refused.
+            let a = h
+                .parse::<Ipv6Addr>()
+                .map_err(|_| no("the brackets do not hold a plain IPv6 address"))?;
+            let port = match after {
+                "" => None,
+                p => Some(
+                    p.strip_prefix(':')
+                        .ok_or_else(|| no("text after the IPv6 host that is not a port"))?,
+                ),
+            };
+            (Host::V6(a), port)
         } else {
-            match authority.rsplit_once(':') {
+            let (h, port) = match authority.split_once(':') {
                 Some((h, p)) => (h, Some(p)),
                 None => (authority, None),
-            }
+            };
+            (host_of(h).map_err(no)?, port)
         };
+        let t = Self {
+            host,
+            port: 443,
+            path: String::new(),
+        };
+        let shown = t.authority();
+        let no = |rule: &str| format!("https://{shown}: {rule}");
         let port = match port {
             None => 443,
-            Some(p) => p
-                .parse::<u16>()
-                .ok()
-                .filter(|&p| p != 0)
-                .ok_or_else(|| format!("{shown}: a bad port"))?,
+            Some(p) => port_of(p).ok_or_else(|| {
+                no("the port is not a number from 1 to 65535 without a sign or a leading zero")
+            })?,
         };
-        if host.is_empty() {
-            return Err(format!("{shown}: no host"));
+        if path.len() > MAX_TARGET_BYTES {
+            return Err(no(&format!(
+                "the path and query are longer than {MAX_TARGET_BYTES} bytes"
+            )));
         }
+        let b = path.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            if c == b'%' {
+                // RFC 3986 2.1: `%` starts exactly two hex digits.
+                if !b
+                    .get(i + 1..i + 3)
+                    .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
+                {
+                    return Err(no("a % that is not followed by two hex digits"));
+                }
+                i += 3;
+                continue;
+            }
+            if !c.is_ascii_alphanumeric() && !PATH_PUNCT.contains(&c) {
+                // RFC 3986 3.3: such as a backslash, `"`, `<`, `>`, `[`,
+                // `]`, `^`, a backtick, `{`, `|` or `}`.
+                return Err(no("a byte the path or query may not hold raw"));
+            }
+            i += 1;
+        }
+        // RFC 9110 4.2.3: an empty path is `/`.
         let path = if path.starts_with('/') {
             path.to_owned()
         } else {
             format!("/{path}")
         };
-        Ok(Self {
-            host: host.to_owned(),
-            port,
-            authority: authority.to_owned(),
-            path,
+        Ok(Self { port, path, ..t })
+    }
+
+    /// The `Host` header, RFC 9110 7.2: the host, in brackets for IPv6,
+    /// and `:port` unless the port is 443.
+    fn authority(&self) -> String {
+        let host = match &self.host {
+            Host::Name(n) => n.clone(),
+            Host::V4(a) => a.to_string(),
+            Host::V6(a) => format!("[{a}]"),
+        };
+        if self.port == 443 {
+            host
+        } else {
+            format!("{host}:{}", self.port)
+        }
+    }
+
+    /// The host to look up and to check the certificate against, without
+    /// brackets.
+    fn host_text(&self) -> String {
+        match &self.host {
+            Host::Name(n) => n.clone(),
+            Host::V4(a) => a.to_string(),
+            Host::V6(a) => a.to_string(),
+        }
+    }
+
+    /// The name the certificate is checked against: a DNS name, or an
+    /// IP address for an address host.
+    fn server_name(&self) -> Result<ServerName<'static>, String> {
+        Ok(match &self.host {
+            Host::Name(n) => ServerName::try_from(n.clone())
+                .map_err(|_| format!("https://{}: not a DNS name", self.authority()))?,
+            Host::V4(a) => ServerName::IpAddress(IpAddr::V4(*a).into()),
+            Host::V6(a) => ServerName::IpAddress(IpAddr::V6(*a).into()),
         })
     }
 
     /// The URL without its query, for an error text.
     fn shown(&self) -> String {
-        redact(&format!("https://{}{}", self.authority, self.path))
+        redact(&format!("https://{}{}", self.authority(), self.path))
     }
 
     /// The target of a `Location` header: an `https://` URL, a URL that
     /// starts with `//`, or a path that starts with `/`. Every other form
-    /// is refused, `http://` above all.
+    /// is refused, `http://` above all. The result passes [`Self::parse`]
+    /// like any URL of an index.
     fn follow(&self, location: &str) -> Result<Self, String> {
-        if location.starts_with("https://") {
+        let next = if location
+            .get(..8)
+            .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+        {
             Self::parse(location)
         } else if location.starts_with("//") {
+            // RFC 3986 5.2.2: a network-path reference keeps the scheme.
             Self::parse(&format!("https:{location}"))
         } else if location.starts_with('/') {
-            Self::parse(&format!("https://{}{location}", self.authority))
+            // RFC 3986 5.2.2: an absolute path keeps scheme, host and port.
+            Self::parse(&format!("https://{}{location}", self.authority()))
         } else {
             // A path relative to the current one is valid HTTP. The spec
             // does not state it, and no release host is known to send it,
             // so it is refused with the other schemes.
-            Err(format!(
+            return Err(format!(
                 "{}: a redirect to a relative path or another scheme is refused, only https:// is fetched",
                 self.shown()
-            ))
+            ));
+        };
+        next.map_err(|e| format!("{}: a redirect to {e}", self.shown()))
+    }
+}
+
+/// Checks a host that is not in brackets: a dotted IPv4 address, or a
+/// name by RFC 1123 2.1. The cautious reading of RFC 3986 3.2.2: no
+/// percent-encoding, no byte outside letters, digits, `-` and `.`, and no
+/// conversion of a name that is not ASCII.
+fn host_of(h: &str) -> Result<Host, &'static str> {
+    if h.is_empty() {
+        return Err("no host");
+    }
+    if let Ok(a) = h.parse::<Ipv4Addr>() {
+        return Ok(Host::V4(a));
+    }
+    if h.len() > MAX_HOST_BYTES {
+        return Err("a host name longer than 253 bytes");
+    }
+    for label in h.split('.') {
+        // An empty label is also a trailing dot or a doubled one.
+        if label.is_empty() || label.len() > MAX_LABEL_BYTES {
+            return Err("a host name with an empty label or one over 63 bytes");
+        }
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || label.starts_with('-')
+            || label.ends_with('-')
+        {
+            return Err("a host name with a byte other than a letter, a digit, - or .");
         }
     }
+    // RFC 3986 3.2.2 and RFC 1123 2.1: a top label is never numeric. The
+    // system's resolver would read `127.1` or `0x7f000001` as an address.
+    if !h
+        .rsplit('.')
+        .next()
+        .is_some_and(|l| l.starts_with(|c: char| c.is_ascii_alphabetic()))
+    {
+        return Err("a host that is neither a dotted IPv4 address nor a name");
+    }
+    Ok(Host::Name(h.to_owned()))
+}
+
+/// A port by RFC 3986 3.2.3, strictly: 1 to 65535 in plain digits, no
+/// sign, no leading zero. An empty port fails the number parse.
+fn port_of(p: &str) -> Option<u16> {
+    if p.len() > 5 || p.starts_with('0') || !p.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    p.parse().ok()
 }
 
 /// A URL for an error text: no query, no fragment and no user info, since

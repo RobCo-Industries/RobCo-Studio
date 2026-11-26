@@ -273,29 +273,296 @@ fn an_error_text_holds_no_query_and_no_user_info() {
 fn urls_split_as_expected() {
     let t = Target::parse("https://h.example:8443/a/b?q#f").unwrap();
     assert_eq!(
+        (&t.host, t.port, t.authority().as_str(), t.path.as_str()),
         (
-            t.host.as_str(),
-            t.port,
-            t.authority.as_str(),
-            t.path.as_str()
-        ),
-        ("h.example", 8443, "h.example:8443", "/a/b?q")
+            &Host::Name("h.example".to_owned()),
+            8443,
+            "h.example:8443",
+            "/a/b?q"
+        )
     );
     let t = Target::parse("https://[::1]/x").unwrap();
-    assert_eq!((t.host.as_str(), t.port), ("::1", 443));
+    assert_eq!((t.host_text().as_str(), t.port), ("::1", 443));
     assert_eq!(Target::parse("https://h?q").unwrap().path, "/?q");
-    for bad in [
-        "https://",
-        "https://h:0/",
-        "https://h:x/",
-        "https://h /",
-        "https://[::1/",
-    ] {
-        assert!(Target::parse(bad).is_err(), "{bad}");
-    }
+    assert_eq!(Target::parse("https://h").unwrap().path, "/");
     let base = Target::parse("https://a/b/c").unwrap();
-    assert_eq!(base.follow("//d/e").unwrap().authority, "d");
+    assert_eq!(base.follow("//d/e").unwrap().authority(), "d");
     assert_eq!(base.follow("/e").unwrap().path, "/e");
+}
+
+/// Asserts that `url` is refused for `rule` and that the error holds
+/// none of the `secret` text, which stands where only the path, the
+/// query, the fragment or a bad host may hold it.
+fn bad_url(url: &str, rule: &str) {
+    let e = Target::parse(url).unwrap_err();
+    assert!(e.contains(rule), "{url}: {e}");
+    assert!(!e.contains("secret") && !e.contains("junk"), "{url}: {e}");
+}
+
+#[test]
+fn the_scheme_is_https_in_any_case_and_nothing_else() {
+    assert_eq!(Target::parse("HTTPS://h/").unwrap().authority(), "h");
+    assert_eq!(Target::parse("hTtPs://h/").unwrap().authority(), "h");
+    for url in [
+        "http://h/",
+        "ftp://h/",
+        "https:/h/",
+        "https:h",
+        "//h/",
+        "x.zip",
+        "https:",
+    ] {
+        bad_url(url, "not https://");
+    }
+    bad_url("https://", "no host");
+    bad_url("https:///secret", "no host");
+}
+
+#[test]
+fn user_info_in_the_authority_is_refused_but_an_at_in_the_path_is_not() {
+    bad_url("https://secret@h/", "user info");
+    bad_url("https://u:secret@h/", "user info");
+    bad_url("https://@h/", "user info");
+    assert_eq!(Target::parse("https://h/a@b?c@d").unwrap().path, "/a@b?c@d");
+}
+
+#[test]
+fn a_host_name_is_letters_digits_hyphens_and_dots() {
+    for ok in [
+        "h",
+        "a-b.example",
+        "xn--bcher-kva.example",
+        "A.Example",
+        "a1.b2c",
+    ] {
+        let t = Target::parse(&format!("https://{ok}/")).unwrap();
+        // Upper case is kept: a name is matched without regard to case
+        // by DNS and by the certificate check, so nothing is rewritten.
+        assert_eq!(t.authority(), ok);
+    }
+    for bad in [
+        "a_junk.example",
+        "a~junk",
+        "-junk.example",
+        "junk-.example",
+        "a%2ejunk",
+        "a!junk",
+        "a'junk",
+    ] {
+        bad_url(&format!("https://{bad}/"), "a byte other than");
+    }
+    for bad in ["junk..example", ".junk", "junk.example.", "junk."] {
+        bad_url(&format!("https://{bad}/"), "empty label");
+    }
+    let label = "a".repeat(63);
+    assert!(Target::parse(&format!("https://{label}/")).is_ok());
+    bad_url(&format!("https://{label}a/"), "over 63 bytes");
+    let name = format!("{l}.{l}.{l}.{m}", l = "a".repeat(63), m = "a".repeat(61));
+    assert_eq!(name.len(), 253);
+    assert!(Target::parse(&format!("https://{name}/")).is_ok());
+    bad_url(&format!("https://{name}a/"), "longer than 253");
+    // Not ASCII: refused, not converted to an xn-- name.
+    bad_url("https://bücher.example/", "not printable ASCII");
+}
+
+#[test]
+fn an_ipv4_host_is_four_plain_decimal_parts() {
+    let t = Target::parse("https://192.0.2.1:8443/").unwrap();
+    assert_eq!(t.host, Host::V4(Ipv4Addr::new(192, 0, 2, 1)));
+    assert_eq!(t.authority(), "192.0.2.1:8443");
+    // The forms a system resolver would read as an address of its own.
+    for bad in [
+        "127.1",
+        "2130706433",
+        "0x7f000001",
+        "0x7f.0.0.1",
+        "127.0.0.01",
+        "256.0.0.1",
+        "1.2.3.4.5",
+        "1.2.3",
+        "a.1",
+    ] {
+        bad_url(&format!("https://{bad}/"), "neither a dotted IPv4");
+    }
+}
+
+#[test]
+fn a_bracket_holds_one_plain_ipv6_address_and_nothing_follows_but_a_port() {
+    let t = Target::parse("https://[2001:DB8::1]:8443/x").unwrap();
+    assert_eq!(t.host, Host::V6("2001:db8::1".parse().unwrap()));
+    assert_eq!(
+        (t.authority().as_str(), t.host_text().as_str()),
+        ("[2001:db8::1]:8443", "2001:db8::1")
+    );
+    // The finding: text after the bracket was dropped, and the request
+    // went to ::1 with the bad authority in Host.
+    bad_url("https://[::1]junk/file", "text after the IPv6 host");
+    bad_url("https://[::1]junk", "text after the IPv6 host");
+    bad_url("https://[::1]]/", "text after the IPv6 host");
+    bad_url("https://[::1/", "no closing bracket");
+    bad_url("https://[::1", "no closing bracket");
+    bad_url("https://[::1%25en0]/", "plain IPv6");
+    bad_url("https://[fe80::1%en0]/", "plain IPv6");
+    bad_url("https://[v1.junk]/", "plain IPv6");
+    bad_url("https://[127.0.0.1]/", "plain IPv6");
+    bad_url("https://[]/", "plain IPv6");
+    bad_url("https://[::g]/", "plain IPv6");
+    bad_url("https://::1/", "no host");
+    bad_url("https://h[::1]/", "a byte other than");
+    bad_url("https://[::1]:0/", "the port");
+}
+
+#[test]
+fn a_port_is_1_to_65535_in_plain_digits() {
+    assert_eq!(Target::parse("https://h:1/").unwrap().port, 1);
+    assert_eq!(Target::parse("https://h:65535/").unwrap().port, 65535);
+    for bad in [
+        "0", "65536", "99999", "123456", "+443", "-1", "", "0443", "00", " 1", "x", "44 3", "1:2",
+    ] {
+        let url = format!("https://h:{bad}/");
+        if url.bytes().all(|b| b.is_ascii_graphic()) {
+            bad_url(&url, "the port");
+        } else {
+            bad_url(&url, "not printable ASCII");
+        }
+    }
+}
+
+#[test]
+fn host_holds_the_port_unless_it_is_443() {
+    assert_eq!(Target::parse("https://h/").unwrap().authority(), "h");
+    assert_eq!(Target::parse("https://h:443/").unwrap().authority(), "h");
+    assert_eq!(
+        Target::parse("https://h:8443/").unwrap().authority(),
+        "h:8443"
+    );
+    assert_eq!(
+        Target::parse("https://[::1]:443/").unwrap().authority(),
+        "[::1]"
+    );
+}
+
+#[test]
+fn the_path_and_query_hold_only_what_rfc_3986_allows_raw() {
+    let ok = "/a-b._~!$&'()*+,;=:@/%41%7e?q=1&r=%2F/?:@";
+    assert_eq!(Target::parse(&format!("https://h{ok}#f")).unwrap().path, ok);
+    for bad in [
+        " ",
+        "\t",
+        "\r",
+        "\n",
+        "\r\nX-Junk: secret",
+        "\u{7f}",
+        "\u{0}",
+    ] {
+        bad_url(&format!("https://h/a{bad}b"), "not printable ASCII");
+    }
+    for bad in ["\\", "\"", "<", ">", "[", "]", "^", "`", "{", "|", "}"] {
+        bad_url(&format!("https://h/secret{bad}"), "may not hold raw");
+        bad_url(&format!("https://h/?secret{bad}"), "may not hold raw");
+    }
+    for bad in ["%", "%4", "%4g", "%g4", "%%41"] {
+        bad_url(&format!("https://h/secret{bad}"), "two hex digits");
+    }
+    bad_url("https://h/secret%", "two hex digits");
+}
+
+#[test]
+fn a_path_has_a_length_limit() {
+    let at = format!("/{}", "a".repeat(MAX_TARGET_BYTES - 1));
+    assert!(Target::parse(&format!("https://h{at}")).is_ok());
+    bad_url(&format!("https://h{at}a"), "longer than 8000 bytes");
+}
+
+#[test]
+fn the_server_name_is_the_parsed_host() {
+    let name = |u: &str| Target::parse(u).unwrap().server_name().unwrap();
+    assert_eq!(
+        name("https://A.example/"),
+        ServerName::try_from("A.example").unwrap()
+    );
+    assert_eq!(
+        name("https://192.0.2.1/"),
+        ServerName::IpAddress(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)).into())
+    );
+    assert_eq!(
+        name("https://[::1]/"),
+        ServerName::IpAddress(IpAddr::V6(Ipv6Addr::LOCALHOST).into())
+    );
+}
+
+#[test]
+fn a_certificate_for_an_address_is_refused_for_a_name() {
+    // The certificate holds 127.0.0.1 only. `localhost` reaches the same
+    // server but is the name checked, so the handshake fails.
+    let pki = Pki::new();
+    let s = Server::start(&pki, vec![ok(b"x".to_vec())]);
+    let e = fetch(&client(&pki), &format!("https://localhost:{}/", s.port)).unwrap_err();
+    assert!(e.contains("localhost") && e.contains("certificate"), "{e}");
+    assert!(s.finish()[0].result.is_err());
+}
+
+#[test]
+fn only_the_parsed_path_query_and_host_reach_the_wire() {
+    let pki = Pki::new();
+    let s = Server::start(&pki, vec![ok(b"x".to_vec())]);
+    let url = format!(
+        "HTTPS://127.0.0.1:{}/a%20b/c?d=e/f@g#HTTP/1.1%0d%0aX-Junk:secret",
+        s.port
+    );
+    assert_eq!(fetch(&client(&pki), &url).unwrap(), b"x");
+    let seen = s.finish();
+    let mut lines = seen[0].request.split("\r\n");
+    assert_eq!(lines.next(), Some("GET /a%20b/c?d=e/f@g HTTP/1.1"));
+    assert_eq!(
+        lines.next(),
+        Some(format!("Host: 127.0.0.1:{}", s_port(&url)).as_str())
+    );
+    assert!(!seen[0].request.contains("Junk"), "{}", seen[0].request);
+}
+
+fn s_port(url: &str) -> &str {
+    url.split(':').nth(2).unwrap().split('/').next().unwrap()
+}
+
+#[test]
+fn a_redirect_target_passes_the_same_rules() {
+    let base = Target::parse("https://a:8443/b/c?q").unwrap();
+    // A `/path` keeps the host and port; a `//host` keeps the scheme only.
+    let t = base.follow("/e?f#g").unwrap();
+    assert_eq!(
+        (t.authority().as_str(), t.path.as_str()),
+        ("a:8443", "/e?f")
+    );
+    let t = base.follow("//d/e").unwrap();
+    assert_eq!((t.authority().as_str(), t.port), ("d", 443));
+    assert_eq!(base.follow("HTTPS://d/").unwrap().authority(), "d");
+    for (loc, rule) in [
+        ("//[::1]junk/", "text after the IPv6 host"),
+        ("//secret@d/", "user info"),
+        ("//d:0/", "the port"),
+        ("//127.1/", "neither a dotted IPv4"),
+        ("//", "no host"),
+        ("///secret", "no host"),
+        ("/secret\\x", "may not hold raw"),
+        ("/\\junk", "may not hold raw"),
+        ("/secret%zz", "two hex digits"),
+        ("https://d_junk/", "a byte other than"),
+    ] {
+        let e = base.follow(loc).unwrap_err();
+        assert!(e.contains(rule) && e.contains("redirect"), "{loc}: {e}");
+        assert!(!e.contains("secret") && !e.contains("junk"), "{loc}: {e}");
+    }
+}
+
+#[test]
+fn a_bad_location_is_refused_before_a_second_connection() {
+    let pki = Pki::new();
+    let s = Server::start(&pki, vec![redirect(302, "/a\\junk".to_owned())]);
+    let e = fetch(&client(&pki), &s.url("/")).unwrap_err();
+    assert!(e.contains("may not hold raw"), "{e}");
+    // The server saw one connection: the bad target was never fetched.
+    assert_eq!(s.finish().len(), 1);
 }
 
 fn answer(bytes: &'static [u8]) -> Result<Vec<u8>, String> {
