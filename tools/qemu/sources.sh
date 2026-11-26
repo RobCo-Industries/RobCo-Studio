@@ -17,7 +17,7 @@
 #   macos    the formula file from homebrew-core at the tap commit brew
 #            info names, the upstream archive and its patches, each
 #            checked against the SHA-256 Homebrew states, the keg's
-#            install receipt and brew info --json=v2. No brew command
+#            reduced install receipt and brew info --json=v2. No brew command
 #            that turns on developer mode.
 #   windows  MSYS2's source package of the exact version, which holds
 #            the PKGBUILD, its patches and the upstream archive, and
@@ -68,7 +68,8 @@ while IFS=$'\t' read -r pkg ver; do
     macos)
       keg=$(brew --cellar)/$pkg/$ver
       [ -f "$keg/INSTALL_RECEIPT.json" ] || { echo "$keg, the keg packed, is gone" >&2; exit 1; }
-      cp "$keg/INSTALL_RECEIPT.json" "$d/INSTALL_RECEIPT.json"
+      # The reduced receipt: the full one names folders of this machine.
+      python3 "$here/brew_receipt.py" reduce "$keg/INSTALL_RECEIPT.json" "$pkg" "$ver" "$d/homebrew-receipt.json"
       brew info --json=v2 --formula "$pkg" >"$d/brew-info.json"
       # Homebrew installs from its API and keeps no tap on disk, so brew
       # cat cannot read the formula. brew_sources.py fetches it, the source

@@ -1,6 +1,7 @@
 """Unit tests for notices.sh, on small fake packages and fake packagers.
 Run with: python3 -m unittest discover -s tools/qemu -v"""
 
+import json
 import os
 import pathlib
 import shutil
@@ -47,7 +48,7 @@ class Check(unittest.TestCase):
 
     def run_check(self):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-        r = subprocess.run(["bash", str(HERE / "notices.sh"), "--check", "linux", str(self.out)],
+        r = subprocess.run(["bash", str(HERE / "notices.sh"), "--check", getattr(self, "os", "linux"), str(self.out)],
                            capture_output=True, text=True, env=env, check=False)
         return r.returncode, [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
 
@@ -97,6 +98,63 @@ class Check(unittest.TestCase):
     def test_record_names_a_package_the_licence_was_not_read_from(self):
         self.write_record([LIBFDT, ZLIB_LINE.replace("| zlib1g |", "| zlib-ng1 |")])
         self.assert_fails("FAIL: libz.so.1 (zlib) comes from package zlib-ng1")
+
+    def homebrew_zlib(self, receipt=None):
+        """libz from a Homebrew keg, with its reduced receipt."""
+        self.os = "macos"
+        (self.lib / "libfdt.so.1").unlink()
+        head = "ab12" * 10
+        self.write_record([f"libz.so.1 | zlib | Homebrew | zlib | 1.3.1 | homebrew-core tap_git_head {head},"
+                                   f" from /opt/homebrew/Cellar/zlib/1.3.1/lib/libz.1.dylib | licence texts: Zlib"])
+        full = self.out / "INSTALL_RECEIPT.json"
+        full.write_text(json.dumps(receipt or {
+            "homebrew_version": "4.6.0", "poured_from_bottle": True, "time": 1,
+            "source": {"path": "/Users/builder/Library/Caches/Homebrew/api/formula.jws.json",
+                       "tap": "homebrew/core", "tap_git_head": head, "versions": {"stable": "1.3.1"}}}))
+        r = subprocess.run(["python3", str(HERE / "brew_receipt.py"), "reduce", str(full), "zlib", "1.3.1",
+                            str(self.lic / "zlib-homebrew-receipt.json")], capture_output=True, text=True, check=False)
+        return r
+
+    def test_homebrew_reduced_receipt_passes_and_names_no_path(self):
+        self.assertEqual(self.homebrew_zlib().returncode, 0)
+        self.assertEqual(self.run_check(), (0, []))
+        text = (self.lic / "zlib-homebrew-receipt.json").read_text()
+        self.assertNotIn("/Users/", text)
+        self.assertEqual(list(json.loads(text)), ["formula", "keg_version", "tap", "tap_git_head",
+                                                  "stable_version", "poured_from_bottle", "homebrew_version"])
+
+    def test_homebrew_receipt_missing(self):
+        self.homebrew_zlib()
+        (self.lic / "zlib-homebrew-receipt.json").unlink()
+        self.assert_fails("no licenses/zlib-homebrew-receipt.json for libz.so.1 (zlib)")
+
+    def test_homebrew_full_receipt_packed(self):
+        self.homebrew_zlib()
+        shutil.copy(self.out / "INSTALL_RECEIPT.json", self.lic / "zlib-homebrew-receipt.json")
+        self.assert_fails("zlib-homebrew-receipt.json holds the fields")
+
+    def test_homebrew_receipt_of_another_commit(self):
+        self.homebrew_zlib()
+        p = self.lic / "zlib-homebrew-receipt.json"
+        p.write_text(p.read_text().replace("ab12" * 10, "cd34" * 10))
+        self.assert_fails("names tap_git_head " + "cd34" * 10)
+
+    def test_homebrew_receipt_of_another_keg(self):
+        self.homebrew_zlib()
+        p = self.lic / "zlib-homebrew-receipt.json"
+        p.write_text(p.read_text().replace('"1.3.1"', '"1.3"', 1))
+        self.assert_fails("names zlib 1.3, the record zlib 1.3.1")
+
+    def test_homebrew_receipt_holding_a_path(self):
+        self.homebrew_zlib()
+        p = self.lic / "zlib-homebrew-receipt.json"
+        p.write_text(p.read_text().replace('"homebrew/core"', '"/Users/builder/tap"'))
+        self.assert_fails("tap is a path of the machine")
+
+    def test_reduce_refuses_a_path_in_a_kept_field(self):
+        r = self.homebrew_zlib({"homebrew_version": "C:\\Users\\builder", "source": {}})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("homebrew_version is a path of the machine", r.stdout)
 
     def test_notice_removed(self):
         (self.out / "qemu" / "NOTICE").unlink()

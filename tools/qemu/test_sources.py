@@ -230,8 +230,8 @@ cp "{served}/$f" "$2"
         self.homebrew()
         r = self.run_sources("macos")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.listed(), ["glib/INSTALL_RECEIPT.json", "glib/brew-info.json", "glib/fix.diff",
-                                         "glib/glib-2.86.0.tar.xz", "glib/glib.rb", "glib/hardcoded-paths.diff"])
+        self.assertEqual(self.listed(), ["glib/brew-info.json", "glib/fix.diff", "glib/glib-2.86.0.tar.xz",
+                                         "glib/glib.rb", "glib/hardcoded-paths.diff", "glib/homebrew-receipt.json"])
 
     def test_macos_formula_file_not_the_one_stated(self):
         def edit(served, f):

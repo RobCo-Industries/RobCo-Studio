@@ -222,6 +222,17 @@ check() {
     [ -n "$t" ] || { echo "FAIL: $f ($c) has no record line naming its licence texts"; bad=1; }
     pk=$(awk -F' [|] ' -v f="$f" '$1 == f {print $4; exit}' "$record" 2>/dev/null || true)
     if [ -n "$t" ] && ! msg=$(known_package "$f" "$c" "$pk"); then echo "FAIL: $msg"; bad=1; fi
+    # A Homebrew library carries its reduced install receipt, checked
+    # against its record line.
+    if [ "$(awk -F' [|] ' -v f="$f" '$1 == f {print $3; exit}' "$record" 2>/dev/null || true)" = Homebrew ]; then
+      ln=$(awk -F' [|] ' -v f="$f" '$1 == f {print $4 "\t" $5 "\t" $6; exit}' "$record")
+      IFS=$'\t' read -r rf rv rd <<<"$ln"
+      if [ ! -f "$lic/$c-homebrew-receipt.json" ]; then
+        echo "FAIL: no licenses/$c-homebrew-receipt.json for $f ($c)"; bad=1
+      elif ! msg=$(python3 "$here/brew_receipt.py" check "$lic/$c-homebrew-receipt.json" "$rf" "$rv" "$rd"); then
+        echo "$msg"; bad=1
+      fi
+    fi
     want=$(texts "$c")
     [ "$(echo $t)" = "$want" ] || { echo "FAIL: the record names licence texts '$t' for $f ($c), but $want apply"; bad=1; }
     for id in $want; do
@@ -229,7 +240,7 @@ check() {
     done
     own=0
     for g in "$lic/$c"-*; do
-      case $g in *-INSTALL_RECEIPT.json | *-pacman-Qi.txt) continue ;; esac
+      case $g in *-homebrew-receipt.json | *-pacman-Qi.txt) continue ;; esac
       [ -s "$g" ] && own=1
     done
     [ "$own" = 1 ] || { echo "FAIL: no licence or notice file of its own in licenses/ for $f ($c)"; bad=1; }
@@ -334,7 +345,8 @@ for f in $(packed); do
       known_package "$f" "$c" "$formula" >&2
       head=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("source") or {}).get("tap_git_head") or "unknown")' "$keg/INSTALL_RECEIPT.json")
       entry="$f | $c | Homebrew | $formula | $v | homebrew-core tap_git_head $head, from $p"
-      cp "$keg/INSTALL_RECEIPT.json" "$lic/$c-INSTALL_RECEIPT.json"
+      # Not the receipt itself: it names folders of this machine.
+      python3 "$here/brew_receipt.py" reduce "$keg/INSTALL_RECEIPT.json" "$formula" "$v" "$lic/$c-homebrew-receipt.json"
       found=0
       for l in "$keg"/COPYING* "$keg"/LICENSE* "$keg"/LICENCE* "$keg"/COPYRIGHT*; do
         if [ -f "$l" ]; then cp "$l" "$lic/$c-$(basename "$l")"; found=1; fi
