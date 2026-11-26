@@ -132,7 +132,7 @@ For Studio's own QEMU archive, the `NOTICE` and `licenses/` folder go with the c
 
 ## The window's toolkit and fonts
 
-`robco-studio` links `eframe` and `egui` 0.37.0, MIT OR Apache-2.0, `resvg` 0.45, Apache-2.0 OR MIT, and on macOS `muda` 0.17, Apache-2.0 OR MIT. Every crate they bring is under a licence in `deny.toml`, except two that build on Windows only: `clipboard-win` and `error-code`, both BSL-1.0, which the clipboard feature needs. BSL-1.0 is not on the allow list. **Owner decision**: allow BSL-1.0, or build the window without the system clipboard on Windows.
+`robco-studio` links `eframe` and `egui` 0.37.0, MIT OR Apache-2.0, `resvg` 0.45, Apache-2.0 OR MIT, and on macOS `muda` 0.17, Apache-2.0 OR MIT. Every crate they bring is under a licence in `deny.toml`. Two build on Windows only: `clipboard-win` 5.4.3 and `error-code` 3.4.0, both BSL-1.0, which the clipboard feature needs. The Boost Software License is permissive and compatible with GPL-3.0-or-later, so `deny.toml` allows it.
 
 The window bundles two fonts. Each comes from its official release, checked against the SHA-256 GitHub publishes for the release file.
 
