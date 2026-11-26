@@ -426,11 +426,31 @@ fn install_package(
     Ok(())
 }
 
-/// Step 8 for one package: its installed `sdk.json`.
+/// Step 8 for one package: its installed `sdk.json`. A cached package whose
+/// `sdk.json` is gone, or is a folder, fails with `package: manifest`, the
+/// code step 8 gives, and the cache is left as it is: the spec names no
+/// repair of a cache entry, only reports. A host that refuses to read the
+/// file is `io: read`.
 fn read_sdk(cache: &Path, p: &LockedPackage) -> Result<SdkJson, Failure> {
     let path = package_dir(cache, p)?.join("sdk.json");
-    let bytes = fs::read(&path).map_err(|e| read_failure(&path, &e))?;
+    let bytes = read_package_file(&path, "sdk.json")?;
     sdk_json::parse(&bytes).map_err(|e| Failure::of(&e))
+}
+
+/// Reads a file of an installed package. One that is missing or not a file
+/// is `package: manifest`, naming the file; a refusal of the host is
+/// `io: read`.
+fn read_package_file(path: &Path, name: &str) -> Result<Vec<u8>, Failure> {
+    match fs::read(path) {
+        Ok(b) => Ok(b),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::IsADirectory) => {
+            Err(Failure::new(
+                "package: manifest",
+                format!("{name} is missing from the installed package"),
+            ))
+        }
+        Err(e) => Err(read_failure(path, &e)),
+    }
 }
 
 /// Step 9: installs the locked `gcc` for the running host, or finds it.
@@ -513,16 +533,7 @@ fn build(
     let m = &project.manifest;
     // 1. flags.json.
     let flags_path = pkg_dir.join("flags.json");
-    let flags_json = match fs::read(&flags_path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(Failure::new(
-                "package: manifest",
-                "flags.json is missing from the installed package",
-            ));
-        }
-        Err(e) => return Err(read_failure(&flags_path, &e)),
-    };
+    let flags_json = read_package_file(&flags_path, "flags.json")?;
     let files: Vec<&str> = project.files.iter().map(String::as_str).collect();
     let (package, toolchain_s, project_s) =
         (path_text(pkg_dir)?, path_text(toolchain)?, path_text(root)?);

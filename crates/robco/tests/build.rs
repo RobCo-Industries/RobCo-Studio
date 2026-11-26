@@ -731,6 +731,18 @@ fn a_warm_cache_builds_a_tape_with_no_index() {
 
 #[cfg(unix)]
 #[test]
+fn a_cached_package_without_sdk_json_is_package_manifest() {
+    let f = Fixture::new("no-sdk");
+    warm_cache(&f, "");
+    f.older_tape();
+    fs::remove_file(f.dir.join("cache/packages/pipos/1.4.0/sdk.json")).unwrap();
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("package: manifest".to_owned(), 4));
+    assert!(!f.tape().exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn a_source_removed_during_the_build_leaves_no_failure_after_the_tape() {
     // The source goes away before the tape is written. The build already
     // holds its source list, so it reports it and does not fail after the
