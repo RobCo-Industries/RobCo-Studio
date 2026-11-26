@@ -2,7 +2,9 @@
 
 //! Reads the command line, by "Options" of RobCo-Core
 //! `docs/spec/STUDIO_CLI.md`. A few commands with two options need no parser
-//! crate. Every wrong form gives `usage`.
+//! crate. Every wrong form gives `usage`. The spec says nothing of `--`;
+//! here it ends the options, as in most tools, so a positional argument
+//! may start with `-`.
 
 use studio_core::resolve::{Abi, InstallPick, Version};
 
@@ -84,7 +86,11 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
     let mut positional = Vec::new();
     let mut it = rest.iter();
     while let Some(&a) = it.next() {
-        if a == "--json" {
+        if a == "--" {
+            // `--` ends the options: every later argument is positional,
+            // whatever it starts with. So a name such as `-P` can be given.
+            positional.extend(it.by_ref().copied());
+        } else if a == "--json" {
             if json {
                 return Err(usage(command, "--json is given twice"));
             }
@@ -108,7 +114,10 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             }
             index = Some(value.to_owned());
         } else if a.len() > 1 && a.starts_with('-') {
-            return Err(usage(command, &format!("unknown option {a}")));
+            return Err(usage(
+                command,
+                &format!("unknown option {a}; put -- before an argument that starts with -"),
+            ));
         } else {
             positional.push(a);
         }
@@ -238,6 +247,45 @@ mod tests {
     }
 
     #[test]
+    fn double_dash_ends_the_options() {
+        let new = |name: &str| Command::New {
+            template: "holotape-c".to_owned(),
+            name: name.to_owned(),
+        };
+        assert_eq!(p(&["new", "holotape-c", "--", "-P"]).unwrap(), new("-P"));
+        assert_eq!(p(&["new", "--", "holotape-c", "-P"]).unwrap(), new("-P"));
+        assert_eq!(
+            p(&["new", "--json", "--", "holotape-c", "--"]).unwrap(),
+            new("--")
+        );
+        // After `--`, an option's spelling is a positional argument.
+        assert_eq!(
+            p(&["new", "holotape-c", "--", "--index"]).unwrap(),
+            new("--index")
+        );
+        // `--` alone, with nothing after it, adds nothing.
+        assert_eq!(p(&["sdk", "list", "--"]).unwrap(), list(None));
+        assert_eq!(p(&["build", "--"]).unwrap(), Command::Build { index: None });
+        assert_eq!(
+            p(&["sdk", "install", "--index", "i.json", "--", "-x"]).unwrap(),
+            Command::SdkInstall {
+                argument: "-x".to_owned(),
+                name: "-x".to_owned(),
+                pick: InstallPick::Newest,
+                index: Some("i.json".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_leading_dash_without_double_dash_stays_an_option() {
+        let e = p(&["new", "holotape-c", "-P"]).unwrap_err();
+        assert_eq!(e.command, "new");
+        assert!(e.detail.contains("unknown option -P"), "{}", e.detail);
+        assert!(e.detail.contains("put -- before"), "{}", e.detail);
+    }
+
+    #[test]
     fn the_three_install_forms() {
         let pick = |a: &str| match p(&["sdk", "install", a]).unwrap() {
             Command::SdkInstall { pick, name, .. } => (name, pick),
@@ -271,6 +319,15 @@ mod tests {
             (&["new", "holotape-c", "PIPES", "extra"], "new"),
             (&["new", "holotape-c", "PIPES", "--index", "i.json"], "new"),
             (&["new", "holotape-c", "-P"], "new"),
+            (&["new", "holotape-c", "--", "-P", "--json"], "new"),
+            (&["new", "holotape-c", "--", "--", "-P"], "new"),
+            (&["new", "--", "holotape-c"], "new"),
+            (&["--", "new", "holotape-c", "-P"], ""),
+            (
+                &["sdk", "install", "--", "--index", "i.json"],
+                "sdk install",
+            ),
+            (&["sdk", "list", "--", "--json"], "sdk list"),
             (&["sdk"], ""),
             (&["sdk", "remove", "pipos"], ""),
             (&["sdk", "doctor"], ""),

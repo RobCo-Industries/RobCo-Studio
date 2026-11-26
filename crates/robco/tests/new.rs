@@ -386,6 +386,28 @@ fn new_an_empty_folder_is_filled() {
 }
 
 #[test]
+fn new_a_name_that_starts_with_a_dash_needs_double_dash() {
+    let f = Fixture::new("dash");
+    f.good();
+    // Without `--`, `-P` is an unknown option: usage, exit 2, with the hint.
+    let o = f.robco(&["new", "holotape-c", "-P"]);
+    assert_eq!(o.status.code(), Some(2));
+    let e = String::from_utf8(o.stderr).unwrap();
+    assert!(e.contains("put -- before"), "{e}");
+    assert!(f.in_work().is_empty());
+
+    let o = f.robco(&["new", "holotape-c", "--", "-P"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    check_project(&f.work().join("-P"), "-P");
+    assert_eq!(f.in_work(), vec!["-P".to_owned()]);
+}
+
+#[test]
 fn new_a_bad_name_fails_with_one_line_and_writes_nothing() {
     let f = Fixture::new("name");
     f.good();

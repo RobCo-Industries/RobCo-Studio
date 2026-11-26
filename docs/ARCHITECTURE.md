@@ -120,7 +120,7 @@ The command. `main.rs` calls the library's `run`, which the program's tests also
 
 Each part is a module of its own:
 
-- `args` reads the command line by hand. Every wrong form gives `usage`.
+- `args` reads the command line by hand. Every wrong form gives `usage`. After `--` every argument is positional, so a name such as `-P` is given as `robco new holotape-c -- -P`.
 - `cache` finds the cache folder, with `ROBCO_CACHE` first.
 - `index` sorts a `--index` location and reads the index, from a local file or from an `https://` URL through `studio-net`. A download that fails, or an index longer than 8 MiB, gives `index: read`.
 - `net` starts TLS on the first download only, and sends each archive `url` to `studio-net` or, for a relative path in a local index, to the index folder.
