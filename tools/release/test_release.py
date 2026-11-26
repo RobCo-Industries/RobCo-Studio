@@ -3,7 +3,6 @@
 the notice file. Run: python3 -m unittest discover -s tools/release"""
 
 import hashlib
-import json
 import os
 import pathlib
 import subprocess
@@ -79,61 +78,70 @@ class NoticesTest(unittest.TestCase):
         (core / "LICENSE").write_text("core licence\n")
         (core / "third_party/fatfs/LICENSE.txt").write_text("fatfs licence\n")
         self.core = core
-        pkgs = []
-        for name, lic, files in [("robco", "GPL-3.0-or-later", []),
-                                 ("alpha", "MIT", ["LICENSE-MIT", "README.md"]),
-                                 ("beta", "Apache-2.0", ["COPYING"]),
-                                 ("macro", "MIT", ["LICENSE"]),
-                                 ("devonly", None, [])]:
-            folder = self.d / name
-            folder.mkdir()
+        self.reg = self.d / "src"
+        for name, files in [("alpha", ["LICENSE-MIT", "README.md"]), ("beta", ["COPYING"]),
+                            ("macro", ["LICENSE"]), ("devonly", [])]:
+            folder = self.reg / "index.example-0" / f"{name}-1.0.0"
+            folder.mkdir(parents=True)
             for f in files:
                 (folder / f).write_text(f"{name} {f}\n")
-            pkgs.append({"id": f"{name}-id", "name": name, "version": "1.0.0",
-                         "license": lic, "manifest_path": str(folder / "Cargo.toml"),
-                         "repository": f"https://example.org/{name}"})
-        self.meta = {"packages": pkgs, "workspace_members": ["robco-id"]}
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def build(self, tree):
-        return notices.build(self.meta, tree, self.core)
+        return notices.build(tree, self.core, self.reg)
+
+    ROBCO = "robco v1.0.0 (/w/crates/robco)\tGPL-3.0-or-later\thttps://example.org/robco\n"
+    ALPHA = "alpha v1.0.0\tMIT\thttps://example.org/alpha\n"
+    BETA = "beta v1.0.0\tApache-2.0\t\n"
 
     def test_only_the_tree_with_its_texts(self):
-        text, n, errors = self.build("robco v1.0.0 (/x)\nalpha v1.0.0\nbeta v1.0.0\nalpha v1.0.0 (*)\n")
+        text, n, errors = self.build(self.ROBCO + self.ALPHA + self.BETA
+                                     + "alpha v1.0.0 (*)\tMIT\thttps://example.org/alpha\n"
+                                     + "studio-core v0.0.0 (/w/crates/studio-core)\tGPL-3.0-or-later\t\n")
         self.assertEqual(errors, [])
         self.assertEqual(n, 2)
         self.assertIn("Rust crate alpha 1.0.0, https://example.org/alpha\nLicence: MIT", text)
         self.assertIn("--- LICENSE-MIT ---\nalpha LICENSE-MIT", text)
         self.assertNotIn("README", text)
+        self.assertIn("Rust crate beta 1.0.0\nLicence: Apache-2.0", text)
         self.assertIn("beta COPYING", text)
         self.assertNotIn("macro", text)
         self.assertNotIn("devonly", text)
+        self.assertNotIn("studio-core", text)
         self.assertIn("C library RobCo-Core", text)
         self.assertIn("fatfs licence", text)
         self.assertLess(text.index("crate alpha"), text.index("crate beta"))
 
     def test_a_crate_without_a_licence_fails(self):
-        _, _, errors = self.build("robco v1.0.0\ndevonly v1.0.0\n")
+        _, _, errors = self.build(self.ROBCO + "devonly v1.0.0\t\t\n")
         self.assertEqual(errors, ["FAIL: devonly 1.0.0 names no licence"])
 
     def test_a_missing_c_licence_fails(self):
         (self.core / "third_party/fatfs/LICENSE.txt").unlink()
-        _, _, errors = self.build("robco v1.0.0\n")
+        _, _, errors = self.build(self.ROBCO)
         self.assertEqual(len(errors), 1)
         self.assertIn("FatFs", errors[0])
 
-    def test_a_crate_the_metadata_lacks_fails(self):
+    def test_a_crate_without_source_fails(self):
+        _, _, errors = self.build(self.ROBCO + "ghost v9.9.9\tMIT\t\n")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("ghost 9.9.9: no source", errors[0])
+
+    def test_a_crate_from_another_registry_fails(self):
         with self.assertRaises(SystemExit):
-            self.build("robco v1.0.0\nghost v9.9.9\n")
+            self.build(self.ROBCO + "alpha v1.0.0 (registry+https://x.example)\tMIT\t\n")
+
+    def test_a_tree_without_robco_fails(self):
+        with self.assertRaises(SystemExit):
+            self.build(self.ALPHA)
 
     def test_command_line(self):
-        meta, tree, out = self.d / "m.json", self.d / "t.txt", self.d / "N.txt"
-        meta.write_text(json.dumps(self.meta))
-        tree.write_text("robco v1.0.0\nalpha v1.0.0\n")
-        code = notices.main(["--target", "x", "--out", str(out), "--metadata", str(meta),
-                             "--tree", str(tree), "--core", str(self.core)])
+        tree, out = self.d / "t.txt", self.d / "N.txt"
+        tree.write_text(self.ROBCO + self.ALPHA)
+        code = notices.main(["--target", "x", "--out", str(out), "--tree", str(tree),
+                             "--registry", str(self.reg), "--core", str(self.core)])
         self.assertEqual(code, 0)
         self.assertTrue(out.read_text().startswith("Third-party notices for robco\n"))
 
