@@ -380,6 +380,45 @@ pub fn same_but_case(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase() || a.to_uppercase() == b.to_uppercase()
 }
 
+/// The first two paths of one package that differ only in case in some
+/// part, by [`same_but_case`], or `None`. Each item is a `/` path and
+/// whether it is a file. Every folder above a path counts as a path too,
+/// so `A/foo.c` and `a/bar.c` clash on `A` and `a`: a file system that
+/// folds case would put both files in one folder. A file whose spelling is
+/// also a folder of another path clashes too. One spelling met twice as a
+/// folder is no clash.
+pub fn case_clash<'a>(
+    paths: impl IntoIterator<Item = (&'a str, bool)>,
+) -> Option<(String, String)> {
+    // Every spelling met, with whether it is a file.
+    let mut nodes: BTreeMap<&str, bool> = BTreeMap::new();
+    for (path, file) in paths {
+        let mut at = 0;
+        while let Some(p) = path[at..].find('/') {
+            let parent = &path[..at + p];
+            if nodes.insert(parent, false) == Some(true) {
+                return Some((parent.to_owned(), path.to_owned()));
+            }
+            at += p + 1;
+        }
+        match nodes.get(path) {
+            Some(_) if file => return Some((path.to_owned(), path.to_owned())),
+            Some(true) => return Some((path.to_owned(), path.to_owned())),
+            _ => {
+                nodes.insert(path, file);
+            }
+        }
+    }
+    // A package holds few paths, so each pair is compared.
+    let all: Vec<&str> = nodes.into_keys().collect();
+    for (i, a) in all.iter().enumerate() {
+        if let Some(b) = all[i + 1..].iter().find(|b| same_but_case(a, b)) {
+            return Some(((*a).to_owned(), (*b).to_owned()));
+        }
+    }
+    None
+}
+
 /// The form of a SHA-256: 64 lower case hex digits. Upper case is refused.
 pub fn is_sha256(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))

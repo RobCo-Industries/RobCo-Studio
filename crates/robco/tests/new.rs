@@ -1,0 +1,1370 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Runs `robco new` as a program, against a cache in a temporary folder.
+//! No test touches the network.
+//!
+//! The program carries no template. Each test makes its own `templates`
+//! package from the files below, laid out as "The templates package" of
+//! RobCo-Core `docs/spec/SDK_PACKAGE.md` says, with the one template
+//! `holotape-c`. `robco.toml` and `tests/start.toml` are the spec's text;
+//! `src/main.c`, the icon and the image are small stand-ins written here.
+//!
+//! Two tests need files this repository does not hold, and skip without
+//! them:
+//!
+//! - `ROBCO_TEST_TEMPLATES`: the path of a real `templates` package zip.
+//! - `ROBCO_TEST_PIPOS`, `ROBCO_TEST_GCC` and `ROBCO_TEST_GCC_ROOT`, as in
+//!   `tests/build.rs`: the project `robco new` wrote is then built.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test file; a failed unwrap is a failed test"
+)]
+
+use std::fs;
+use std::io::{Cursor, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use serde_json::{Value, json};
+use studio_core::install::sha256_hex;
+use zip::write::SimpleFileOptions;
+
+const ROBCO_TOML: &str = r#"format = 1
+
+[project]
+name = "@NAME@"
+title = "@NAME@"
+version = "0.1.0"
+kind = "holotape"
+subtype = "utility"
+icon = "icon.pbm"
+
+[target]
+platform = "pipos"
+abi = "1.4"
+
+[build]
+backend = "robco"
+sources = ["src/*.c"]
+"#;
+
+const START_TOML: &str = r#"format = 1
+
+[[step]]
+expect = "tape: ready"
+
+[[step]]
+screen = "ready"
+
+[[step]]
+tap = "select"
+
+[[step]]
+exit = 0
+"#;
+
+/// A stand-in tape: it builds, and logs the line. It does not draw.
+const MAIN_C: &str = "/* SPDX-License-Identifier: MIT */\r\n#include <pipos/pip.h>\r\n\r\n\
+int pip_main(const pipos_startup_t *startup)\r\n{\r\n    (void)startup;\r\n    \
+pip_printf(\"tape: ready\\n\");\r\n    return 0;\r\n}\r\n";
+
+/// A stand-in image: bytes a copy must keep, CR LF included.
+const READY_PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot an image, @TITLE@ kept\r\n";
+
+/// A 32x32 `P1` icon: a frame with a cross.
+fn icon() -> Vec<u8> {
+    let mut s = String::from("P1\n32 32\n");
+    for y in 0..32 {
+        let row: Vec<&str> = (0..32)
+            .map(|x| {
+                let on = x == 0 || y == 0 || x == 31 || y == 31 || x == y || x + y == 31;
+                if on { "1" } else { "0" }
+            })
+            .collect();
+        s.push_str(&row.join(" "));
+        s.push('\n');
+    }
+    s.into_bytes()
+}
+
+const TEMPLATES_JSON: &str = r#"{
+  "format": 1,
+  "templates": [
+    {
+      "id": "holotape-c",
+      "title": "Holotape in C",
+      "description": "A holotape in C that draws one screen and waits for SELECT.",
+      "kind": "holotape",
+      "files": [
+        {"path": "icon.pbm", "substitute": false},
+        {"path": "robco.toml", "substitute": true},
+        {"path": "src/main.c", "substitute": false},
+        {"path": "tests/golden/start/ready.png", "substitute": false},
+        {"path": "tests/start.toml", "substitute": false}
+      ]
+    }
+  ]
+}
+"#;
+
+/// The five files of `holotape-c`, by their path in the template.
+fn template_files() -> Vec<(String, Vec<u8>)> {
+    vec![
+        ("icon.pbm".into(), icon()),
+        ("robco.toml".into(), ROBCO_TOML.into()),
+        ("src/main.c".into(), MAIN_C.into()),
+        ("tests/golden/start/ready.png".into(), READY_PNG.into()),
+        ("tests/start.toml".into(), START_TOML.into()),
+    ]
+}
+
+/// Every file of the package but `sdk.json`, sorted by path.
+fn package_files(templates_json: &str) -> Vec<(String, Vec<u8>)> {
+    let mut v: Vec<(String, Vec<u8>)> = template_files()
+        .into_iter()
+        .map(|(p, b)| (format!("holotape-c/{p}"), b))
+        .collect();
+    v.push(("LICENSES/MIT.txt".into(), b"MIT licence text\n".to_vec()));
+    v.push(("templates.json".into(), templates_json.into()));
+    v.sort();
+    v
+}
+
+fn sdk_json(files: &[(String, Vec<u8>)]) -> Value {
+    let files: Vec<Value> = files
+        .iter()
+        .map(|(p, b)| json!({"path": p, "size": b.len(), "sha256": sha256_hex(b)}))
+        .collect();
+    json!({
+        "format": 1,
+        "name": "templates",
+        "version": "0.1.0",
+        "built_from": [{"repo": "RobCo-Reel", "commit": "3333333333333333333333333333333333333333"}],
+        "formats": {"templates": 1, "project": 1, "scenario": 1},
+        "requires": [],
+        "licences": [{"paths": [""], "spdx": "MIT"}],
+        "files": files
+    })
+}
+
+fn package_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let o = SimpleFileOptions::default();
+    z.start_file("sdk.json", o).unwrap();
+    z.write_all(sdk_json(files).to_string().as_bytes()).unwrap();
+    for (p, b) in files {
+        z.start_file(p.as_str(), o).unwrap();
+        z.write_all(b).unwrap();
+    }
+    z.finish().unwrap().into_inner()
+}
+
+/// A test folder: `cache/`, `work/` where `robco new` runs, and an index
+/// with its archives. Removed on drop.
+struct Fixture {
+    dir: PathBuf,
+}
+
+impl Fixture {
+    fn new(name: &str) -> Self {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "robco-new-{}-{}-{name}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("work")).unwrap();
+        Self { dir }
+    }
+
+    fn put(&self, rel: &str, bytes: &[u8]) {
+        let p = self.dir.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, bytes).unwrap();
+    }
+
+    fn work(&self) -> PathBuf {
+        self.dir.join("work")
+    }
+
+    fn cache(&self) -> PathBuf {
+        self.dir.join("cache")
+    }
+
+    fn pkg(&self) -> PathBuf {
+        // One part per `join`: a `/` inside a part stays a `/` on Windows,
+        // and the tool prints the path with `\`.
+        self.cache()
+            .join("packages")
+            .join("templates")
+            .join("0.1.0")
+    }
+
+    /// Puts an installed package into the cache as an install leaves it,
+    /// with `templates.json` as given and the record of `.robco-archive`.
+    fn installed(&self, templates_json: &str) {
+        let files = package_files(templates_json);
+        let pkg = self.pkg();
+        for (p, b) in &files {
+            let at = pkg.join(p);
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::write(at, b).unwrap();
+        }
+        fs::write(pkg.join("sdk.json"), sdk_json(&files).to_string()).unwrap();
+        fs::write(pkg.join(".robco-archive"), format!("{}\n", "a".repeat(64))).unwrap();
+    }
+
+    /// The installed package of the spec.
+    fn good(&self) {
+        self.installed(TEMPLATES_JSON);
+    }
+
+    /// An index that lists the package zip `zip`.
+    fn index(&self, zip: &[u8]) {
+        self.put("archives/templates.zip", zip);
+        let sdk = sdk_json_of(zip);
+        let index = json!({
+            "format": 1,
+            "packages": [{
+                "name": "templates",
+                "version": sdk["version"],
+                "requires": [],
+                "formats": sdk["formats"],
+                "url": "archives/templates.zip",
+                "size": zip.len(),
+                "sha256": sha256_hex(zip)
+            }],
+            "tools": []
+        });
+        self.put("index.json", index.to_string().as_bytes());
+    }
+
+    /// Runs `robco` in `work/` with only the variables it needs.
+    fn robco_in(&self, cwd: &Path, args: &[&str]) -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_robco"));
+        c.args(args)
+            .current_dir(cwd)
+            .env_clear()
+            .env("ROBCO_CACHE", self.cache());
+        for key in ["SYSTEMROOT", "TEMP", "TMP"] {
+            if let Some(v) = std::env::var_os(key) {
+                c.env(key, v);
+            }
+        }
+        c.output().expect("robco runs")
+    }
+
+    fn robco(&self, args: &[&str]) -> Output {
+        self.robco_in(&self.work(), args)
+    }
+
+    /// The names in `work/`, sorted.
+    fn in_work(&self) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(self.work())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        v.sort();
+        v
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn sdk_json_of(zip: &[u8]) -> Value {
+    let mut z = zip::ZipArchive::new(Cursor::new(zip)).unwrap();
+    let mut s = String::new();
+    z.by_name("sdk.json")
+        .unwrap()
+        .read_to_string(&mut s)
+        .unwrap();
+    serde_json::from_str(&s).unwrap()
+}
+
+fn lines(o: &Output) -> Vec<Value> {
+    String::from_utf8(o.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// The `error` line's code and detail, and the exit code.
+fn failure(o: &Output) -> (String, String, i32) {
+    let l = lines(o);
+    let err = l
+        .iter()
+        .find(|v| v["kind"] == "error")
+        .unwrap_or_else(|| panic!("no error line: {l:?}"));
+    (
+        err["code"].as_str().unwrap().to_owned(),
+        err["detail"].as_str().unwrap().to_owned(),
+        o.status.code().unwrap(),
+    )
+}
+
+/// Runs `new holotape-c NAME --json` and checks it failed with `code` and
+/// `exit` and wrote nothing in `work/`.
+fn refused(f: &Fixture, template: &str, name: &str, code: &str, exit: i32) -> String {
+    let before = f.in_work();
+    let o = f.robco(&["new", template, name, "--json"]);
+    let (c, detail, e) = failure(&o);
+    assert_eq!((c.as_str(), e), (code, exit), "{detail}");
+    assert_eq!(f.in_work(), before, "the command wrote something");
+    assert!(o.stderr.is_empty());
+    detail
+}
+
+fn check_project(dir: &Path, name: &str) {
+    for (p, b) in template_files() {
+        let got = fs::read(dir.join(&p)).unwrap();
+        let want = if p == "robco.toml" {
+            ROBCO_TOML.replace("@NAME@", name).into_bytes()
+        } else {
+            b
+        };
+        assert_eq!(got, want, "{p}");
+    }
+    let m = studio_core::manifest::parse(&fs::read(dir.join("robco.toml")).unwrap()).unwrap();
+    assert_eq!(m.project.name, name);
+    assert_eq!(m.project.title, name);
+}
+
+#[test]
+fn new_holotape_c_writes_a_project_whose_manifest_parses() {
+    let f = Fixture::new("ok");
+    f.index(&package_zip(&package_files(TEMPLATES_JSON)));
+    let o = f.robco(&["sdk", "install", "templates", "--index", "../index.json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    assert!(o.stderr.is_empty());
+    assert_eq!(
+        lines(&o),
+        vec![json!({
+            "v": 1, "kind": "result", "command": "new", "ok": true, "exit": 0,
+            "template": "holotape-c", "name": "PIPES", "path": "PIPES",
+            "files": ["icon.pbm", "robco.toml", "src/main.c",
+                      "tests/golden/start/ready.png", "tests/start.toml"]
+        })]
+    );
+    // Only the project: no temporary folder, no lock, no build/.
+    assert_eq!(f.in_work(), vec!["PIPES".to_owned()]);
+    let p = f.work().join("PIPES");
+    check_project(&p, "PIPES");
+    assert!(!p.join("robco.lock").exists() && !p.join("build").exists());
+
+    // A second run finds the folder full.
+    refused(&f, "holotape-c", "PIPES", "new: exists", 3);
+}
+
+#[test]
+fn new_an_empty_folder_is_filled() {
+    let f = Fixture::new("empty");
+    f.good();
+    fs::create_dir(f.work().join("P_1-2")).unwrap();
+    let o = f.robco(&["new", "holotape-c", "P_1-2"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert!(o.stderr.is_empty());
+    assert!(!o.stdout.is_empty(), "a line for a person");
+    check_project(&f.work().join("P_1-2"), "P_1-2");
+    assert_eq!(f.in_work(), vec!["P_1-2".to_owned()]);
+}
+
+#[test]
+fn new_a_name_that_starts_with_a_dash_needs_double_dash() {
+    let f = Fixture::new("dash");
+    f.good();
+    // Without `--`, `-P` is an unknown option: usage, exit 2, with the hint.
+    let o = f.robco(&["new", "holotape-c", "-P"]);
+    assert_eq!(o.status.code(), Some(2));
+    let e = String::from_utf8(o.stderr).unwrap();
+    assert!(e.contains("put -- before"), "{e}");
+    assert!(f.in_work().is_empty());
+
+    let o = f.robco(&["new", "holotape-c", "--", "-P"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    check_project(&f.work().join("-P"), "-P");
+    assert_eq!(f.in_work(), vec!["-P".to_owned()]);
+}
+
+#[test]
+fn new_a_bad_name_fails_with_one_line_and_writes_nothing() {
+    let f = Fixture::new("name");
+    f.good();
+    for name in [
+        "pipes",
+        "Pipes",
+        "TOOLONGNM",
+        "PI.PES",
+        "PI~1",
+        "PI PES",
+        "É",
+    ] {
+        let d = refused(&f, "holotape-c", name, "new: name", 3);
+        assert!(!d.is_empty());
+    }
+    // Without --json: one line on standard error, nothing on standard
+    // output.
+    let o = f.robco(&["new", "holotape-c", "pipes"]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(o.stdout.is_empty());
+    let e = String::from_utf8(o.stderr).unwrap();
+    assert_eq!(e.lines().count(), 1, "{e}");
+    assert!(e.starts_with("new: name: "), "{e}");
+}
+
+#[test]
+fn new_a_folder_that_is_not_empty_fails_and_is_kept() {
+    let f = Fixture::new("exists");
+    f.good();
+    f.put("work/PIPES/mine.c", b"mine");
+    refused(&f, "holotape-c", "PIPES", "new: exists", 3);
+    assert_eq!(fs::read(f.work().join("PIPES/mine.c")).unwrap(), b"mine");
+    // A file of that name is no folder.
+    f.put("work/FILE", b"x");
+    refused(&f, "holotape-c", "FILE", "new: exists", 3);
+}
+
+#[test]
+fn new_an_unknown_template_fails_and_lists_the_ids() {
+    let f = Fixture::new("template");
+    f.good();
+    let d = refused(&f, "holotape-rust", "PIPES", "new: template", 3);
+    assert!(d.contains("holotape-c"), "{d}");
+}
+
+#[test]
+fn new_no_package_is_templates_none() {
+    let f = Fixture::new("none");
+    let d = refused(&f, "holotape-c", "PIPES", "templates: none", 4);
+    assert!(d.ends_with("run robco sdk install templates"), "{d}");
+    // A folder whose install did not end holds no package.
+    f.good();
+    fs::remove_file(f.pkg().join(".robco-archive")).unwrap();
+    refused(&f, "holotape-c", "PIPES", "templates: none", 4);
+}
+
+#[test]
+fn new_the_checks_come_in_the_order_of_the_spec() {
+    let f = Fixture::new("order");
+    // 1 before 2: a bad name and no package.
+    refused(&f, "holotape-c", "pipes", "new: name", 3);
+    f.installed(&TEMPLATES_JSON.replace("\"format\": 1", "\"format\": 2"));
+    f.put("work/PIPES/x", b"x");
+    // 4 before 5 and 7.
+    refused(&f, "nope", "PIPES", "templates: format", 4);
+    // 5 before 7.
+    let f = Fixture::new("order2");
+    f.good();
+    f.put("work/PIPES/x", b"x");
+    refused(&f, "nope", "PIPES", "new: template", 3);
+    // 6 before 7.
+    fs::write(
+        f.pkg().join("holotape-c/robco.toml"),
+        ROBCO_TOML.replace("title = \"@NAME@\"", "title = \"@TITLE@\""),
+    )
+    .unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: token", 4);
+    assert!(d.contains("robco.toml") && d.contains("@TITLE@"), "{d}");
+}
+
+#[test]
+fn new_a_bad_sdk_json_is_a_package_error() {
+    let f = Fixture::new("sdk");
+    f.good();
+    let sdk = f.pkg().join("sdk.json");
+    let good = fs::read_to_string(&sdk).unwrap();
+    fs::write(&sdk, "not json").unwrap();
+    refused(&f, "holotape-c", "PIPES", "package: manifest", 4);
+    fs::write(&sdk, good.replace("\"scenario\":1", "\"scenario\":2")).unwrap();
+    refused(&f, "holotape-c", "PIPES", "package: format", 4);
+    fs::write(
+        &sdk,
+        good.replace("\"name\":\"templates\"", "\"name\":\"pipos\""),
+    )
+    .unwrap();
+    refused(&f, "holotape-c", "PIPES", "package: manifest", 4);
+    fs::remove_file(&sdk).unwrap();
+    refused(&f, "holotape-c", "PIPES", "package: manifest", 4);
+}
+
+/// `sdk.json` and `templates.json` that are a folder, too large or, on
+/// Unix, a link: each file fails under its own code.
+#[test]
+fn new_a_package_list_that_is_not_a_regular_file_fails_under_its_own_code() {
+    use studio_core::install::{MAX_MANIFEST, MAX_TEMPLATES_LIST};
+    for (file, code, max) in [
+        ("sdk.json", "package: manifest", MAX_MANIFEST),
+        ("templates.json", "templates: manifest", MAX_TEMPLATES_LIST),
+    ] {
+        // A folder.
+        let f = Fixture::new("list-dir");
+        f.good();
+        let p = f.pkg().join(file);
+        fs::remove_file(&p).unwrap();
+        fs::create_dir(&p).unwrap();
+        refused(&f, "holotape-c", "PIPES", code, 4);
+        // Over its limit.
+        let f = Fixture::new("list-big");
+        f.good();
+        let p = f.pkg().join(file);
+        fs::write(&p, vec![b' '; usize::try_from(max + 1).unwrap()]).unwrap();
+        let d = refused(&f, "holotape-c", "PIPES", code, 4);
+        assert!(d.contains(&format!("larger than {max} bytes")), "{d}");
+        // A link to a good copy.
+        #[cfg(unix)]
+        {
+            let f = Fixture::new("list-link");
+            f.good();
+            let p = f.pkg().join(file);
+            let copy = f.dir.join("outside").join(file);
+            fs::create_dir_all(copy.parent().unwrap()).unwrap();
+            fs::rename(&p, &copy).unwrap();
+            std::os::unix::fs::symlink(&copy, &p).unwrap();
+            refused(&f, "holotape-c", "PIPES", code, 4);
+        }
+    }
+}
+
+#[test]
+fn new_each_bad_templates_json_is_refused() {
+    let bad_paths = [
+        "../../../escape",
+        "/etc/passwd",
+        "src/../../x",
+        "C:/x",
+        "a\\\\b",
+        "-rf",
+        "src/x:y.c",
+        "NUL",
+        "src/con.c",
+        "",
+        "src//x",
+        "src/@NAME@.c",
+    ];
+    let mut cases: Vec<(String, &str)> = vec![
+        ("[]".to_owned(), "templates: manifest"),
+        ("{".to_owned(), "templates: manifest"),
+        (TEMPLATES_JSON.replace("\"format\": 1", "\"format\": 0"), "templates: format"),
+        (TEMPLATES_JSON.replace("\"format\": 1,", ""), "templates: format"),
+        (TEMPLATES_JSON.replace("\"format\": 1", "\"format\": 2"), "templates: format"),
+        (TEMPLATES_JSON.replace("\"format\": 1,", "\"format\": 1, \"x\": 1,"), "templates: manifest"),
+        (TEMPLATES_JSON.replace("\"kind\": \"holotape\"", "\"kind\": \"rom\""), "templates: manifest"),
+        (TEMPLATES_JSON.replace("\"kind\": \"holotape\",", "\"kind\": \"holotape\", \"extra\": 1,"), "templates: manifest"),
+        (TEMPLATES_JSON.replace("\"Holotape in C\"", "\"\""), "templates: manifest"),
+        (TEMPLATES_JSON.replace("\"Holotape in C\"", "1"), "templates: manifest"),
+        (TEMPLATES_JSON.replace("\"id\": \"holotape-c\"", "\"id\": \"Holotape-C\""), "templates: manifest"),
+        (TEMPLATES_JSON.replace("\"substitute\": true", "\"substitute\": \"yes\""), "templates: manifest"),
+        // Not sorted.
+        (
+            TEMPLATES_JSON.replace(
+                "{\"path\": \"icon.pbm\", \"substitute\": false},\n        {\"path\": \"robco.toml\", \"substitute\": true},",
+                "{\"path\": \"robco.toml\", \"substitute\": true},\n        {\"path\": \"icon.pbm\", \"substitute\": false},",
+            ),
+            "templates: manifest",
+        ),
+        // Listed and not held.
+        (
+            TEMPLATES_JSON.replace(
+                "{\"path\": \"tests/start.toml\", \"substitute\": false}",
+                "{\"path\": \"tests/start.toml\", \"substitute\": false},\n        {\"path\": \"zz.c\", \"substitute\": false}",
+            ),
+            "templates: manifest",
+        ),
+        // Held and not listed.
+        (
+            TEMPLATES_JSON.replace(
+                "{\"path\": \"icon.pbm\", \"substitute\": false},\n",
+                "",
+            ),
+            "templates: manifest",
+        ),
+        // Two paths that differ only in case.
+        (
+            TEMPLATES_JSON.replace(
+                "{\"path\": \"icon.pbm\", \"substitute\": false},",
+                "{\"path\": \"ICON.PBM\", \"substitute\": false},\n        {\"path\": \"icon.pbm\", \"substitute\": false},",
+            ),
+            "templates: manifest",
+        ),
+    ];
+    for p in bad_paths {
+        cases.push((
+            TEMPLATES_JSON.replace(
+                "{\"path\": \"icon.pbm\", \"substitute\": false},",
+                &format!("{{\"path\": \"{p}\", \"substitute\": false}},\n        {{\"path\": \"icon.pbm\", \"substitute\": false}},"),
+            ),
+            "templates: manifest",
+        ));
+    }
+    for (i, (text, code)) in cases.iter().enumerate() {
+        let f = Fixture::new(&format!("tj{i}"));
+        f.installed(text);
+        let before = fs::read_dir(f.dir.clone()).unwrap().count();
+        let d = refused(&f, "holotape-c", "PIPES", code, 4);
+        assert!(!d.is_empty(), "case {i}");
+        assert_eq!(fs::read_dir(f.dir.clone()).unwrap().count(), before);
+        assert!(!f.dir.join("escape").exists() && !f.dir.join("x").exists());
+    }
+    // No templates.json.
+    let f = Fixture::new("tj-missing");
+    f.good();
+    fs::remove_file(f.pkg().join("templates.json")).unwrap();
+    refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+}
+
+#[test]
+fn new_a_substitute_file_keeps_its_line_ends() {
+    let f = Fixture::new("crlf");
+    f.good();
+    let crlf = ROBCO_TOML.replace('\n', "\r\n");
+    fs::write(f.pkg().join("holotape-c/robco.toml"), &crlf).unwrap();
+    let o = f.robco(&["new", "holotape-c", "PIPES"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        fs::read_to_string(f.work().join("PIPES/robco.toml")).unwrap(),
+        crlf.replace("@NAME@", "PIPES")
+    );
+    // A non-substitute file keeps even a token as it is.
+    assert_eq!(
+        fs::read(f.work().join("PIPES/tests/golden/start/ready.png")).unwrap(),
+        READY_PNG
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn new_a_link_in_the_package_is_refused() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new("link");
+    f.good();
+    f.put("outside/secret", b"secret");
+    let file = f.pkg().join("holotape-c/src/main.c");
+    fs::remove_file(&file).unwrap();
+    symlink(f.dir.join("outside/secret"), &file).unwrap();
+    refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    // A folder that is a link.
+    let f = Fixture::new("link-dir");
+    f.good();
+    f.put("outside/main.c", MAIN_C.as_bytes());
+    let src = f.pkg().join("holotape-c/src");
+    fs::remove_dir_all(&src).unwrap();
+    symlink(f.dir.join("outside"), &src).unwrap();
+    refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    // templates.json as a link.
+    let f = Fixture::new("link-list");
+    f.good();
+    let list = f.pkg().join("templates.json");
+    f.put("outside/templates.json", TEMPLATES_JSON.as_bytes());
+    fs::remove_file(&list).unwrap();
+    symlink(f.dir.join("outside/templates.json"), &list).unwrap();
+    refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+}
+
+#[cfg(unix)]
+#[test]
+fn new_a_target_that_is_a_link_is_not_written_through() {
+    let f = Fixture::new("target-link");
+    f.good();
+    fs::create_dir_all(f.dir.join("outside")).unwrap();
+    std::os::unix::fs::symlink(f.dir.join("outside"), f.work().join("PIPES")).unwrap();
+    refused(&f, "holotape-c", "PIPES", "new: exists", 3);
+    assert_eq!(fs::read_dir(f.dir.join("outside")).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn new_a_folder_the_host_will_not_write_is_io_write_and_leaves_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("readonly");
+    f.good();
+    let w = f.work();
+    fs::set_permissions(&w, fs::Permissions::from_mode(0o555)).unwrap();
+    let writable = fs::create_dir(w.join("probe")).is_ok();
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    let _ = fs::remove_dir(w.join("probe"));
+    fs::set_permissions(&w, fs::Permissions::from_mode(0o755)).unwrap();
+    if writable {
+        println!("skipped: this process writes in a read-only folder");
+        return;
+    }
+    let (code, _, exit) = failure(&o);
+    assert_eq!((code.as_str(), exit), ("io: write", 9));
+    assert!(f.in_work().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn new_a_package_file_the_host_will_not_read_is_io_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("partway");
+    f.good();
+    let png = f.pkg().join("holotape-c/tests/golden/start/ready.png");
+    fs::set_permissions(&png, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::File::open(&png).is_ok();
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    fs::set_permissions(&png, fs::Permissions::from_mode(0o644)).unwrap();
+    if readable {
+        println!("skipped: this process reads a file without read permission");
+        return;
+    }
+    // A file the host will not read is io: read, before anything is
+    // written.
+    let (code, detail, exit) = failure(&o);
+    assert_eq!((code.as_str(), exit), ("io: read", 9), "{detail}");
+    assert!(f.in_work().is_empty());
+}
+
+#[test]
+fn new_a_real_templates_package_writes_a_project() {
+    let Some(zip) = std::env::var_os("ROBCO_TEST_TEMPLATES") else {
+        eprintln!("skipped: no ROBCO_TEST_TEMPLATES");
+        return;
+    };
+    let f = Fixture::new("real");
+    f.index(&fs::read(zip).unwrap());
+    let o = f.robco(&["sdk", "install", "templates", "--index", "../index.json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    let toml = fs::read(f.work().join("PIPES/robco.toml")).unwrap();
+    assert_eq!(toml, ROBCO_TOML.replace("@NAME@", "PIPES").into_bytes());
+    studio_core::manifest::parse(&toml).unwrap();
+}
+
+/// Writes an index of the `pipos` package, the gcc archive and an empty
+/// `qemu` archive, as `tests/build.rs` does.
+fn pipos_index(f: &Fixture, pkg: &[u8], gcc: &[u8], gcc_root: &str) {
+    let host = studio_core::resolve::running_host().expect("a host the index names");
+    let sdk = sdk_json_of(pkg);
+    let tool = |n: usize| sdk["tools"][n]["version"].as_str().unwrap().to_owned();
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    z.add_directory("bin/", SimpleFileOptions::default())
+        .unwrap();
+    let qemu = z.finish().unwrap().into_inner();
+    f.put("archives/pipos.zip", pkg);
+    f.put("archives/gcc.archive", gcc);
+    f.put("archives/qemu.zip", &qemu);
+    let archive = |url: &str, b: &[u8], root: &str| json!({host: {"url": url, "size": b.len(), "sha256": sha256_hex(b), "root": root}});
+    let index = json!({
+        "format": 1,
+        "packages": [{
+            "name": sdk["name"], "version": sdk["version"], "abi": sdk["abi"],
+            "requires": sdk["requires"], "tools": sdk["tools"], "formats": sdk["formats"],
+            "url": "archives/pipos.zip", "size": pkg.len(), "sha256": sha256_hex(pkg)
+        }],
+        "tools": [
+            {"name": "gcc", "version": tool(0), "archives": archive("archives/gcc.archive", gcc, gcc_root)},
+            {"name": "qemu", "version": tool(1), "archives": archive("archives/qemu.zip", &qemu, "")}
+        ]
+    });
+    f.put("index.json", index.to_string().as_bytes());
+}
+
+#[test]
+fn new_the_new_project_builds() {
+    let (Some(pkg), Some(gcc)) = (
+        std::env::var_os("ROBCO_TEST_PIPOS"),
+        std::env::var_os("ROBCO_TEST_GCC"),
+    ) else {
+        assert!(
+            std::env::var("ROBCO_TEST_REQUIRE_BUILD").as_deref() != Ok("1"),
+            "ROBCO_TEST_REQUIRE_BUILD is 1 and ROBCO_TEST_PIPOS or ROBCO_TEST_GCC is not set"
+        );
+        eprintln!("skipped: no ROBCO_TEST_PIPOS or ROBCO_TEST_GCC");
+        return;
+    };
+    let root = std::env::var("ROBCO_TEST_GCC_ROOT").unwrap_or_default();
+    let f = Fixture::new("builds");
+    // The real templates package when there is one, else the test's.
+    match std::env::var_os("ROBCO_TEST_TEMPLATES") {
+        Some(t) => {
+            let zip = fs::read(t).unwrap();
+            let files = sdk_json_of(&zip);
+            assert_eq!(files["name"], "templates");
+            let mut z = zip::ZipArchive::new(Cursor::new(&zip)).unwrap();
+            z.extract(f.pkg()).unwrap();
+            fs::write(
+                f.pkg().join(".robco-archive"),
+                format!("{}\n", sha256_hex(&zip)),
+            )
+            .unwrap();
+        }
+        None => f.good(),
+    }
+    let o = f.robco(&["new", "holotape-c", "PIPES"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    pipos_index(&f, &fs::read(pkg).unwrap(), &fs::read(gcc).unwrap(), &root);
+    let o = f.robco_in(
+        &f.work().join("PIPES"),
+        &["build", "--index", "../../index.json", "--json"],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    let tape = fs::read(f.work().join("PIPES/build/PIPES.HTP")).unwrap();
+    assert_eq!(&tape[0x20..0x28], b"ROBCO78\0");
+}
+
+/// A template that lists a path only the tool writes: the lock, the build
+/// folder or a path under it, in any case. The package holds each file, so
+/// only the reserved-path rule can refuse it.
+#[test]
+fn new_a_template_that_lists_a_reserved_path_is_refused() {
+    for path in ["build/x", "robco.lock", "ROBCO.LOCK", "Build/x"] {
+        let f = Fixture::new("reserved");
+        let entry = format!("{{\"path\": \"{path}\", \"substitute\": false}},\n        ");
+        // Sorted in byte order: upper case names come first.
+        let text = if path.as_bytes()[0] < b'i' {
+            TEMPLATES_JSON.replacen(
+                "{\"path\": \"icon.pbm\"",
+                &format!("{entry}{{\"path\": \"icon.pbm\""),
+                1,
+            )
+        } else {
+            TEMPLATES_JSON.replacen(
+                "{\"path\": \"src/main.c\"",
+                &format!("{entry}{{\"path\": \"src/main.c\""),
+                1,
+            )
+        };
+        f.installed(&text);
+        f.put(
+            &format!("cache/packages/templates/0.1.0/holotape-c/{path}"),
+            b"x",
+        );
+        let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+        assert!(
+            d.contains(path) && d.contains("only the tool writes"),
+            "{d}"
+        );
+    }
+}
+
+/// A template without `robco.toml` at its root writes no project.
+#[test]
+fn new_a_template_without_robco_toml_is_refused() {
+    let f = Fixture::new("no-toml");
+    f.installed(&TEMPLATES_JSON.replace("{\"path\": \"robco.toml\", \"substitute\": true},\n", ""));
+    fs::remove_file(f.pkg().join("holotape-c/robco.toml")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("robco.toml"), "{d}");
+}
+
+/// A package zip whose `sdk.json` is padded with spaces to `size` bytes.
+fn padded_zip(size: u64) -> Vec<u8> {
+    let files = package_files(TEMPLATES_JSON);
+    let mut sdk = sdk_json(&files).to_string().into_bytes();
+    sdk.resize(usize::try_from(size).unwrap(), b' ');
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let o = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    z.start_file("sdk.json", o).unwrap();
+    z.write_all(&sdk).unwrap();
+    for (p, b) in &files {
+        z.start_file(p.as_str(), o).unwrap();
+        z.write_all(b).unwrap();
+    }
+    z.finish().unwrap().into_inner()
+}
+
+/// The installer and `robco new` share one limit for `sdk.json`: a file of
+/// exactly that size installs and writes a project, one byte more is
+/// refused by both.
+#[test]
+fn new_and_install_agree_on_the_sdk_json_limit() {
+    let max = studio_core::install::MAX_MANIFEST;
+    let f = Fixture::new("sdk-limit");
+    f.index(&padded_zip(max));
+    let o = f.robco(&["sdk", "install", "templates", "--index", "../index.json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(fs::metadata(f.pkg().join("sdk.json")).unwrap().len(), max);
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+
+    let f = Fixture::new("sdk-over");
+    f.index(&padded_zip(max + 1));
+    let o = f.robco(&[
+        "sdk",
+        "install",
+        "templates",
+        "--index",
+        "../index.json",
+        "--json",
+    ]);
+    assert_eq!(failure(&o).0, "package: manifest");
+    // The same file put in the cache by hand.
+    f.good();
+    let sdk = f.pkg().join("sdk.json");
+    let mut b = fs::read(&sdk).unwrap();
+    b.resize(usize::try_from(max + 1).unwrap(), b' ');
+    fs::write(&sdk, b).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "package: manifest", 4);
+    assert!(d.contains(&max.to_string()), "{d}");
+}
+
+/// A `packages` folder the host will not search is `io: read`, not
+/// `templates: none`: the package may be there.
+#[cfg(unix)]
+#[test]
+fn new_a_cache_folder_the_host_will_not_read_is_io_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("cache-000");
+    f.good();
+    let packages = f.cache().join("packages");
+    fs::set_permissions(&packages, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::read_dir(packages.join("templates")).is_ok();
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    fs::set_permissions(&packages, fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        println!("skipped: this process reads a folder without permission");
+        return;
+    }
+    let (code, detail, exit) = failure(&o);
+    assert_eq!((code.as_str(), exit), ("io: read", 9), "{detail}");
+    assert!(detail.contains("packages"), "{detail}");
+    assert!(f.in_work().is_empty());
+}
+
+#[test]
+fn new_json_after_double_dash_is_a_plain_argument() {
+    let f = Fixture::new("dashjson");
+    f.good();
+    // After `--`, `--json` is the name: the plain error form.
+    let o = f.robco(&["new", "holotape-c", "--", "--json"]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(o.stdout.is_empty());
+    let e = String::from_utf8(o.stderr).unwrap();
+    assert_eq!(e.lines().count(), 1, "{e}");
+    assert!(e.starts_with("new: name: "), "{e}");
+    // Before `--`, `--json` asks for JSON lines.
+    let o = f.robco(&["new", "--json", "holotape-c", "--", "-x"]);
+    let (code, _, exit) = failure(&o);
+    assert_eq!((code.as_str(), exit), ("new: name", 3));
+    assert!(o.stderr.is_empty());
+    assert!(f.in_work().is_empty());
+}
+
+/// A package that breaks "Layout of templates": `extra` is added to the
+/// files of the good package, listed in `sdk.json`.
+fn layout_cases() -> Vec<(&'static str, String)> {
+    vec![
+        ("README.txt", "README.txt".to_owned()),
+        ("unlisted", "holotape-b/robco.toml".to_owned()),
+        ("licence", "LICENSES/OTHER.txt".to_owned()),
+    ]
+}
+
+#[test]
+fn sdk_install_refuses_a_templates_package_outside_its_layout() {
+    for (tag, extra) in layout_cases() {
+        let f = Fixture::new(&format!("inst-{tag}"));
+        let mut files = package_files(TEMPLATES_JSON);
+        files.push((extra.clone(), b"extra\n".to_vec()));
+        files.sort();
+        f.index(&package_zip(&files));
+        let o = f.robco(&[
+            "sdk",
+            "install",
+            "templates",
+            "--index",
+            "../index.json",
+            "--json",
+        ]);
+        let (code, detail, _) = failure(&o);
+        assert_eq!(code, "package: manifest", "{tag}: {detail}");
+        assert!(detail.contains(&extra), "{tag}: {detail}");
+        assert!(!f.pkg().exists(), "{tag}");
+    }
+}
+
+#[test]
+fn new_refuses_a_cached_package_outside_its_layout() {
+    for (tag, extra) in layout_cases() {
+        let f = Fixture::new(&format!("cache-{tag}"));
+        f.good();
+        f.put(
+            &format!("cache/packages/templates/0.1.0/{extra}"),
+            b"extra\n",
+        );
+        let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+        let root = extra.split('/').next().unwrap();
+        let named = if tag == "licence" {
+            extra.as_str()
+        } else {
+            root
+        };
+        assert!(d.contains(named), "{tag}: {d}");
+    }
+    // An extra folder at the root, empty, is refused too.
+    let f = Fixture::new("cache-dir");
+    f.good();
+    fs::create_dir_all(f.pkg().join("docs")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("docs"), "{d}");
+    // A missing licence file is refused.
+    let f = Fixture::new("cache-nolicence");
+    f.good();
+    fs::remove_file(f.pkg().join("LICENSES/MIT.txt")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("LICENSES/MIT.txt"), "{d}");
+    // A listed template whose folder is missing is still refused.
+    let f = Fixture::new("cache-nofolder");
+    f.good();
+    fs::remove_dir_all(f.pkg().join("holotape-c")).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("holotape-c/"), "{d}");
+}
+
+/// `templates.json` with two more files whose folders differ only in case.
+fn folder_case_json() -> String {
+    TEMPLATES_JSON.replace(
+        "{\"path\": \"icon.pbm\", \"substitute\": false},",
+        "{\"path\": \"A/foo.c\", \"substitute\": false},\n        {\"path\": \"a/bar.c\", \"substitute\": false},\n        {\"path\": \"icon.pbm\", \"substitute\": false},",
+    )
+}
+
+/// Two listed files whose folders differ only in case are refused, on a
+/// file system that folds case as on one that does not: the folder check
+/// comes before the files on disk.
+#[test]
+fn new_refuses_folders_that_differ_only_in_case() {
+    let f = Fixture::new("foldcase");
+    f.installed(&folder_case_json());
+    f.put("cache/packages/templates/0.1.0/holotape-c/A/foo.c", b"x\n");
+    f.put("cache/packages/templates/0.1.0/holotape-c/a/bar.c", b"y\n");
+    let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
+    assert!(d.contains("only in case"), "{d}");
+}
+
+#[test]
+fn sdk_install_refuses_folders_that_differ_only_in_case() {
+    let f = Fixture::new("inst-foldcase");
+    let mut files = package_files(&folder_case_json());
+    files.push(("holotape-c/A/foo.c".into(), b"x\n".to_vec()));
+    files.push(("holotape-c/a/bar.c".into(), b"y\n".to_vec()));
+    files.sort();
+    f.index(&package_zip(&files));
+    let o = f.robco(&[
+        "sdk",
+        "install",
+        "templates",
+        "--index",
+        "../index.json",
+        "--json",
+    ]);
+    let (code, detail, _) = failure(&o);
+    assert_eq!(code, "package: archive", "{detail}");
+    assert!(detail.contains("only in case"), "{detail}");
+    assert!(!f.pkg().exists());
+}
+
+/// Old versions whose record cannot be read do not hide the newest
+/// finished install, whatever order the folder listing gives. Twenty old
+/// versions make an order with an old one first all but certain, so the
+/// test fails when the walk reads them.
+#[cfg(unix)]
+#[test]
+fn new_an_old_unreadable_install_does_not_hide_a_newer_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("old-000");
+    f.good();
+    let root = f.cache().join("packages/templates");
+    let old: Vec<PathBuf> = (0..20).map(|i| root.join(format!("0.0.{i}"))).collect();
+    for d in &old {
+        fs::create_dir_all(d).unwrap();
+        fs::set_permissions(d, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let readable = fs::symlink_metadata(old[0].join(".robco-archive")).is_ok();
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    for d in &old {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    if readable {
+        println!("skipped: this process reads a folder without permission");
+        return;
+    }
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    check_project(&f.work().join("PIPES"), "PIPES");
+}
+
+/// A package for the table: its files but `sdk.json`, its folder entries,
+/// and the size `sdk.json` is padded to.
+#[derive(Clone)]
+struct Pkg {
+    files: Vec<(String, Vec<u8>)>,
+    dirs: Vec<String>,
+    pad: Option<u64>,
+    /// Top-level fields of `sdk.json` set to another value.
+    sdk_set: Vec<(&'static str, Value)>,
+}
+
+impl Pkg {
+    fn json(json: &str) -> Self {
+        Self {
+            files: package_files(json),
+            dirs: Vec::new(),
+            pad: None,
+            sdk_set: Vec::new(),
+        }
+    }
+    fn spec() -> Self {
+        Self::json(TEMPLATES_JSON)
+    }
+    /// The spec's example with `from` replaced by `to` in `templates.json`.
+    fn edit(from: &str, to: &str) -> Self {
+        assert!(TEMPLATES_JSON.contains(from), "{from}");
+        Self::json(&TEMPLATES_JSON.replacen(from, to, 1))
+    }
+    fn with(mut self, path: &str, bytes: &[u8]) -> Self {
+        self.files.push((path.into(), bytes.to_vec()));
+        self.files.sort();
+        self
+    }
+    fn without(mut self, path: &str) -> Self {
+        self.files.retain(|(p, _)| p != path);
+        self
+    }
+    fn dir(mut self, path: &str) -> Self {
+        self.dirs.push(path.into());
+        self
+    }
+    fn pad(mut self, size: u64) -> Self {
+        self.pad = Some(size);
+        self
+    }
+    fn set(mut self, field: &'static str, v: Value) -> Self {
+        self.sdk_set.push((field, v));
+        self
+    }
+    fn sdk(&self) -> Vec<u8> {
+        let mut v = sdk_json(&self.files);
+        for (k, x) in &self.sdk_set {
+            v[*k] = x.clone();
+        }
+        let mut b = v.to_string().into_bytes();
+        if let Some(n) = self.pad {
+            b.resize(usize::try_from(n).unwrap(), b' ');
+        }
+        b
+    }
+    fn zip(&self) -> Vec<u8> {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let o = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        z.start_file("sdk.json", o).unwrap();
+        z.write_all(&self.sdk()).unwrap();
+        for d in &self.dirs {
+            z.add_directory(d.as_str(), o).unwrap();
+        }
+        for (p, b) in &self.files {
+            z.start_file(p.as_str(), o).unwrap();
+            z.write_all(b).unwrap();
+        }
+        z.finish().unwrap().into_inner()
+    }
+    /// Puts the package in the cache by hand, as a finished install.
+    fn place(&self, f: &Fixture) {
+        let pkg = f.pkg();
+        for d in &self.dirs {
+            fs::create_dir_all(pkg.join(d)).unwrap();
+        }
+        for (p, b) in &self.files {
+            let at = pkg.join(p);
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::write(at, b).unwrap();
+        }
+        fs::write(pkg.join("sdk.json"), self.sdk()).unwrap();
+        fs::write(pkg.join(".robco-archive"), format!("{}\n", "a".repeat(64))).unwrap();
+    }
+}
+
+/// `TEMPLATES_JSON` with a second template, `holotape-b`, before it.
+fn two_ids_json() -> String {
+    TEMPLATES_JSON.replacen(
+        "  \"templates\": [\n    {",
+        "  \"templates\": [\n    {\"id\": \"holotape-b\", \"title\": \"B\", \"description\": \"B.\", \"kind\": \"holotape\", \"files\": [{\"path\": \"robco.toml\", \"substitute\": true}]},\n    {",
+        1,
+    )
+}
+
+/// `TEMPLATES_JSON` with only `robco.toml`: the real shape at its smallest.
+fn one_file_json() -> String {
+    let mut s = TEMPLATES_JSON.to_owned();
+    for p in ["icon.pbm", "src/main.c", "tests/golden/start/ready.png"] {
+        s = s.replacen(
+            &format!("        {{\"path\": \"{p}\", \"substitute\": false}},\n"),
+            "",
+            1,
+        );
+    }
+    s.replacen(
+        ",\n        {\"path\": \"tests/start.toml\", \"substitute\": false}",
+        "",
+        1,
+    )
+}
+
+/// The table: a name, a package, and whether it is valid. One row per case.
+#[rustfmt::skip]
+fn verdict_cases() -> Vec<(&'static str, Pkg, bool)> {
+    let one = Pkg::json(&one_file_json()).without("holotape-c/icon.pbm").without("holotape-c/src/main.c").without("holotape-c/tests/golden/start/ready.png").without("holotape-c/tests/start.toml");
+    let max = studio_core::install::MAX_MANIFEST;
+    vec![
+        ("spec example", Pkg::spec(), true),
+        ("spec example with folders", Pkg::spec().dir("holotape-c/").dir("holotape-c/src/").dir("LICENSES/"), true),
+        ("one template, one file", one, true),
+        ("sdk.json at its limit", Pkg::spec().pad(max), true),
+        ("id with no folder", Pkg::json(&two_ids_json()), false),
+        ("extra root file", Pkg::spec().with("README.txt", b"x\n"), false),
+        ("extra root folder", Pkg::spec().dir("docs/"), false),
+        ("unlisted template folder", Pkg::spec().with("holotape-b/robco.toml", b"x\n"), false),
+        ("unlisted template file", Pkg::spec().with("holotape-c/notes.txt", b"x\n"), false),
+        ("empty folder in a template", Pkg::spec().dir("holotape-c/empty/"), false),
+        ("folders differ by case", Pkg::json(&folder_case_json()).with("holotape-c/A/foo.c", b"x\n").with("holotape-c/a/bar.c", b"y\n"), false),
+        ("reserved path", Pkg::edit("{\"path\": \"src/main.c\"", "{\"path\": \"build/x\", \"substitute\": false},\n        {\"path\": \"src/main.c\"").with("holotape-c/build/x", b"x\n"), false),
+        ("sdk.json over its limit", Pkg::spec().pad(max + 1), false),
+        ("extra licence", Pkg::spec().with("LICENSES/OTHER.txt", b"x\n"), false),
+        ("no licence", Pkg::spec().without("LICENSES/MIT.txt"), false),
+        ("listed file absent", Pkg::spec().without("holotape-c/icon.pbm"), false),
+        ("unknown field", Pkg::edit("\"kind\": \"holotape\",", "\"kind\": \"holotape\", \"x\": 1,"), false),
+        ("token in a path", Pkg::edit("\"icon.pbm\"", "\"@NAME@.pbm\"").without("holotape-c/icon.pbm").with("holotape-c/@NAME@.pbm", b"x\n"), false),
+        ("licences by folder, all MIT", Pkg::spec().set("licences", json!([{"paths": ["holotape-c/", "LICENSES/", "templates.json"], "spdx": "MIT"}])), true),
+        ("requires nonempty", Pkg::spec().set("requires", json!([{"name": "pipos", "abi": "1.3"}])), false),
+        ("licence not MIT", Pkg::spec().set("licences", json!([{"paths": [""], "spdx": "GPL-3.0-only"}])), false),
+        ("a path no licence covers", Pkg::spec().set("licences", json!([{"paths": ["holotape-c/", "LICENSES/"], "spdx": "MIT"}])), false),
+        ("abi present", Pkg::spec().set("abi", json!("0.1")), false),
+        ("built_from other repo", Pkg::spec().set("built_from", json!([{"repo": "Pip-OS", "commit": "3333333333333333333333333333333333333333"}])), false),
+    ]
+}
+
+/// The installer and `robco new` give one verdict on each package of the
+/// table: both accept it, or both refuse it. `new` reads the package put
+/// in the cache by hand, as an older installer may have left it.
+#[test]
+fn install_and_new_agree_on_every_package() {
+    let mut wrong = Vec::new();
+    for (tag, p, valid) in verdict_cases() {
+        let f = Fixture::new("verdict");
+        f.index(&p.zip());
+        let o = f.robco(&[
+            "sdk",
+            "install",
+            "templates",
+            "--index",
+            "../index.json",
+            "--json",
+        ]);
+        if (o.status.code() == Some(0)) != valid || f.pkg().exists() != valid {
+            wrong.push(format!("install, {tag}"));
+        }
+
+        let f = Fixture::new("verdict");
+        p.place(&f);
+        let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+        if (o.status.code() == Some(0)) != valid || f.in_work().is_empty() == valid {
+            wrong.push(format!("new, {tag}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The finding: a `templates.json` that declares a template the archive
+/// does not hold. The installer refuses it and records nothing, so the
+/// fixed package installs next. The same package left in the cache by an
+/// older installer is refused by `new`, with the way to replace it.
+#[test]
+fn a_declared_template_without_files_is_refused_end_to_end() {
+    let bad = Pkg::json(&two_ids_json());
+    let f = Fixture::new("finding");
+    f.index(&bad.zip());
+    let o = f.robco(&[
+        "sdk",
+        "install",
+        "templates",
+        "--index",
+        "../index.json",
+        "--json",
+    ]);
+    let (code, detail, _) = failure(&o);
+    assert_eq!(code, "package: manifest", "{detail}");
+    assert!(detail.contains("holotape-b/"), "{detail}");
+    assert!(!f.pkg().exists());
+    f.index(&Pkg::spec().zip());
+    let o = f.robco(&["sdk", "install", "templates", "--index", "../index.json"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        f.robco(&["new", "holotape-c", "PIPES"]).status.code(),
+        Some(0)
+    );
+
+    let f = Fixture::new("finding-old");
+    bad.place(&f);
+    for id in ["holotape-b", "holotape-c"] {
+        let d = refused(&f, id, "PIPES", "templates: manifest", 4);
+        let pkg = f.pkg().display().to_string();
+        assert!(d.contains("holotape-b/"), "{d}");
+        assert!(
+            d.contains("the installed package") && d.contains("not valid"),
+            "{d}"
+        );
+        assert!(d.contains(&format!("delete the folder {pkg}")), "{d}");
+        assert!(d.contains("robco sdk install templates"), "{d}");
+    }
+}
