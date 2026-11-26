@@ -385,10 +385,12 @@ fn replace_goes_forward_and_stops_at_the_last_match() {
     assert_eq!(h.state().editor.current().unwrap().text, "x aa b aa c aa\n");
 }
 
-/// At the smallest window the find bar lies inside the editor pane, between
-/// the Files pane and the Simulator.
+/// At every editor width the layout allows, from the widest down to the
+/// narrowest, each control of the find bar lies inside the editor pane,
+/// and each field keeps at least its smallest width.
 #[test]
 fn the_find_bar_fits_the_editor() {
+    use robco_studio::theme::size;
     let d = sample("findfit").unwrap();
     let mut h = harness(Some(&*d));
     open_main(&mut h);
@@ -397,29 +399,54 @@ fn the_find_bar_fits_the_editor() {
     h.state_mut().editor.find.query = "return".into();
     h.state_mut().editor.find.replace = "goto".into();
     h.run_steps(3);
-    let editor = h.state().place_rect(Place::Editor).unwrap();
-    let (left, right) = (editor.left(), editor.right());
-    for label in [
-        "Find",
-        "Replace with",
-        "Previous",
-        "Next",
-        "Replace",
-        "Replace all",
-        "Close find",
-        "1 matches",
-    ] {
-        for n in h.query_all_by_label(label) {
-            let r = n.rect();
-            if r.top() > 200.0 {
-                continue; // not the find bar
+    let mut widths = Vec::new();
+    let mut sim = size::SIM_W;
+    loop {
+        h.state_mut().layout.sim_w = sim;
+        h.run_steps(3);
+        let editor = h.state().place_rect(Place::Editor).unwrap();
+        widths.push(editor.width());
+        let (left, right) = (editor.left(), editor.right());
+        for label in [
+            "Find",
+            "Replace with",
+            "Previous",
+            "Next",
+            "Replace",
+            "Replace all",
+            "Close find",
+            "1 matches",
+        ] {
+            let mut seen = false;
+            for n in h.query_all_by_label(label) {
+                let r = n.rect();
+                if r.top() > editor.top() + 300.0 {
+                    continue; // not the find bar
+                }
+                seen = true;
+                assert!(
+                    r.left() > left && r.right() < right && r.width() > 0.0,
+                    "{label} {r:?} is not inside {left}..{right}"
+                );
+                // The node is the text inside the field's padding.
+                if n.accesskit_node().role() == Role::TextInput {
+                    assert!(
+                        r.width() >= size::FIND_MIN - size::UNIT * 4.0,
+                        "{label} {r:?} at {right}"
+                    );
+                }
             }
-            assert!(
-                r.left() > left && r.right() < right && r.width() > 0.0,
-                "{label} {r:?} is not inside {left}..{right}"
-            );
+            assert!(seen, "{label} at editor width {}", editor.width());
         }
+        // The layout clamps the simulator: once the editor stops shrinking,
+        // this is the narrowest editor.
+        if widths.len() > 1 && widths[widths.len() - 1] >= widths[widths.len() - 2] {
+            break;
+        }
+        sim += 20.0;
     }
+    let narrowest = widths.iter().copied().fold(f32::INFINITY, f32::min);
+    assert!(narrowest <= size::FILES_MIN + 1.0, "{widths:?}");
 }
 
 /// A project folder that is there but cannot be listed is reported at

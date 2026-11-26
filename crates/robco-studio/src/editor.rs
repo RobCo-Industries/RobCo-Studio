@@ -609,15 +609,7 @@ impl Editor {
         let Some(idx) = self.active else { return };
         let mut area = rect;
         if self.find.open {
-            let bar = Rect::from_min_max(
-                rect.left_top(),
-                egui::pos2(
-                    rect.right(),
-                    rect.top() + 2.0 * (size::CONTROL_H + size::UNIT),
-                ),
-            );
-            area.min.y = bar.bottom() + size::UNIT;
-            self.find_bar(kit, ui, bar);
+            area.min.y = self.find_bar(kit, ui, rect) + size::UNIT;
         }
         let locked = self.question.is_some();
         let doc = &mut self.docs[idx];
@@ -777,7 +769,8 @@ impl Editor {
         doc.caret = caret;
     }
 
-    fn find_bar(&mut self, kit: &Kit<'_>, ui: &mut egui::Ui, bar: Rect) {
+    /// Draw the find bar at the top of `area` and return its bottom.
+    fn find_bar(&mut self, kit: &Kit<'_>, ui: &mut egui::Ui, area: Rect) -> f32 {
         let p = kit.p();
         let ms = self.matches();
         let cur = self.current().map(|d| {
@@ -788,41 +781,6 @@ impl Editor {
         });
         let at = cur.and_then(|(s, e)| ms.iter().position(|m| m.start == s && m.end == e));
         let none = !self.find.query.is_empty() && ms.is_empty();
-        // Two rows, so the bar fits a narrow editor: find on the first,
-        // replace on the second. Each field takes what is left of its row.
-        let row_h = bar.height() / 2.0;
-        let rows = [
-            Rect::from_min_size(bar.min, egui::vec2(bar.width(), row_h)),
-            Rect::from_min_size(
-                egui::pos2(bar.left(), bar.top() + row_h),
-                egui::vec2(bar.width(), row_h),
-            ),
-        ];
-        let row = |ui: &mut egui::Ui, r: Rect| {
-            ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(r)
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-            )
-        };
-        let mut first = row(ui, rows[0]);
-        let mut second = row(ui, rows[1]);
-        let ui = &mut first;
-        if kit
-            .icon_button(ui, Icon::Close, "Close find", None)
-            .clicked()
-        {
-            self.find.open = false;
-        }
-        if kit
-            .button(ui, Button::quiet("Next").small().kind(ButtonKind::Quiet))
-            .clicked()
-        {
-            self.find_step(ui.ctx(), true);
-        }
-        if kit.button(ui, Button::quiet("Previous").small()).clicked() {
-            self.find_step(ui.ctx(), false);
-        }
         let tag = if none {
             "No match.".to_owned()
         } else if ms.is_empty() {
@@ -833,27 +791,89 @@ impl Editor {
                 None => format!("{} matches", ms.len()),
             }
         };
-        kit.text(ui, &tag, Type::Small, if none { p.alarm } else { p.dim });
-        let fid = Id::unique("find-query");
-        let w = size::FIND_W.min(ui.available_width()).max(0.0);
-        let r = kit.text_field(ui, fid, &mut self.find.query, "Find", "Find", w, none);
-        let ui2 = &mut second;
+        // Find on the first row, replace below it. Each field keeps at
+        // least `FIND_MIN`; the buttons that do not fit beside it wrap to
+        // further rows, so every control stays inside a narrow editor.
+        let gap = ui.spacing().item_spacing.x;
+        let button = |t: &str| kit.button_width(ui, &Button::quiet(t).small());
+        let tag_w = ui
+            .painter()
+            .layout_no_wrap(tag.clone(), kit.theme.font(Type::Small), p.dim)
+            .size()
+            .x;
+        let width = area.width();
+        let find_rows = pack(
+            &[
+                size::SMALL_H,
+                button("Next"),
+                button("Previous"),
+                if tag.is_empty() { 0.0 } else { tag_w },
+            ],
+            width,
+            gap,
+        );
+        let replace_rows = pack(&[button("Replace all"), button("Replace")], width, gap);
+        let n_find = find_rows.iter().max().map_or(1, |r| r + 1);
+        let n_replace = replace_rows.iter().max().map_or(1, |r| r + 1);
+        let row_h = size::CONTROL_H + size::UNIT;
+        let mut rows: Vec<egui::Ui> = (0..n_find + n_replace)
+            .map(|i| {
+                let r = Rect::from_min_size(
+                    egui::pos2(area.left(), area.top() + row_h * i as f32),
+                    egui::vec2(width, row_h),
+                );
+                ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(r)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                )
+            })
+            .collect();
         if kit
-            .button(ui2, Button::quiet("Replace all").small())
+            .icon_button(&mut rows[find_rows[0]], Icon::Close, "Close find", None)
+            .clicked()
+        {
+            self.find.open = false;
+        }
+        let ui = &mut rows[find_rows[1]];
+        if kit
+            .button(ui, Button::quiet("Next").small().kind(ButtonKind::Quiet))
+            .clicked()
+        {
+            self.find_step(ui.ctx(), true);
+        }
+        let ui = &mut rows[find_rows[2]];
+        if kit.button(ui, Button::quiet("Previous").small()).clicked() {
+            self.find_step(ui.ctx(), false);
+        }
+        if !tag.is_empty() {
+            kit.text(
+                &mut rows[find_rows[3]],
+                &tag,
+                Type::Small,
+                if none { p.alarm } else { p.dim },
+            );
+        }
+        let ui = &mut rows[n_find + replace_rows[0]];
+        if kit
+            .button(ui, Button::quiet("Replace all").small())
             .clicked()
         {
             let n = self.replace_all();
             self.news = Some((crate::kit::Level::Info, format!("Replaced {n}.")));
         }
-        if kit.button(ui2, Button::quiet("Replace").small()).clicked() {
-            self.replace_one(ui2.ctx());
+        let ui = &mut rows[n_find + replace_rows[1]];
+        if kit.button(ui, Button::quiet("Replace").small()).clicked() {
+            self.replace_one(ui.ctx());
         }
+        let ui = &mut rows[n_find];
         let rid = Id::unique("find-replace");
         let w = (size::FIND_W / 2.0 + size::STEP_32)
-            .min(ui2.available_width())
+            .max(size::FIND_MIN)
+            .min(ui.available_width())
             .max(0.0);
         kit.text_field(
-            ui2,
+            ui,
             rid,
             &mut self.find.replace,
             "Replace with",
@@ -861,6 +881,10 @@ impl Editor {
             w,
             false,
         );
+        let ui = &mut rows[0];
+        let fid = Id::unique("find-query");
+        let w = size::FIND_W.min(ui.available_width()).max(0.0);
+        let r = kit.text_field(ui, fid, &mut self.find.query, "Find", "Find", w, none);
         if std::mem::take(&mut self.find.focus) {
             r.request_focus();
         }
@@ -868,7 +892,31 @@ impl Editor {
             self.find_step(ui.ctx(), true);
             r.request_focus();
         }
+        area.top() + row_h * (n_find + n_replace) as f32
     }
+}
+
+/// The row of each control beside a field, packed right to left in
+/// `width` with `gap` between them. Row 0 keeps `FIND_MIN` for the field;
+/// a control that does not fit goes to the next row. A zero width is an
+/// absent control and takes no room.
+fn pack(widths: &[f32], width: f32, gap: f32) -> Vec<usize> {
+    let mut row = 0;
+    let mut used = size::FIND_MIN;
+    widths
+        .iter()
+        .map(|&w| {
+            if w > 0.0 {
+                if used + gap + w > width {
+                    row += 1;
+                    used = w;
+                } else {
+                    used += gap + w;
+                }
+            }
+            row
+        })
+        .collect()
 }
 
 /// The name each tab shows: the file name, or, when two open files share

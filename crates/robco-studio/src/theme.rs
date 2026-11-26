@@ -243,6 +243,9 @@ pub mod size {
     pub const MENU_POPUP_W: f32 = 300.0;
     /// The find field.
     pub const FIND_W: f32 = 190.0;
+    /// The narrowest find or replace field: below it, the find bar's
+    /// buttons wrap to a further row.
+    pub const FIND_MIN: f32 = 100.0;
     /// A dialog.
     pub const DIALOG_W: f32 = 440.0;
     /// The width of an empty state's sentence.

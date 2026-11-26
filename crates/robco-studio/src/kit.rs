@@ -364,6 +364,17 @@ impl<'a> Kit<'a> {
             .is_some_and(|r| rect.contains(r.rect.center()))
     }
 
+    /// The width `button` gives `b`.
+    pub fn button_width(&self, ui: &Ui, b: &Button<'_>) -> f32 {
+        let pad = size::UNIT * 2.0;
+        let icon_w = if b.icon.is_some() {
+            size::ICON + size::STEP_6
+        } else {
+            0.0
+        };
+        (pad * 2.0 + icon_w + self.caps_width(ui, b.text)).max(size::SMALL_H)
+    }
+
     /// A button. It always takes keyboard focus. An unavailable one never
     /// acts: it is marked so in the accessibility tree, and says why.
     pub fn button(&self, ui: &mut Ui, b: Button<'_>) -> Response {
@@ -373,13 +384,13 @@ impl<'a> Kit<'a> {
         } else {
             size::CONTROL_H
         };
+        let w = self.button_width(ui, &b);
         let pad = size::UNIT * 2.0;
         let icon_w = if b.icon.is_some() {
             size::ICON + size::STEP_6
         } else {
             0.0
         };
-        let w = (pad * 2.0 + icon_w + self.caps_width(ui, b.text)).max(size::SMALL_H);
         let sense = if b.unavailable.is_some() {
             Sense::focusable_noninteractive()
         } else {
