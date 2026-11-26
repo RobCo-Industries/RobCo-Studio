@@ -145,7 +145,7 @@ impl Doc {
 
     /// Write the text to the document's own file.
     pub fn save(&mut self) -> Result<(), String> {
-        std::fs::write(&self.path, encode(&self.text, self.crlf)).map_err(|e| {
+        write_safely(&self.path, &encode(&self.text, self.crlf)).map_err(|e| {
             format!(
                 "Studio could not save {}: {e}. The file was left as it was.",
                 self.shown
@@ -154,6 +154,62 @@ impl Doc {
         self.saved = self.text.clone();
         Ok(())
     }
+}
+
+/// Write `bytes` to `path` so that the file is either the old one or the new
+/// one, never cut short.
+///
+/// The bytes go to a new temporary file in the same folder, synced, then
+/// renamed over the file. A link is followed: the file it points to is
+/// replaced and the link stays. The new file keeps the old file's permission
+/// bits. The temporary file is created new under a name no one has, so an
+/// existing file of that name is never opened. On failure the temporary file
+/// is removed and the file is not touched. `std::fs::rename` replaces an
+/// existing file on Windows too.
+fn write_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::{ErrorKind, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let target = match std::fs::canonicalize(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => path.to_owned(),
+        Err(e) => return Err(e),
+    };
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_owned(),
+        _ => PathBuf::from("."),
+    };
+    let name = target
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let perms = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    let mut tries = 0;
+    let (tmp, mut file) = loop {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.save-{}.{n}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(f) => break (tmp, f),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists && tries < 16 => tries += 1,
+            Err(e) => return Err(e),
+        }
+    };
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| match &perms {
+            Some(p) => file.set_permissions(p.clone()),
+            None => Ok(()),
+        });
+    drop(file);
+    let done = written.and_then(|()| std::fs::rename(&tmp, &target));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
 }
 
 #[cfg(test)]
@@ -187,5 +243,57 @@ mod tests {
     #[test]
     fn paste_is_lf() {
         assert_eq!(to_lf("a\r\nb\rc"), "a\nb\nc");
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("robco-doc-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_save_keeps_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("fail");
+        let f = d.join("main.c");
+        std::fs::write(&f, b"old\n").unwrap();
+        let mut doc = Doc::open(1, &f, "main.c".into()).unwrap();
+        doc.text = "new\n".into();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let r = doc.save();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(r.is_err());
+        assert!(doc.is_dirty());
+        assert_eq!(std::fs::read(&f).unwrap(), b"old\n");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_link_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("link");
+        let real = d.join("real.c");
+        let link = d.join("link.c");
+        std::fs::write(&real, b"old\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut doc = Doc::open(1, &link, "link.c".into()).unwrap();
+        doc.text = "new\n".into();
+        doc.save().unwrap();
+        assert!(!doc.is_dirty());
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&real).unwrap(), b"new\n");
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }
