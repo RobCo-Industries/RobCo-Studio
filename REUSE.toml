@@ -9,3 +9,17 @@ path = "**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 The RobCo Studio contributors"
 SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# Spleen 8x16, from the 2.3.0 release of https://github.com/fcambus/spleen.
+[[annotations]]
+path = ["crates/robco-studio/assets/fonts/spleen-8x16.bdf", "crates/robco-studio/assets/fonts/LICENSE-spleen.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2018-2026 Frederic Cambus"
+SPDX-License-Identifier = "BSD-2-Clause"
+
+# IBM Plex Mono, from the plex-mono 2.5.0 release of https://github.com/IBM/plex.
+[[annotations]]
+path = ["crates/robco-studio/assets/fonts/IBMPlexMono-*.ttf", "crates/robco-studio/assets/fonts/LICENSE-plex-mono.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2017 IBM Corp."
+SPDX-License-Identifier = "OFL-1.1"
