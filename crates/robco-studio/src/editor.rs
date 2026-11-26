@@ -12,7 +12,7 @@ use crate::document::{self, Doc};
 use crate::kit::{Button, ButtonKind, Kit};
 use crate::theme::{Theme, Type, size, stroke};
 use eframe::egui::{
-    self, CornerRadius, Id, Key, Rect, Sense, StrokeKind, text::CCursor, text::CCursorRange,
+    self, CornerRadius, Id, Key, Rect, StrokeKind, text::CCursor, text::CCursorRange,
     text::LayoutJob, text::TextFormat,
 };
 use std::path::Path;
@@ -100,6 +100,21 @@ pub struct Editor {
     run: Option<SaveRun>,
     /// The tabs did not fit the header in the last frame.
     tab_overflow: bool,
+    /// The gutter as last drawn.
+    pub gutter: Option<Gutter>,
+}
+
+/// Where the gutter was last drawn, and what it showed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gutter {
+    /// The gutter's rectangle. It stays put when the text scrolls sideways.
+    pub rect: Rect,
+    /// How far the text is scrolled, across and down.
+    pub offset: egui::Vec2,
+    /// The top of the text before any scroll.
+    pub text_top: f32,
+    /// The first line number drawn, and the centre height of its text.
+    pub first: Option<(usize, f32)>,
 }
 
 /// A Save all in progress: the documents still to save, and the count so far.
@@ -657,110 +672,147 @@ impl Editor {
         let shown = doc.shown.clone();
         let mut caret = None;
         let line_h = kit.theme.code_line();
+        // The gutter stays put across and follows the text down: it is
+        // drawn beside the scroll area, from the offset that area reports.
+        let gutter = Rect::from_min_max(
+            area.min,
+            egui::pos2(
+                (area.left() + size::GUTTER_W).min(area.right()),
+                area.bottom(),
+            ),
+        );
+        let text_area = Rect::from_min_max(egui::pos2(gutter.right(), area.top()), area.max);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(area)
+                .max_rect(text_area)
                 .id_salt(("editor-area", doc_id)),
         );
-        egui::ScrollArea::both()
+        let mut seen = None;
+        let out = egui::ScrollArea::both()
             .id_salt(("editor-scroll", doc_id))
             .auto_shrink(false)
             .show(&mut child, |ui| {
-                ui.horizontal_top(|ui| {
-                    let (gutter, _) =
-                        ui.allocate_exact_size(egui::vec2(size::GUTTER_W, line_h), Sense::hover());
-                    let bg = ui.painter().add(egui::Shape::Noop);
-                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                        let mut job = self.layout_job(kit.theme, doc_id, is_c, buf.as_str());
-                        job.wrap.max_width = wrap;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
-                    let out = egui::TextEdit::multiline(&mut text)
-                        .id(id)
-                        .code_editor()
-                        .lock_focus(true)
-                        .interactive(!locked)
-                        .desired_width(f32::INFINITY)
-                        .frame(egui::Frame::NONE)
-                        .layouter(&mut layouter)
-                        .show(ui);
-                    ui.ctx()
-                        .accesskit_node_builder(id, |n| n.set_label(format!("Text of {shown}")));
-                    let g = &out.galley;
-                    let clip = ui.clip_rect();
-                    let painter = ui.painter();
-                    let cur = out.state.cursor.char_range();
-                    if let Some(c) = cur {
-                        let r = g.pos_from_cursor(c.primary);
-                        let row = Rect::from_min_max(
-                            egui::pos2(gutter.left(), out.galley_pos.y + r.top()),
-                            egui::pos2(clip.right(), out.galley_pos.y + r.bottom()),
-                        );
-                        painter.set(
-                            bg,
-                            egui::Shape::rect_filled(row, CornerRadius::ZERO, p.raised),
-                        );
-                        let pre: String = text.chars().take(c.primary.index.0).collect();
-                        let line = pre.matches('\n').count() + 1;
-                        let col = pre.rsplit('\n').next().map_or(0, |s| s.chars().count()) + 1;
-                        caret = Some((line, col));
-                    }
-                    if let Some(c) = scroll_to {
-                        let r = g
-                            .pos_from_cursor(CCursor::new(c))
-                            .translate(out.galley_pos.to_vec2());
-                        ui.scroll_to_rect(r, Some(egui::Align::Center));
-                    }
-                    // Line numbers for the rows in view. No wrapping: row i is line i + 1.
-                    let top = clip.top() - out.galley_pos.y;
-                    let first = g
-                        .rows
-                        .partition_point(|r| r.pos.y + r.rect().height() <= top);
-                    let font = kit.theme.font(Type::Code);
-                    for (i, r) in g.rows.iter().enumerate().skip(first) {
-                        let y = out.galley_pos.y + r.pos.y;
-                        if y > clip.bottom() {
-                            break;
-                        }
-                        painter.text(
-                            egui::pos2(
-                                gutter.right() - size::STEP_12,
-                                y + (r.rect().height() - line_h) / 2.0 + line_h / 2.0,
+                let bg = ui.painter().add(egui::Shape::Noop);
+                // Code never wraps: a long line scrolls sideways, and row i
+                // is line i + 1 for the gutter.
+                let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+                    let mut job = self.layout_job(kit.theme, doc_id, is_c, buf.as_str());
+                    job.wrap.max_width = f32::INFINITY;
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
+                let out = egui::TextEdit::multiline(&mut text)
+                    .id(id)
+                    .code_editor()
+                    .lock_focus(true)
+                    .interactive(!locked)
+                    .desired_width(f32::INFINITY)
+                    .frame(egui::Frame::NONE)
+                    .layouter(&mut layouter)
+                    .show(ui);
+                ui.ctx()
+                    .accesskit_node_builder(id, |n| n.set_label(format!("Text of {shown}")));
+                let g = &out.galley;
+                let clip = ui.clip_rect();
+                let painter = ui.painter();
+                let cur = out.state.cursor.char_range();
+                let mut row = None;
+                if let Some(c) = cur {
+                    let r = g.pos_from_cursor(c.primary);
+                    let band = (out.galley_pos.y + r.top(), out.galley_pos.y + r.bottom());
+                    painter.set(
+                        bg,
+                        egui::Shape::rect_filled(
+                            Rect::from_min_max(
+                                egui::pos2(clip.left(), band.0),
+                                egui::pos2(clip.right(), band.1),
                             ),
-                            egui::Align2::RIGHT_CENTER,
-                            (i + 1).to_string(),
-                            font.clone(),
-                            p.dim,
-                        );
-                    }
-                    // Matches of the find bar: a `frame` box, the selected one `bright`.
-                    if self.find.open && !self.find.query.is_empty() {
-                        let sel = cur.map(|c| c.as_sorted_char_range());
-                        let mut chars = 0;
-                        let mut last = 0;
-                        for (b, m) in text.match_indices(&self.find.query) {
-                            chars += text[last..b].chars().count();
-                            last = b;
-                            let n = m.chars().count();
-                            let a = g.pos_from_cursor(CCursor::new(chars));
-                            let z = g.pos_from_cursor(CCursor::new(chars + n));
-                            let r = Rect::from_min_max(a.min, egui::pos2(z.max.x, a.max.y))
-                                .translate(out.galley_pos.to_vec2());
-                            if r.intersects(clip) {
-                                let on = sel
-                                    .as_ref()
-                                    .is_some_and(|s| s.start.0 == chars && s.end.0 == chars + n);
-                                painter.rect_stroke(
-                                    r,
-                                    CornerRadius::ZERO,
-                                    kit.theme.frame(if on { p.bright } else { p.frame }),
-                                    StrokeKind::Outside,
-                                );
-                            }
+                            CornerRadius::ZERO,
+                            p.raised,
+                        ),
+                    );
+                    row = Some(band);
+                    let pre: String = text.chars().take(c.primary.index.0).collect();
+                    let line = pre.matches('\n').count() + 1;
+                    let col = pre.rsplit('\n').next().map_or(0, |s| s.chars().count()) + 1;
+                    caret = Some((line, col));
+                }
+                if let Some(c) = scroll_to {
+                    let r = g
+                        .pos_from_cursor(CCursor::new(c))
+                        .translate(out.galley_pos.to_vec2());
+                    ui.scroll_to_rect(r, Some(egui::Align::Center));
+                }
+                // Matches of the find bar: a `frame` box, the selected one `bright`.
+                if self.find.open && !self.find.query.is_empty() {
+                    let sel = cur.map(|c| c.as_sorted_char_range());
+                    let mut chars = 0;
+                    let mut last = 0;
+                    for (b, m) in text.match_indices(&self.find.query) {
+                        chars += text[last..b].chars().count();
+                        last = b;
+                        let n = m.chars().count();
+                        let a = g.pos_from_cursor(CCursor::new(chars));
+                        let z = g.pos_from_cursor(CCursor::new(chars + n));
+                        let r = Rect::from_min_max(a.min, egui::pos2(z.max.x, a.max.y))
+                            .translate(out.galley_pos.to_vec2());
+                        if r.intersects(clip) {
+                            let on = sel
+                                .as_ref()
+                                .is_some_and(|s| s.start.0 == chars && s.end.0 == chars + n);
+                            painter.rect_stroke(
+                                r,
+                                CornerRadius::ZERO,
+                                kit.theme.frame(if on { p.bright } else { p.frame }),
+                                StrokeKind::Outside,
+                            );
                         }
                     }
-                });
+                }
+                seen = Some((out.galley.clone(), out.galley_pos.y, row));
             });
+        // Line numbers for the rows in view, in the screen place of each
+        // row. No wrapping: row i is line i + 1.
+        let mut first = None;
+        if let Some((g, galley_y, row)) = seen {
+            let painter = ui.painter_at(gutter);
+            if let Some((top, bottom)) = row {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(gutter.left(), top),
+                        egui::pos2(gutter.right(), bottom),
+                    ),
+                    CornerRadius::ZERO,
+                    p.raised,
+                );
+            }
+            let view = out.inner_rect;
+            let top = view.top() - galley_y;
+            let skip = g
+                .rows
+                .partition_point(|r| r.pos.y + r.rect().height() <= top);
+            let font = kit.theme.font(Type::Code);
+            for (i, r) in g.rows.iter().enumerate().skip(skip) {
+                let y = galley_y + r.pos.y;
+                if y > view.bottom() {
+                    break;
+                }
+                let centre = y + (r.rect().height() - line_h) / 2.0 + line_h / 2.0;
+                first.get_or_insert((i + 1, centre));
+                painter.text(
+                    egui::pos2(gutter.right() - size::STEP_12, centre),
+                    egui::Align2::RIGHT_CENTER,
+                    (i + 1).to_string(),
+                    font.clone(),
+                    p.dim,
+                );
+            }
+        }
+        self.gutter = Some(Gutter {
+            rect: gutter,
+            offset: out.state.clamped_offset(),
+            text_top: out.inner_rect.top(),
+            first,
+        });
         if text.contains('\r') {
             text = document::to_lf(&text).into_owned();
         }

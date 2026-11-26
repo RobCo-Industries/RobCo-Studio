@@ -92,6 +92,46 @@ fn render_the_window() {
     shot(&mut h, &dir, "project-blue.png").unwrap();
     h.state_mut().theme.scheme = Scheme::White;
     shot(&mut h, &dir, "project-white.png").unwrap();
+    h.state_mut().theme.scheme = Scheme::Green;
+
+    // The narrowest editor with the find bar open.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.state_mut().editor.find.query = "game".into();
+    h.state_mut().layout.sim_w = 10_000.0;
+    shot(&mut h, &dir, "find-narrow-green.png").unwrap();
+    h.key_press(egui::Key::Escape);
+    h.state_mut().editor.find.open = false;
+    h.state_mut().layout.sim_w = 0.0;
+
+    // Scrolled right and down: the gutter stays, the numbers follow.
+    let mut long = "/* ".to_owned() + &"wide ".repeat(80) + "*/\n";
+    long.push_str(MAIN_C);
+    long.push_str(MAIN_C);
+    std::fs::write(d.join("src/game.c"), long).unwrap();
+    h.get_by_label("game.c").click();
+    h.run_steps(2);
+    let editor = h
+        .state()
+        .place_rect(robco_studio::app::Place::Editor)
+        .unwrap();
+    h.hover_at(editor.center());
+    for (delta, modifiers) in [
+        (egui::vec2(0.0, -300.0), egui::Modifiers::SHIFT),
+        (egui::vec2(0.0, -200.0), egui::Modifiers::NONE),
+    ] {
+        h.event_modifiers(
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                modifiers,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+            },
+            modifiers,
+        );
+        h.run_steps(4);
+    }
+    shot(&mut h, &dir, "gutter-scrolled-green.png").unwrap();
 
     let mut h = harness(None);
     shot(&mut h, &dir, "no-project-green.png").unwrap();

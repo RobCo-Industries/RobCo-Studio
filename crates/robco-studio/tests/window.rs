@@ -613,3 +613,56 @@ fn news_from_a_native_menu_command_shows_without_input() {
     h.step();
     h.get_by_label("Nothing to save.");
 }
+
+/// With a long line, a scroll to the right leaves the gutter in place, and
+/// a scroll down keeps the first number on the first text row in view.
+#[test]
+fn the_gutter_stays_put_across_and_follows_down() {
+    let d = sample("gutter").unwrap();
+    let mut long = "x".repeat(2000);
+    long.push('\n');
+    for i in 0..200 {
+        long.push_str(&format!("line {i}\n"));
+    }
+    std::fs::write(d.join("src/long.c"), long).unwrap();
+    let mut h = harness(Some(&*d));
+    h.get_by_label("src").click();
+    h.run_steps(2);
+    h.get_by_label("long.c").click();
+    h.run_steps(3);
+    let before = h.state().editor.gutter.unwrap();
+    assert_eq!(before.offset, egui::Vec2::ZERO);
+    let editor = h.state().place_rect(Place::Editor).unwrap();
+    h.hover_at(editor.center());
+    // Shift turns the wheel sideways.
+    for (delta, modifiers) in [
+        (egui::vec2(0.0, -400.0), Modifiers::SHIFT),
+        (egui::vec2(0.0, -537.0), Modifiers::NONE),
+    ] {
+        h.event_modifiers(
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                modifiers,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+            },
+            modifiers,
+        );
+        h.run_steps(4);
+    }
+    let after = h.state().editor.gutter.unwrap();
+    assert!(after.offset.x > 100.0, "{after:?}");
+    assert!(after.offset.y > 100.0, "{after:?}");
+    assert_eq!(after.rect, before.rect);
+    // The first text row in view: the one whose bottom is below the top.
+    let line_h = h.state().theme.code_line();
+    let (n, y) = after.first.unwrap();
+    let row_top = after.text_top - after.offset.y + (n - 1) as f32 * line_h;
+    assert_eq!(
+        n,
+        (after.offset.y / line_h).floor() as usize + 1,
+        "{after:?}"
+    );
+    assert!((y - (row_top + line_h / 2.0)).abs() < 1.0, "{after:?}");
+}
