@@ -44,6 +44,31 @@ pub struct Slider<'r> {
     pub held: Option<String>,
 }
 
+/// The text a field holds apart from its value, kept while the field has
+/// focus. None when the field does not hold any.
+pub fn held_text(ui: &Ui, id: egui::Id) -> Option<String> {
+    ui.data(|d| d.get_temp::<String>(id.with(HELD)))
+}
+
+/// After a field that keeps typed text apart from its value is drawn: keep
+/// `text` while the field has focus, and give it back once, in the first
+/// frame the field is drawn without focus, for the caller to commit. This
+/// does not depend on what took the focus or when: a control drawn before
+/// or after the field, a click on empty space, Tab, Shift+Tab or Escape.
+/// Call it only while the field takes input, so a field held by a
+/// disabled pane keeps its text for later.
+pub fn hold_text(ui: &Ui, id: egui::Id, focused: bool, text: &str) -> Option<String> {
+    let key = id.with(HELD);
+    if focused {
+        ui.data_mut(|d| d.insert_temp(key, text.to_owned()));
+        None
+    } else {
+        ui.data_mut(|d| d.remove_temp::<String>(key))
+    }
+}
+
+const HELD: &str = "held text";
+
 /// Steps for Shift with an arrow, and for Page Up and Page Down.
 const BIG: f64 = 10.0;
 
@@ -251,13 +276,9 @@ impl Kit<'_> {
                 painter.rect_stroke(num, cr, self.theme.frame(p.frame), StrokeKind::Inside);
             }
         } else {
-            let focused = ui.memory(|m| m.has_focus(nid));
-            let mut text = if focused {
-                ui.data(|d| d.get_temp::<String>(nid))
-                    .unwrap_or_else(|| s.number(v))
-            } else {
-                s.number(v)
-            };
+            // The text typed stays until the frame focus leaves, which
+            // commits it, whatever took the focus.
+            let mut text = held_text(ui, nid).unwrap_or_else(|| s.number(v));
             let inner = num.shrink2(egui::vec2(size::UNIT, 0.0));
             let r = ui.place(
                 inner,
@@ -271,17 +292,13 @@ impl Kit<'_> {
             );
             ui.ctx()
                 .accesskit_node_builder(nid, |n| n.set_label(s.name.to_owned()));
-            if r.has_focus() {
-                ui.data_mut(|d| d.insert_temp(nid, text.clone()));
-            }
-            if r.lost_focus() {
-                ui.data_mut(|d| d.remove_temp::<String>(nid));
-                if let Ok(n) = text.trim().parse::<f64>()
+            if let Some(typed) = hold_text(ui, nid, r.has_focus(), &text) {
+                if let Ok(n) = typed.trim().parse::<f64>()
                     && n.is_finite()
                 {
                     *value = s.settle(n.clamp(lo, hi));
                 }
-                if ui.input(|i| i.key_pressed(Key::Enter)) {
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     ui.memory_mut(|m| m.request_focus(id));
                 }
             }

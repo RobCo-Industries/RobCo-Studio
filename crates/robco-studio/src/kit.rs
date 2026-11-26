@@ -7,7 +7,7 @@
 //! and gives the accessibility tree a role and a name.
 
 mod controls;
-pub use controls::{Rail, Slider};
+pub use controls::{Rail, Slider, held_text, hold_text};
 
 use crate::art::{Art, Icon, LabelFont};
 use crate::theme::{Palette, Theme, Type, size, stroke};

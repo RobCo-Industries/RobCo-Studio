@@ -1729,3 +1729,160 @@ fn a_change_adrift_comes_home_with_its_file() {
     assert_eq!(s.own_file().as_deref(), Some("ember.toml"));
     assert_eq!(s.theme_name(), "Ember, changed");
 }
+
+/// A field that keeps typed text apart from its value until focus leaves.
+#[derive(Debug, Clone, Copy)]
+enum Typed {
+    /// The base colour field, with three digits.
+    Hex,
+    /// The number box of the Hue slider.
+    Hue,
+    /// The number box of the Vignette slider, on the Screen tab.
+    Vignette,
+}
+
+/// How focus leaves the field.
+#[derive(Debug, Clone, Copy)]
+enum Away {
+    /// A click on a control drawn before the field, which takes focus.
+    Before,
+    /// A click on a control drawn after the field.
+    After,
+    /// A click on a part of the pane with no control.
+    Empty,
+    Tab,
+    ShiftTab,
+    /// Escape, which also closes the pane in the same frame.
+    Escape,
+    /// The close button, drawn before the field.
+    Close,
+    /// Save, in the frame focus leaves: the edit applies before it.
+    Save,
+}
+
+impl Typed {
+    /// The label of the field, the text typed, and the label of a control
+    /// drawn before it and of one drawn after it.
+    fn parts(
+        self,
+    ) -> (
+        &'static str,
+        &'static str,
+        (Role, &'static str),
+        &'static str,
+    ) {
+        match self {
+            Typed::Hex => (BASE, "f80", (Role::Tab, TAB_NAMES[0]), COLOUR_SLIDERS[0]),
+            Typed::Hue => (
+                COLOUR_SLIDERS[0],
+                "200",
+                (Role::TextInput, BASE),
+                COLOUR_SLIDERS[2],
+            ),
+            Typed::Vignette => (
+                Strengths::NAMES[1],
+                "0.3",
+                (Role::TextInput, Strengths::NAMES[0]),
+                Strengths::NAMES[2],
+            ),
+        }
+    }
+
+    /// The value typed is the value of the theme.
+    fn holds(self, s: &Studio) -> bool {
+        match self {
+            Typed::Hex => s.spec().base == palette::parse_hex("ff8800").unwrap().0,
+            Typed::Hue => {
+                s.theme_editor.sliders[0] == 200.0
+                    && s.spec().base != palette::parse_hex("ff7a1a").unwrap().0
+            }
+            Typed::Vignette => (s.spec().strengths.vignette - 0.3).abs() < 1e-4,
+        }
+    }
+}
+
+/// Each field that keeps typed text apart from its value, against each way
+/// focus can leave it. The text typed is the value after the frame,
+/// whatever took the focus and wherever that control is drawn.
+#[test]
+fn a_field_commits_its_text_whatever_takes_the_focus() {
+    let ways = [
+        Away::Before,
+        Away::After,
+        Away::Empty,
+        Away::Tab,
+        Away::ShiftTab,
+        Away::Escape,
+        Away::Close,
+        Away::Save,
+    ];
+    let mut rows = 0;
+    // Every row runs, so a failure names all the rows that fail.
+    let mut failed = Vec::new();
+    for field in [Typed::Hex, Typed::Hue, Typed::Vignette] {
+        for way in ways {
+            let row = format!("{field:?} {way:?}");
+            let d = TempDir::new(&format!("focus-{rows}"));
+            rows += 1;
+            let s = on_ember(&d);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1280.0, 720.0))
+                .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+            h.state_mut().theme_editor.open = true;
+            if matches!(field, Typed::Vignette) {
+                h.state_mut().theme_editor.tab = ThemeTab::Screen;
+            }
+            h.run_steps(3);
+            let (label, text, before, after) = field.parts();
+            h.get_by_role_and_label(Role::TextInput, label).focus();
+            h.run_steps(2);
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.run_steps(1);
+            h.get_by_role_and_label(Role::TextInput, label)
+                .type_text(text);
+            h.run_steps(2);
+            assert!(
+                !field.holds(h.state()) || matches!(field, Typed::Hex),
+                "{row}: early"
+            );
+            match way {
+                Away::Before => h.get_by_role_and_label(before.0, before.1).click(),
+                Away::After => h.get_by_role_and_label(Role::TextInput, after).click(),
+                Away::Empty => {
+                    let r = h.state().theme_pane_rect();
+                    press_at(&h, egui::pos2(r.left() + 40.0, r.top() + 12.0));
+                }
+                Away::Tab => h.key_press(egui::Key::Tab),
+                Away::ShiftTab => {
+                    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+                }
+                Away::Escape => h.key_press(egui::Key::Escape),
+                Away::Close => h.get_by_role_and_label(Role::Button, CLOSE).click(),
+                Away::Save => h.get_by_role_and_label(Role::Button, BUTTONS[4]).click(),
+            }
+            h.run_steps(3);
+            let s = h.state();
+            if !field.holds(s) {
+                failed.push(row);
+                continue;
+            }
+            match way {
+                Away::Escape | Away::Close => assert!(!s.theme_editor.open, "{row}"),
+                Away::Save => {
+                    assert!(s.changed.is_none(), "{row}");
+                    let saved = store::read_folder(&themes(&d));
+                    let (_, spec) = saved
+                        .themes
+                        .iter()
+                        .find(|(f, _)| f == "ember.toml")
+                        .unwrap();
+                    assert_eq!(spec.base, s.spec().base, "{row}");
+                    assert_eq!(spec.strengths, s.spec().strengths, "{row}");
+                }
+                _ => assert!(s.theme_editor.open, "{row}"),
+            }
+        }
+    }
+    assert_eq!(failed, Vec::<String>::new());
+    assert_eq!(rows, 24);
+}

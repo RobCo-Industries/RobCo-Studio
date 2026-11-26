@@ -635,13 +635,17 @@ impl Studio {
                 ed.hex_for = Some(c);
                 asked.base = Some(c);
             }
-            if resp.lost_focus() {
+            // Three digits commit in the first frame focus has left,
+            // whatever took it. A disabled pane holds the text for later.
+            let left = ui.is_enabled()
+                && crate::kit::hold_text(ui, id, resp.has_focus(), &ed.hex).is_some();
+            if left {
                 if let Some((c, 3)) = parsed {
                     ed.hex_for = Some(c);
                     asked.base = Some(c);
                 }
                 // Enter keeps the caret in the field.
-                if ui.input(|i| i.key_pressed(Key::Enter)) {
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     resp.request_focus();
                 }
             }
