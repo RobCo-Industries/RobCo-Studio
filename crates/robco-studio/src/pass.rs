@@ -64,16 +64,30 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// before eframe submits, so it frees the textures of a frame at the start
 /// of the next frame it draws.
 ///
-/// A frame the pass does not draw, because the window is hidden or the
-/// frame is dropped, leaves its changes here. The next frame drawn takes
-/// all of them at once, sets before its picture, so nothing is lost and
-/// nothing is applied twice.
+/// The newest frame's changes are kept as egui gave them: it may be the
+/// frame drawn next. Once a newer frame comes, no frame left to draw
+/// paints what the older one freed, so its changes fold into `older`,
+/// which stays small however long the pass does not draw:
+///
+/// - a set and a later free of the same texture cancel out;
+/// - a full set replaces every earlier change to its texture, and the
+///   partial changes after it stay in order;
+/// - a partial change or a free of a texture the renderer never had is
+///   dropped.
+///
+/// The next frame drawn takes all of it at once, frees of the older frames
+/// first, then every set, before its picture; its own frees wait for the
+/// frame after. Nothing is lost and nothing is applied twice.
 #[derive(Default)]
 struct Queue {
-    /// The changes of the frames given since the last frame drawn.
-    waiting: TexturesDelta,
+    /// The folded changes of the frames before the newest.
+    older: TexturesDelta,
+    /// The newest frame's changes.
+    newest: TexturesDelta,
     /// The frees of the last frame drawn, done at the next one.
     freed: Vec<egui::TextureId>,
+    /// The textures the renderer has once the steps taken are applied.
+    known: HashSet<egui::TextureId>,
 }
 
 /// What the renderer does with the textures for one frame, in order.
@@ -87,21 +101,70 @@ struct Step {
 impl Queue {
     /// Keep a frame's changes until a frame is drawn.
     fn push(&mut self, delta: &TexturesDelta) {
+        let newest = std::mem::take(&mut self.newest);
+        self.fold(newest);
         for (id, deltas) in &delta.set {
             for d in deltas {
-                self.waiting.push(*id, d.clone());
+                self.newest.push(*id, d.clone());
             }
         }
-        self.waiting.free.extend(delta.free.iter().copied());
+        self.newest.free.extend(delta.free.iter().copied());
+    }
+
+    /// Fold the changes of a frame that will not be drawn into `older`.
+    fn fold(&mut self, mut d: TexturesDelta) {
+        for (id, deltas) in d.set.drain() {
+            for x in deltas {
+                if x.is_whole() || self.older.set.contains_key(&id) || self.known.contains(&id) {
+                    self.older.push(id, x);
+                }
+            }
+        }
+        for id in d.free.drain() {
+            self.older.set.remove(&id);
+            if self.known.contains(&id) {
+                self.older.free.insert(id);
+            }
+        }
     }
 
     /// The step of the frame drawn now. Its own frees wait for the next.
     fn take(&mut self) -> Step {
-        let later = self.waiting.free.drain().collect();
-        Step {
-            free: std::mem::replace(&mut self.freed, later),
-            set: std::mem::take(&mut self.waiting),
+        let mut newest = std::mem::take(&mut self.newest);
+        let mut set = std::mem::take(&mut self.older);
+        let mut free = std::mem::take(&mut self.freed);
+        free.extend(set.free.drain());
+        for (id, deltas) in newest.set.drain() {
+            for d in deltas {
+                set.push(id, d);
+            }
         }
+        self.freed = newest.free.drain().collect();
+        for id in &free {
+            self.known.remove(id);
+        }
+        for (id, deltas) in &set.set {
+            if deltas.iter().any(egui::epaint::ImageDelta::is_whole) {
+                self.known.insert(*id);
+            }
+        }
+        for id in &self.freed {
+            self.known.remove(id);
+        }
+        Step { free, set }
+    }
+
+    /// The changes held, counted one per texture set and one per free.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        let count =
+            |d: &TexturesDelta| d.set.values().map(|v| v.len()).sum::<usize>() + d.free.len();
+        count(&self.older) + count(&self.newest) + self.freed.len()
+    }
+
+    fn clear(&mut self) {
+        self.older.clear();
+        self.newest.clear();
     }
 }
 
@@ -112,7 +175,7 @@ struct Pending(Mutex<Queue>);
 impl Drop for Pending {
     fn drop(&mut self) {
         // Changes no frame will draw: egui asks that they are cleared.
-        lock(&self.0).waiting.clear();
+        lock(&self.0).clear();
     }
 }
 
@@ -917,41 +980,167 @@ mod tests {
         }
     }
 
-    /// Two frames' changes before one frame drawn: every set comes before
-    /// that frame, no free of a texture it may paint comes before it, and
-    /// each change is taken once.
+    fn id(n: u64) -> egui::TextureId {
+        egui::TextureId::Managed(n)
+    }
+
+    fn pixel() -> egui::ColorImage {
+        egui::ColorImage::filled([1, 1], egui::Color32::RED)
+    }
+
+    fn full() -> egui::epaint::ImageDelta {
+        egui::epaint::ImageDelta::full(pixel(), Default::default())
+    }
+
+    fn part(x: usize) -> egui::epaint::ImageDelta {
+        egui::epaint::ImageDelta::partial([x, 0], pixel(), Default::default())
+    }
+
+    /// One frame's changes: these sets in order, then these frees.
+    fn delta(set: Vec<(u64, egui::epaint::ImageDelta)>, free: &[u64]) -> TexturesDelta {
+        let mut d = TexturesDelta::default();
+        for (n, x) in set {
+            d.push(id(n), x);
+        }
+        d.free.extend(free.iter().map(|n| id(*n)));
+        d
+    }
+
+    fn push(q: &mut Queue, set: Vec<(u64, egui::epaint::ImageDelta)>, free: &[u64]) {
+        let mut d = delta(set, free);
+        q.push(&d);
+        d.clear();
+    }
+
+    fn sorted(mut v: Vec<egui::TextureId>) -> Vec<egui::TextureId> {
+        v.sort();
+        v
+    }
+
+    /// The ids a step sets, and the place of each change: None for a full set.
+    fn sets(step: &mut Step) -> Vec<(egui::TextureId, Vec<Option<[usize; 2]>>)> {
+        let mut v: Vec<_> = step
+            .set
+            .set
+            .drain()
+            .map(|(i, d)| (i, d.iter().map(|x| x.pos).collect()))
+            .collect();
+        v.sort_by_key(|(i, _)| *i);
+        step.set.clear();
+        v
+    }
+
+    /// The renderer's order: a frame's sets before it, its frees at the
+    /// next frame drawn, and the frees of frames before it first.
     #[test]
-    fn the_queue_frees_after_the_frame_that_paints() {
-        let id = egui::TextureId::Managed;
-        let img =
-            || egui::epaint::ImageDelta::full(egui::ColorImage::example(), Default::default());
+    fn the_queue_sets_before_and_frees_after() {
         let mut q = Queue::default();
-        // Frame one makes A and B, paints A and drops it.
-        let mut one = TexturesDelta::default();
-        one.set.insert(id(1), [img()].into_iter().collect());
-        one.set.insert(id(2), [img()].into_iter().collect());
-        one.free.insert(id(1));
-        q.push(&one);
-        one.clear();
-        // Frame two drops B. Neither frame was drawn.
-        let mut two = TexturesDelta::default();
-        two.free.insert(id(2));
-        q.push(&two);
-        two.clear();
+        // Frame one makes A and B, paints A and drops it: it is drawn.
+        push(&mut q, vec![(1, full()), (2, full())], &[1]);
         let mut step = q.take();
         assert!(step.free.is_empty(), "nothing freed before the frame");
-        let mut set: Vec<_> = step.set.set.keys().copied().collect();
-        set.sort_by_key(|i| format!("{i:?}"));
-        assert_eq!(set, [id(1), id(2)]);
-        assert!(step.set.free.is_empty());
-        step.set.clear();
-        // The next frame drawn frees both, and sets nothing again.
-        let step = q.take();
-        let mut free = step.free;
-        free.sort_by_key(|i| format!("{i:?}"));
-        assert_eq!(free, [id(1), id(2)]);
-        assert!(step.set.is_empty());
+        assert_eq!(sets(&mut step), [(id(1), vec![None]), (id(2), vec![None])]);
+        // Frame two drops B and is not drawn; frame three is.
+        push(&mut q, vec![], &[2]);
+        push(&mut q, vec![(3, full())], &[]);
+        let mut step = q.take();
+        assert_eq!(sorted(step.free.clone()), [id(1), id(2)]);
+        assert_eq!(sets(&mut step), [(id(3), vec![None])]);
         assert!(q.take().free.is_empty());
+    }
+
+    /// A set and a later free of one texture, in frames not drawn, cancel.
+    #[test]
+    fn the_queue_cancels_a_set_and_its_free() {
+        let mut q = Queue::default();
+        push(&mut q, vec![(1, full()), (1, part(2))], &[]);
+        push(&mut q, vec![(5, part(1))], &[1]);
+        push(&mut q, vec![], &[]);
+        assert_eq!(q.len(), 0);
+        let mut step = q.take();
+        assert!(step.free.is_empty());
+        assert!(sets(&mut step).is_empty());
+    }
+
+    /// A free stays when the texture made it to the renderer, and the
+    /// changes to it that wait are dropped.
+    #[test]
+    fn the_queue_keeps_the_free_of_a_texture_drawn() {
+        let mut q = Queue::default();
+        push(&mut q, vec![(1, full())], &[]);
+        let _ = sets(&mut q.take());
+        push(&mut q, vec![(1, part(3))], &[]);
+        push(&mut q, vec![], &[1]);
+        push(&mut q, vec![], &[]);
+        let mut step = q.take();
+        assert_eq!(step.free, [id(1)]);
+        assert!(sets(&mut step).is_empty());
+    }
+
+    /// A later full set replaces the earlier changes, and the partial
+    /// changes after it stay, in order.
+    #[test]
+    fn the_queue_keeps_the_last_full_set_and_what_follows() {
+        let mut q = Queue::default();
+        push(&mut q, vec![(0, full()), (0, part(1))], &[]);
+        push(&mut q, vec![(0, part(2))], &[]);
+        push(&mut q, vec![(0, full()), (0, part(3))], &[]);
+        push(&mut q, vec![(0, part(4))], &[]);
+        push(&mut q, vec![], &[]);
+        let mut step = q.take();
+        assert_eq!(
+            sets(&mut step),
+            [(id(0), vec![None, Some([3, 0]), Some([4, 0])])]
+        );
+    }
+
+    /// Partial changes and frees of a texture the renderer never had are
+    /// dropped; partial changes of one it has are kept.
+    #[test]
+    fn the_queue_drops_what_the_renderer_never_had() {
+        let mut q = Queue::default();
+        push(&mut q, vec![(0, full())], &[]);
+        let _ = sets(&mut q.take());
+        push(&mut q, vec![(0, part(1)), (7, part(1))], &[8]);
+        push(&mut q, vec![], &[]);
+        assert_eq!(q.len(), 1);
+        let mut step = q.take();
+        assert!(step.free.is_empty());
+        assert_eq!(sets(&mut step), [(id(0), vec![Some([1, 0])])]);
+    }
+
+    /// An hour of level switches at Off, one a second: each makes the
+    /// drawings anew under new ids and drops the old, and the font atlas
+    /// grows now and then. The queue holds the live drawings and the
+    /// atlas, never what was dropped.
+    #[test]
+    fn the_queue_stays_small_while_the_pass_is_off() {
+        const ART: u64 = 6;
+        let mut q = Queue::default();
+        // The pass drew at Live once: the atlas and a first set of art.
+        let first: Vec<_> = (0..=ART).map(|n| (n, full())).collect();
+        push(&mut q, first, &[]);
+        let _ = sets(&mut q.take());
+        let mut most = 0;
+        for switch in 0..3600_u64 {
+            let old = 1 + (switch * ART)..1 + ((switch + 1) * ART);
+            let new: Vec<_> = old.clone().map(|n| (n + ART, full())).collect();
+            let mut set = new;
+            if switch % 10 == 0 {
+                set.push((0, part(switch as usize)));
+            }
+            let free: Vec<u64> = old.collect();
+            push(&mut q, set, &free);
+            push(&mut q, vec![], &[]);
+            most = most.max(q.len());
+        }
+        // The first art's frees, the live art and the atlas's partials:
+        // 6 + 6 + 360. Without the rules it would be 3600 * 6 sets.
+        assert!(most <= 2 * ART as usize + 360, "{most}");
+        let mut step = q.take();
+        assert_eq!(step.free.len(), ART as usize);
+        let set = sets(&mut step);
+        assert_eq!(set.len(), 1 + ART as usize);
     }
 
     /// Plugged twice, the second time with another link: a click on a
