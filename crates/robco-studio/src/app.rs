@@ -521,6 +521,9 @@ impl Studio {
         }
         if let Some((level, text)) = self.editor.news.take() {
             self.status = (level, text);
+            // The footer is drawn already: a command from the native
+            // menu brings no input, so ask for the frame that shows it.
+            ctx.request_repaint();
         }
         if self.editor.quit_allowed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -836,59 +839,72 @@ impl Studio {
             && self.focused_place(ui.ctx()) == Some(Place::Editor))
         .then(|| self.editor.current().and_then(|d| d.caret))
         .flatten();
-        let position = caret.map(|(l, c)| format!("Ln {l}, Col {c}"));
-        let segments = [
-            (None, "SDK not checked"),
-            (Some(Icon::Wrist), "Sim off"),
-            (Some(Icon::Cable), "Link off"),
-        ];
-        let seg_w: f32 = segments
+        // Right to left, from the corner.
+        let mut segs: Vec<(Option<Icon>, String)> = Vec::new();
+        if let Some((l, c)) = caret {
+            segs.push((None, format!("Ln {l}, Col {c}")));
+        }
+        segs.push((Some(Icon::Cable), "Link off".to_owned()));
+        segs.push((Some(Icon::Wrist), "Sim off".to_owned()));
+        segs.push((None, "SDK not checked".to_owned()));
+        let wants: Vec<f32> = segs
             .iter()
             .map(|(i, t)| kit.status_segment_width(&s, *i, t))
-            .sum();
-        let pos_w = position
-            .as_ref()
-            .map_or(0.0, |t| kit.status_segment_width(&s, None, t));
+            .collect();
+        // The division goes first, then Position, then the rest from
+        // the left.
+        let give: Vec<usize> = (0..segs.len()).rev().collect();
+        let (give, soft) = if caret.is_some() {
+            let mut g = vec![0];
+            g.extend(give.iter().copied().filter(|&i| i != 0));
+            (g, 1)
+        } else {
+            (give, 0)
+        };
         let division = "Engineering division";
-        let div_w = kit.caps_width(&s, division) + size::FOOTER_SEG_PAD * 2.0 + stroke_w();
+        let div_w = kit.caps_width(&s, division) + size::FOOTER_SEG_PAD * 2.0 + stroke_w() * 2.0;
         let (level, text) = &self.status;
-        let msg_need = size::ICON
+        let msg_need = size::FOOTER_SEG_PAD
+            + size::ICON
             + size::UNIT * 2.0
             + s.painter()
                 .layout_no_wrap(text.clone(), kit.theme.font(Type::Small), p.text)
                 .size()
                 .x;
-        let room = rect.right() - mark.right() - size::FOOTER_SEG_PAD * 2.0 - div_w - seg_w - pos_w;
-        let (show_div, show_pos) = footer_gives_way(msg_need, room, div_w, pos_w);
-        let mut right = rect.right();
-        if let (Some(t), true) = (&position, show_pos) {
-            right = kit.status_segment(&mut s, right, rect, None, t);
+        let lay = status_layout(
+            mark.right() + size::FOOTER_SEG_PAD,
+            rect.right(),
+            Some(div_w),
+            &wants,
+            &give,
+            soft,
+            msg_need,
+        );
+        for ((i, t), x) in segs.iter().zip(&lay.segs) {
+            if let Some((l, r)) = *x {
+                let r = Rect::from_min_max(egui::pos2(l, rect.top()), egui::pos2(r, rect.bottom()));
+                kit.status_segment(&mut s, r, *i, t);
+            }
         }
-        for (i, t) in segments.iter().rev() {
-            right = kit.status_segment(&mut s, right, rect, *i, t);
-        }
-        let mut x = mark.right() + size::FOOTER_SEG_PAD;
-        if show_div {
+        if let Some((x, _)) = lay.division {
             kit.footer_divider(s.painter(), x, cy);
-            x += stroke_w() + size::FOOTER_SEG_PAD;
+            let x = x + stroke_w() + size::FOOTER_SEG_PAD;
             let r = kit.caps(s.painter(), x, cy, division, p.dim);
             s.put(
                 r,
                 egui::Label::new(egui::RichText::new(division).color(egui::Color32::TRANSPARENT)),
             );
-            x = r.right() + size::FOOTER_SEG_PAD;
-            kit.footer_divider(s.painter(), x, cy);
-            x += stroke_w();
+            kit.footer_divider(s.painter(), r.right() + size::FOOTER_SEG_PAD, cy);
         }
         let icon = Rect::from_min_size(
-            egui::pos2(x + size::FOOTER_SEG_PAD, rect.top()),
+            egui::pos2(lay.msg.0 + size::FOOTER_SEG_PAD, rect.top()),
             egui::vec2(size::ICON, rect.height()),
         );
         kit.art
             .icon(s.painter(), icon, level.icon(), level.color(&p));
         let msg = Rect::from_min_max(
-            egui::pos2(icon.right() + size::UNIT * 2.0, rect.top()),
-            egui::pos2(right - size::UNIT * 2.0, rect.bottom()),
+            egui::pos2((icon.right() + size::UNIT * 2.0).min(lay.msg.1), rect.top()),
+            egui::pos2(lay.msg.1, rect.bottom()),
         );
         s.scope_builder(
             UiBuilder::new()
@@ -1582,21 +1598,6 @@ impl eframe::App for Studio {
     }
 }
 
-/// Which footer parts give way to a long status line: first the division,
-/// then Position; after that the line ends in an ellipsis. `need` is the
-/// line's width, `room` what it gets with every part shown. The line claims
-/// at least 360 px. Returns whether the division and Position are shown.
-pub fn footer_gives_way(need: f32, room: f32, division_w: f32, position_w: f32) -> (bool, bool) {
-    let need = need.max(size::FOOTER_MESSAGE_MIN);
-    if need <= room {
-        (true, true)
-    } else if need <= room + division_w {
-        (false, true)
-    } else {
-        (false, position_w <= 0.0)
-    }
-}
-
 /// The largest zoom step of the device that the simulator pane `sim`
 /// holds with its title row, the honest line and the row of controls.
 /// 1 when even that does not fit.
@@ -1654,6 +1655,87 @@ fn page_area(page: Rect) -> Rect {
             page.bottom() - size::PAGE_MARGIN_DOWN,
         ),
     )
+}
+
+/// Where the footer's parts go, as left and right edges.
+#[derive(Debug)]
+pub struct StatusLayout {
+    /// One per segment, in the order given; `None` for one left out.
+    pub segs: Vec<Option<(f32, f32)>>,
+    /// The division, at the left; `None` when it gave way.
+    pub division: Option<(f32, f32)>,
+    /// The message, with its icon.
+    pub msg: (f32, f32),
+}
+
+/// Lay out the footer between `left` and `right`. The division, if any,
+/// starts at `left` and the message follows it. `wants` are the segments'
+/// widths, from the right corner leftwards; each is capped at
+/// [`size::SEGMENT_MAX`]. Parts give way in order: the division first,
+/// then the segments `give` lists, in that order. The division and the
+/// first `soft` of `give` go while the message's `need`, at least
+/// [`size::FOOTER_MESSAGE_MIN`], does not fit. Any part goes while the
+/// message would get less than [`size::MESSAGE_MIN`]. No part ever gets a
+/// negative width, and none leaves `left..right`.
+pub fn status_layout(
+    left: f32,
+    right: f32,
+    division: Option<f32>,
+    wants: &[f32],
+    give: &[usize],
+    soft: usize,
+    need: f32,
+) -> StatusLayout {
+    let left = left.min(right);
+    let gap = size::UNIT * 2.0;
+    let widths: Vec<f32> = wants
+        .iter()
+        .map(|w| w.clamp(0.0, size::SEGMENT_MAX))
+        .collect();
+    let mut div = division.map(|w| w.max(0.0));
+    let mut shown = vec![true; widths.len()];
+    let reserve = need.max(size::FOOTER_MESSAGE_MIN);
+    let order = std::iter::once(None).chain(give.iter().map(|&i| Some(i)));
+    for (k, part) in order.enumerate() {
+        let segs: f32 = widths
+            .iter()
+            .zip(&shown)
+            .filter(|(_, s)| **s)
+            .map(|(w, _)| w)
+            .sum();
+        let room = right - segs - gap - left - div.unwrap_or(0.0);
+        if !((k <= soft && room < reserve) || room < size::MESSAGE_MIN) {
+            break;
+        }
+        match part {
+            None => div = None,
+            Some(i) => {
+                if let Some(s) = shown.get_mut(i) {
+                    *s = false;
+                }
+            }
+        }
+    }
+    let mut x = right;
+    let segs = widths
+        .iter()
+        .zip(&shown)
+        .map(|(w, s)| {
+            s.then(|| {
+                let l = x - w;
+                let seg = (l, x);
+                x = l;
+                seg
+            })
+        })
+        .collect();
+    let division = div.map(|w| (left, (left + w).min(x)));
+    let start = division.map_or(left, |d| d.1);
+    StatusLayout {
+        segs,
+        division,
+        msg: (start, (x - gap).max(start)),
+    }
 }
 
 /// Lay out the project page in `page`. The window's minimum size fits
@@ -1777,24 +1859,33 @@ mod tests {
     /// and only then ends in an ellipsis.
     #[test]
     fn the_footer_gives_way_in_order() {
-        let (div, pos) = (200.0, 100.0);
+        let (div, pos, seg) = (200.0, 100.0, 50.0);
+        let gap = size::UNIT * 2.0;
         let room = size::FOOTER_MESSAGE_MIN + 10.0;
-        assert_eq!(footer_gives_way(100.0, room, div, pos), (true, true));
-        assert_eq!(footer_gives_way(room + 50.0, room, div, pos), (false, true));
-        assert_eq!(
-            footer_gives_way(room + div + 50.0, room, div, pos),
-            (false, false)
-        );
+        // Position at the corner, then Link, Sim and SDK.
+        let wants = [pos, seg, seg, seg];
+        let right = room + gap + div + pos + seg * 3.0;
+        let lay = |need: f32| {
+            let l = status_layout(0.0, right, Some(div), &wants, &[0, 3, 2, 1], 1, need);
+            (l.division.is_some(), l.segs[0].is_some())
+        };
+        assert_eq!(lay(100.0), (true, true));
+        assert_eq!(lay(room + 50.0), (false, true));
+        assert_eq!(lay(room + div + 50.0), (false, false));
         // Without Position, nothing more goes: the line ends in an ellipsis.
-        assert_eq!(
-            footer_gives_way(room + div + 50.0, room, div, 0.0),
-            (false, true)
+        let l = status_layout(
+            0.0,
+            right - pos,
+            Some(div),
+            &wants[1..],
+            &[2, 1, 0],
+            0,
+            room + div + 50.0,
         );
-        // The line claims 360 px even when it is short.
-        assert_eq!(
-            footer_gives_way(10.0, size::FOOTER_MESSAGE_MIN - 1.0, div, pos),
-            (false, true)
-        );
+        assert!(l.division.is_none() && l.segs.iter().all(Option::is_some));
+        // The line claims its minimum even when it is short.
+        let l = status_layout(0.0, right - 11.0, Some(div), &wants, &[0, 3, 2, 1], 1, 10.0);
+        assert!(l.division.is_none() && l.segs[0].is_some(), "{l:?}");
     }
 
     /// The simulator pane of the default layout holds 1x only; a larger
@@ -1895,5 +1986,44 @@ mod tests {
             Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0 - 76.0, 720.0 - 100.0)),
         );
         assert!(p.show_files && p.editor.width() > size::FILES_MIN);
+    }
+
+    /// Long segment text and narrow bars never give a negative width or
+    /// push the message out.
+    #[test]
+    fn status_bar_never_turns_inside_out() {
+        let long = [10_000.0, 2_000.0, 60.0, 70.0, 80.0];
+        for width in [1280.0, 800.0, 500.0, 300.0, 200.0, 100.0, 20.0, 0.0] {
+            for wants in [&long[..], &[50.0; 6][..], &[][..]] {
+                let left = 40.0;
+                let give: Vec<usize> = (0..wants.len()).rev().collect();
+                let l = status_layout(left, width, None, wants, &give, 0, 0.0);
+                assert!(l.msg.0 <= l.msg.1, "{width}: {l:?}");
+                assert!(
+                    l.msg.0 >= left.min(width) && l.msg.1 <= width.max(0.0),
+                    "{width}: {l:?}"
+                );
+                let mut edge = width;
+                for s in l.segs.iter().flatten() {
+                    assert!(
+                        s.0 <= s.1 && s.1 - s.0 <= size::SEGMENT_MAX,
+                        "{width}: {l:?}"
+                    );
+                    assert!(s.1 <= edge && s.0 >= l.msg.1, "{width}: {l:?}");
+                    edge = s.0;
+                }
+                if l.segs.iter().any(Option::is_some) {
+                    assert!(l.msg.1 - l.msg.0 >= size::MESSAGE_MIN, "{width}: {l:?}");
+                }
+            }
+        }
+        // Wide enough: every segment shows, the long ones capped.
+        let give = [4, 3, 2, 1, 0];
+        let l = status_layout(40.0, 1280.0, None, &long, &give, 0, 0.0);
+        assert!(l.segs.iter().all(Option::is_some), "{l:?}");
+        // The leftmost segment gives way first.
+        let l = status_layout(40.0, 500.0, None, &long, &give, 0, 0.0);
+        assert_eq!(l.segs.last(), Some(&None), "{l:?}");
+        assert!(l.segs[0].is_some(), "{l:?}");
     }
 }

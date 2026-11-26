@@ -393,10 +393,12 @@ fn replace_goes_forward_and_stops_at_the_last_match() {
     assert_eq!(h.state().editor.current().unwrap().text, "x aa b aa c aa\n");
 }
 
-/// At the smallest window the find bar lies inside the editor pane, between
-/// the Files pane and the Simulator.
+/// At every editor width the layout allows, from the widest down to the
+/// narrowest, each control of the find bar lies inside the editor pane,
+/// and each field keeps at least its smallest width.
 #[test]
 fn the_find_bar_fits_the_editor() {
+    use robco_studio::theme::size;
     let d = sample("findfit").unwrap();
     let mut h = harness(Some(&*d));
     open_main(&mut h);
@@ -405,29 +407,54 @@ fn the_find_bar_fits_the_editor() {
     h.state_mut().editor.find.query = "return".into();
     h.state_mut().editor.find.replace = "goto".into();
     h.run_steps(3);
-    let editor = h.state().place_rect(Place::Editor).unwrap();
-    let (left, right) = (editor.left(), editor.right());
-    for label in [
-        "Find",
-        "Replace with",
-        "Previous",
-        "Next",
-        "Replace",
-        "Replace all",
-        "Close find",
-        "1 matches",
-    ] {
-        for n in h.query_all_by_label(label) {
-            let r = n.rect();
-            if r.top() > 200.0 {
-                continue; // not the find bar
+    let mut widths = Vec::new();
+    let mut sim = size::SIM_W;
+    loop {
+        h.state_mut().layout.sim_w = sim;
+        h.run_steps(3);
+        let editor = h.state().place_rect(Place::Editor).unwrap();
+        widths.push(editor.width());
+        let (left, right) = (editor.left(), editor.right());
+        for label in [
+            "Find",
+            "Replace with",
+            "Previous",
+            "Next",
+            "Replace",
+            "Replace all",
+            "Close find",
+            "1 matches",
+        ] {
+            let mut seen = false;
+            for n in h.query_all_by_label(label) {
+                let r = n.rect();
+                if r.top() < editor.top() || r.top() > editor.bottom() {
+                    continue; // not the find bar
+                }
+                seen = true;
+                assert!(
+                    r.left() > left && r.right() < right && r.width() > 0.0,
+                    "{label} {r:?} is not inside {left}..{right}"
+                );
+                // The node is the text inside the field's padding.
+                if n.accesskit_node().role() == Role::TextInput {
+                    assert!(
+                        r.width() >= size::FIND_MIN - size::UNIT * 4.0,
+                        "{label} {r:?} at {right}"
+                    );
+                }
             }
-            assert!(
-                r.left() > left && r.right() < right && r.width() > 0.0,
-                "{label} {r:?} is not inside {left}..{right}"
-            );
+            assert!(seen, "{label} at editor width {}", editor.width());
         }
+        // The layout clamps the simulator: once the editor stops shrinking,
+        // this is the narrowest editor.
+        if widths.len() > 1 && widths[widths.len() - 1] >= widths[widths.len() - 2] {
+            break;
+        }
+        sim += 20.0;
     }
+    let narrowest = widths.iter().copied().fold(f32::INFINITY, f32::min);
+    assert!(narrowest <= size::FILES_MIN + 1.0, "{widths:?}");
 }
 
 /// A project folder that is there but cannot be listed is reported at
@@ -667,4 +694,132 @@ fn the_zoom_menu_and_the_row_share_one_step() {
     h.run_steps(2);
     assert_eq!(h.state().sim_zoom, 2);
     h.get_by_label("2x");
+}
+
+/// The folder name the Project dropdown shows for a sample.
+fn folder_name(d: &Path) -> String {
+    d.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_dropdown_shows_its_list_on_the_click_that_opens_it() {
+    let d = sample("dropdown").unwrap();
+    let name = folder_name(&d);
+    let mut h = harness(Some(&*d));
+    h.get_by_label(&format!("Project: {name}")).click();
+    // The click's frame lays the new list out unseen, as egui does for
+    // every new popup, and asks itself for the frame that shows it.
+    h.step();
+    assert!(h.ctx.has_requested_repaint());
+    h.step();
+    assert!(
+        h.query_all_by_label(&name)
+            .any(|n| n.accesskit_node().role() == Role::MenuItem),
+        "the list shows in the frame after the click, with no new input"
+    );
+}
+
+#[test]
+fn a_long_project_name_is_cut_and_given_in_full_on_hover() {
+    let d = sample("a-long-project-name").unwrap();
+    let name = folder_name(&d);
+    let mut h = harness(Some(&*d));
+    let label = format!("Project: {name}");
+    // The status bar names the project too: count before the hover.
+    let before = h.query_all_by_label(&name).count();
+    h.get_by_label(&label).hover();
+    h.run_steps(90);
+    assert_eq!(
+        h.query_all_by_label(&name).count(),
+        before + 1,
+        "a cut name gives its full text in a tooltip"
+    );
+    // The screen reader gets the full name too.
+    h.get_by_label(&label);
+}
+
+#[test]
+fn a_long_file_name_is_cut_in_the_tree_and_given_in_full_on_hover() {
+    let d = sample("longfile").unwrap();
+    let name = "a_file_name_far_too_long_for_the_files_pane_to_show_in_one_row.c";
+    std::fs::write(d.join(name), "").unwrap();
+    let mut h = harness(Some(&*d));
+    let before = h.query_all_by_label(name).count();
+    h.get_by_label(name).hover();
+    h.run_steps(90);
+    assert_eq!(
+        h.query_all_by_label(name).count(),
+        before + 1,
+        "a cut name gives its full text in a tooltip"
+    );
+}
+
+#[test]
+fn news_from_a_native_menu_command_shows_without_input() {
+    let d = sample("news").unwrap();
+    let mut h = harness(Some(&*d));
+    h.run_steps(30);
+    assert!(!h.ctx.has_requested_repaint(), "the window is idle");
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::SaveAll);
+    h.step();
+    assert!(h.ctx.has_requested_repaint());
+    h.step();
+    h.get_by_label("Nothing to save.");
+}
+
+/// With a long line, a scroll to the right leaves the gutter in place, and
+/// a scroll down keeps the first number on the first text row in view.
+#[test]
+fn the_gutter_stays_put_across_and_follows_down() {
+    let d = sample("gutter").unwrap();
+    let mut long = "x".repeat(2000);
+    long.push('\n');
+    for i in 0..200 {
+        long.push_str(&format!("line {i}\n"));
+    }
+    std::fs::write(d.join("src/long.c"), long).unwrap();
+    let mut h = harness(Some(&*d));
+    h.get_by_label("src").click();
+    h.run_steps(2);
+    h.get_by_label("long.c").click();
+    h.run_steps(3);
+    let before = h.state().editor.gutter.unwrap();
+    assert_eq!(before.offset, egui::Vec2::ZERO);
+    let editor = h.state().place_rect(Place::Editor).unwrap();
+    h.hover_at(editor.center());
+    // Shift turns the wheel sideways.
+    for (delta, modifiers) in [
+        (egui::vec2(0.0, -400.0), Modifiers::SHIFT),
+        (egui::vec2(0.0, -537.0), Modifiers::NONE),
+    ] {
+        h.event_modifiers(
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                modifiers,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+            },
+            modifiers,
+        );
+        h.run_steps(4);
+    }
+    let after = h.state().editor.gutter.unwrap();
+    assert!(after.offset.x > 100.0, "{after:?}");
+    assert!(after.offset.y > 100.0, "{after:?}");
+    assert_eq!(after.rect, before.rect);
+    // The first text row in view: the one whose bottom is below the top.
+    let line_h = h.state().theme.code_line();
+    let (n, y) = after.first.unwrap();
+    let row_top = after.text_top - after.offset.y + (n - 1) as f32 * line_h;
+    assert_eq!(
+        n,
+        (after.offset.y / line_h).floor() as usize + 1,
+        "{after:?}"
+    );
+    assert!((y - (row_top + line_h / 2.0)).abs() < 1.0, "{after:?}");
 }

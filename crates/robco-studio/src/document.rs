@@ -205,6 +205,8 @@ pub struct Doc {
     saved: String,
     crlf: bool,
     stamp: Option<Stamp>,
+    /// The bytes last read or written, to compare with the file on disk.
+    disk: Vec<u8>,
     /// A selection, in characters, to apply before the next draw.
     pub pending_sel: Option<(usize, usize)>,
     /// The caret's line and column, from 1, after the last draw.
@@ -221,6 +223,7 @@ impl Doc {
             path: path.to_owned(),
             key: identity(path),
             stamp: Some(stamp),
+            disk: bytes,
             shown,
             saved: text.clone(),
             text,
@@ -252,7 +255,8 @@ impl Doc {
                 self.shown
             ));
         }
-        write_safely(&self.path, &encode(&self.text, self.crlf)).map_err(|e| {
+        let bytes = encode(&self.text, self.crlf);
+        write_safely(&self.path, &bytes).map_err(|e| {
             format!(
                 "Studio could not save {}: {e}. The file was left as it was.",
                 self.shown
@@ -260,16 +264,22 @@ impl Doc {
         })?;
         self.saved = self.text.clone();
         self.stamp = std::fs::metadata(&self.path).ok().map(|m| Stamp::of(&m));
+        self.disk = bytes;
         Ok(())
     }
 
     /// The file on disk is not the one last read or written: another
-    /// program changed it, or removed it.
+    /// program changed it, or removed it. A different length or time says
+    /// changed at once; equal ones go on to compare the bytes, since a
+    /// coarse clock can keep both. A file that cannot be read counts as
+    /// changed.
     pub fn changed_on_disk(&self) -> bool {
         match std::fs::metadata(&self.path) {
-            Ok(m) => Some(Stamp::of(&m)) != self.stamp,
-            Err(_) => true,
+            Ok(m) if Some(Stamp::of(&m)) != self.stamp => return true,
+            Ok(_) => {}
+            Err(_) => return true,
         }
+        !read_regular(&self.path, MAX_FILE).is_ok_and(|b| b == self.disk)
     }
 }
 
@@ -515,6 +525,36 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn same_length_and_time_still_seen() {
+        struct Clean(PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let d = scratch("stamp");
+        let _clean = Clean(d.clone());
+        let f = d.join("main.c");
+        std::fs::write(&f, b"abc\n").unwrap();
+        let mut doc = Doc::open(1, &f, "main.c".into()).unwrap();
+        doc.text = "mine\n".into();
+        assert!(!doc.changed_on_disk());
+        let old = std::fs::metadata(&f).unwrap().modified().unwrap();
+        std::fs::write(&f, b"xyz\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().modified().unwrap(), old);
+        assert!(doc.changed_on_disk());
+        // After a save the written bytes are the reference.
+        doc.save().unwrap();
+        assert!(!doc.changed_on_disk());
     }
 
     #[cfg(unix)]

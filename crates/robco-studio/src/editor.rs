@@ -12,7 +12,7 @@ use crate::document::{self, Doc};
 use crate::kit::{Button, ButtonKind, Kit};
 use crate::theme::{Theme, Type, size};
 use eframe::egui::{
-    self, CornerRadius, Id, Key, Rect, Sense, StrokeKind, text::CCursor, text::CCursorRange,
+    self, CornerRadius, Id, Key, Rect, StrokeKind, text::CCursor, text::CCursorRange,
     text::LayoutJob, text::TextFormat,
 };
 use std::path::Path;
@@ -96,8 +96,34 @@ pub struct Editor {
     tab_scroll: f32,
     /// The document whose tab was last brought into view.
     tab_seen: Option<u64>,
+    /// A Save all that waits on an answer, then goes on.
+    run: Option<SaveRun>,
     /// The tabs did not fit the header in the last frame.
     tab_overflow: bool,
+    /// The gutter as last drawn.
+    pub gutter: Option<Gutter>,
+}
+
+/// Where the gutter was last drawn, and what it showed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gutter {
+    /// The gutter's rectangle. It stays put when the text scrolls sideways.
+    pub rect: Rect,
+    /// How far the text is scrolled, across and down.
+    pub offset: egui::Vec2,
+    /// The top of the text before any scroll.
+    pub text_top: f32,
+    /// The first line number drawn, and the centre height of its text.
+    pub first: Option<(usize, f32)>,
+}
+
+/// A Save all in progress: the documents still to save, and the count so far.
+#[derive(Debug, Default)]
+struct SaveRun {
+    todo: std::collections::VecDeque<u64>,
+    saved: usize,
+    kept: usize,
+    error: Option<String>,
 }
 
 const TEXT_ID: &str = "editor-text";
@@ -160,36 +186,75 @@ impl Editor {
         }
     }
 
-    /// Save every document with edits. Stops at the first that fails, or
-    /// whose file changed on disk: that one is shown and asks.
+    /// Save every document with edits. One whose file changed on disk is
+    /// shown and asks; after the answer the others are saved too. The
+    /// status line then says how many were saved and how many were not.
     pub fn save_all(&mut self) {
         if self.question.is_some() {
             return;
         }
-        let mut last = Some(Ok("Nothing to save.".to_owned()));
-        for i in 0..self.docs.len() {
+        let todo: std::collections::VecDeque<u64> = self
+            .docs
+            .iter()
+            .filter(|d| d.is_dirty())
+            .map(|d| d.id)
+            .collect();
+        if todo.is_empty() {
+            self.news = Some((crate::kit::Level::Info, "Nothing to save.".to_owned()));
+            return;
+        }
+        self.run = Some(SaveRun {
+            todo,
+            ..SaveRun::default()
+        });
+        self.go_on_saving();
+    }
+
+    /// Save the rest of a Save all, up to the next question.
+    fn go_on_saving(&mut self) {
+        let Some(mut run) = self.run.take() else {
+            return;
+        };
+        while let Some(id) = run.todo.pop_front() {
+            let Some(i) = self.index_of(id) else { continue };
             let d = &mut self.docs[i];
             if !d.is_dirty() {
                 continue;
             }
             if d.changed_on_disk() {
-                self.question = Some(Question::Overwrite { doc: d.id });
+                self.question = Some(Question::Overwrite { doc: id });
                 self.active = Some(i);
-                last = None;
-                break;
+                self.run = Some(run);
+                return;
             }
-            last = Some(d.save().map(|()| format!("Saved {}.", d.shown)));
-            if matches!(last, Some(Err(_))) {
-                break;
+            match d.save() {
+                Ok(()) => run.saved += 1,
+                Err(e) => {
+                    run.kept += 1;
+                    run.error.get_or_insert(e);
+                }
             }
         }
-        match last {
-            Some(Ok(s)) if s == "Nothing to save." => {
-                self.news = Some((crate::kit::Level::Info, s));
+        let n = |k: usize| {
+            if k == 1 {
+                "1 document".to_owned()
+            } else {
+                format!("{k} documents")
             }
-            Some(r) => self.report(r),
-            None => {}
-        }
+        };
+        self.news = Some(match (run.kept, run.error) {
+            (0, _) => (
+                crate::kit::Level::Success,
+                format!("Saved {}.", n(run.saved)),
+            ),
+            (k, e) => {
+                let mut s = format!("Saved {}. {} not saved.", n(run.saved), n(k));
+                if let Some(e) = e {
+                    s = format!("{s} {e}");
+                }
+                (crate::kit::Level::Warning, s)
+            }
+        });
     }
 
     fn report(&mut self, r: Result<String, String>) {
@@ -253,17 +318,27 @@ impl Editor {
             self.question = None;
             return;
         };
-        if a == Answer::Cancel
-            || (a == Answer::DoNotSave && matches!(q, Question::Overwrite { .. }))
-        {
+        if let Question::Overwrite { .. } = q {
             self.question = None;
+            let r = (a == Answer::Save).then(|| {
+                self.docs[i]
+                    .save()
+                    .map(|()| format!("Saved {}.", self.docs[i].shown))
+            });
+            match (self.run.as_mut(), r) {
+                (Some(run), Some(Ok(_))) => run.saved += 1,
+                (Some(run), Some(Err(e))) => {
+                    run.kept += 1;
+                    run.error.get_or_insert(e);
+                }
+                (Some(run), None) => run.kept += 1,
+                (None, Some(r)) => self.report(r),
+                (None, None) => {}
+            }
+            self.go_on_saving();
             return;
         }
-        if let Question::Overwrite { .. } = q {
-            let r = self.docs[i]
-                .save()
-                .map(|()| format!("Saved {}.", self.docs[i].shown));
-            self.report(r);
+        if a == Answer::Cancel {
             self.question = None;
             return;
         }
@@ -549,15 +624,7 @@ impl Editor {
         let Some(idx) = self.active else { return };
         let mut area = rect;
         if self.find.open {
-            let bar = Rect::from_min_max(
-                rect.left_top(),
-                egui::pos2(
-                    rect.right(),
-                    rect.top() + 2.0 * (size::CONTROL_H + size::UNIT),
-                ),
-            );
-            area.min.y = bar.bottom() + size::UNIT;
-            self.find_bar(kit, ui, bar);
+            area.min.y = self.find_bar(kit, ui, rect) + size::UNIT;
         }
         let locked = self.question.is_some();
         let doc = &mut self.docs[idx];
@@ -605,110 +672,147 @@ impl Editor {
         let shown = doc.shown.clone();
         let mut caret = None;
         let line_h = kit.theme.code_line();
+        // The gutter stays put across and follows the text down: it is
+        // drawn beside the scroll area, from the offset that area reports.
+        let gutter = Rect::from_min_max(
+            area.min,
+            egui::pos2(
+                (area.left() + size::GUTTER_W).min(area.right()),
+                area.bottom(),
+            ),
+        );
+        let text_area = Rect::from_min_max(egui::pos2(gutter.right(), area.top()), area.max);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(area)
+                .max_rect(text_area)
                 .id_salt(("editor-area", doc_id)),
         );
-        egui::ScrollArea::both()
+        let mut seen = None;
+        let out = egui::ScrollArea::both()
             .id_salt(("editor-scroll", doc_id))
             .auto_shrink(false)
             .show(&mut child, |ui| {
-                ui.horizontal_top(|ui| {
-                    let (gutter, _) =
-                        ui.allocate_exact_size(egui::vec2(size::GUTTER_W, line_h), Sense::hover());
-                    let bg = ui.painter().add(egui::Shape::Noop);
-                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                        let mut job = self.layout_job(kit.theme, doc_id, is_c, buf.as_str());
-                        job.wrap.max_width = wrap;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
-                    let out = egui::TextEdit::multiline(&mut text)
-                        .id(id)
-                        .code_editor()
-                        .lock_focus(true)
-                        .interactive(!locked)
-                        .desired_width(f32::INFINITY)
-                        .frame(egui::Frame::NONE)
-                        .layouter(&mut layouter)
-                        .show(ui);
-                    ui.ctx()
-                        .accesskit_node_builder(id, |n| n.set_label(format!("Text of {shown}")));
-                    let g = &out.galley;
-                    let clip = ui.clip_rect();
-                    let painter = ui.painter();
-                    let cur = out.state.cursor.char_range();
-                    if let Some(c) = cur {
-                        let r = g.pos_from_cursor(c.primary);
-                        let row = Rect::from_min_max(
-                            egui::pos2(gutter.left(), out.galley_pos.y + r.top()),
-                            egui::pos2(clip.right(), out.galley_pos.y + r.bottom()),
-                        );
-                        painter.set(
-                            bg,
-                            egui::Shape::rect_filled(row, CornerRadius::ZERO, p.raised),
-                        );
-                        let pre: String = text.chars().take(c.primary.index.0).collect();
-                        let line = pre.matches('\n').count() + 1;
-                        let col = pre.rsplit('\n').next().map_or(0, |s| s.chars().count()) + 1;
-                        caret = Some((line, col));
-                    }
-                    if let Some(c) = scroll_to {
-                        let r = g
-                            .pos_from_cursor(CCursor::new(c))
-                            .translate(out.galley_pos.to_vec2());
-                        ui.scroll_to_rect(r, Some(egui::Align::Center));
-                    }
-                    // Line numbers for the rows in view. No wrapping: row i is line i + 1.
-                    let top = clip.top() - out.galley_pos.y;
-                    let first = g
-                        .rows
-                        .partition_point(|r| r.pos.y + r.rect().height() <= top);
-                    let font = kit.theme.font(Type::Code);
-                    for (i, r) in g.rows.iter().enumerate().skip(first) {
-                        let y = out.galley_pos.y + r.pos.y;
-                        if y > clip.bottom() {
-                            break;
-                        }
-                        painter.text(
-                            egui::pos2(
-                                gutter.right() - size::STEP_12,
-                                y + (r.rect().height() - line_h) / 2.0 + line_h / 2.0,
+                let bg = ui.painter().add(egui::Shape::Noop);
+                // Code never wraps: a long line scrolls sideways, and row i
+                // is line i + 1 for the gutter.
+                let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+                    let mut job = self.layout_job(kit.theme, doc_id, is_c, buf.as_str());
+                    job.wrap.max_width = f32::INFINITY;
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
+                let out = egui::TextEdit::multiline(&mut text)
+                    .id(id)
+                    .code_editor()
+                    .lock_focus(true)
+                    .interactive(!locked)
+                    .desired_width(f32::INFINITY)
+                    .frame(egui::Frame::NONE)
+                    .layouter(&mut layouter)
+                    .show(ui);
+                ui.ctx()
+                    .accesskit_node_builder(id, |n| n.set_label(format!("Text of {shown}")));
+                let g = &out.galley;
+                let clip = ui.clip_rect();
+                let painter = ui.painter();
+                let cur = out.state.cursor.char_range();
+                let mut row = None;
+                if let Some(c) = cur {
+                    let r = g.pos_from_cursor(c.primary);
+                    let band = (out.galley_pos.y + r.top(), out.galley_pos.y + r.bottom());
+                    painter.set(
+                        bg,
+                        egui::Shape::rect_filled(
+                            Rect::from_min_max(
+                                egui::pos2(clip.left(), band.0),
+                                egui::pos2(clip.right(), band.1),
                             ),
-                            egui::Align2::RIGHT_CENTER,
-                            (i + 1).to_string(),
-                            font.clone(),
-                            p.dim,
-                        );
-                    }
-                    // Matches of the find bar: a `frame` box, the selected one `bright`.
-                    if self.find.open && !self.find.query.is_empty() {
-                        let sel = cur.map(|c| c.as_sorted_char_range());
-                        let mut chars = 0;
-                        let mut last = 0;
-                        for (b, m) in text.match_indices(&self.find.query) {
-                            chars += text[last..b].chars().count();
-                            last = b;
-                            let n = m.chars().count();
-                            let a = g.pos_from_cursor(CCursor::new(chars));
-                            let z = g.pos_from_cursor(CCursor::new(chars + n));
-                            let r = Rect::from_min_max(a.min, egui::pos2(z.max.x, a.max.y))
-                                .translate(out.galley_pos.to_vec2());
-                            if r.intersects(clip) {
-                                let on = sel
-                                    .as_ref()
-                                    .is_some_and(|s| s.start.0 == chars && s.end.0 == chars + n);
-                                painter.rect_stroke(
-                                    r,
-                                    CornerRadius::ZERO,
-                                    kit.theme.frame(if on { p.bright } else { p.frame }),
-                                    StrokeKind::Outside,
-                                );
-                            }
+                            CornerRadius::ZERO,
+                            p.raised,
+                        ),
+                    );
+                    row = Some(band);
+                    let pre: String = text.chars().take(c.primary.index.0).collect();
+                    let line = pre.matches('\n').count() + 1;
+                    let col = pre.rsplit('\n').next().map_or(0, |s| s.chars().count()) + 1;
+                    caret = Some((line, col));
+                }
+                if let Some(c) = scroll_to {
+                    let r = g
+                        .pos_from_cursor(CCursor::new(c))
+                        .translate(out.galley_pos.to_vec2());
+                    ui.scroll_to_rect(r, Some(egui::Align::Center));
+                }
+                // Matches of the find bar: a `frame` box, the selected one `bright`.
+                if self.find.open && !self.find.query.is_empty() {
+                    let sel = cur.map(|c| c.as_sorted_char_range());
+                    let mut chars = 0;
+                    let mut last = 0;
+                    for (b, m) in text.match_indices(&self.find.query) {
+                        chars += text[last..b].chars().count();
+                        last = b;
+                        let n = m.chars().count();
+                        let a = g.pos_from_cursor(CCursor::new(chars));
+                        let z = g.pos_from_cursor(CCursor::new(chars + n));
+                        let r = Rect::from_min_max(a.min, egui::pos2(z.max.x, a.max.y))
+                            .translate(out.galley_pos.to_vec2());
+                        if r.intersects(clip) {
+                            let on = sel
+                                .as_ref()
+                                .is_some_and(|s| s.start.0 == chars && s.end.0 == chars + n);
+                            painter.rect_stroke(
+                                r,
+                                CornerRadius::ZERO,
+                                kit.theme.frame(if on { p.bright } else { p.frame }),
+                                StrokeKind::Outside,
+                            );
                         }
                     }
-                });
+                }
+                seen = Some((out.galley.clone(), out.galley_pos.y, row));
             });
+        // Line numbers for the rows in view, in the screen place of each
+        // row. No wrapping: row i is line i + 1.
+        let mut first = None;
+        if let Some((g, galley_y, row)) = seen {
+            let painter = ui.painter_at(gutter);
+            if let Some((top, bottom)) = row {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(gutter.left(), top),
+                        egui::pos2(gutter.right(), bottom),
+                    ),
+                    CornerRadius::ZERO,
+                    p.raised,
+                );
+            }
+            let view = out.inner_rect;
+            let top = view.top() - galley_y;
+            let skip = g
+                .rows
+                .partition_point(|r| r.pos.y + r.rect().height() <= top);
+            let font = kit.theme.font(Type::Code);
+            for (i, r) in g.rows.iter().enumerate().skip(skip) {
+                let y = galley_y + r.pos.y;
+                if y > view.bottom() {
+                    break;
+                }
+                let centre = y + (r.rect().height() - line_h) / 2.0 + line_h / 2.0;
+                first.get_or_insert((i + 1, centre));
+                painter.text(
+                    egui::pos2(gutter.right() - size::STEP_12, centre),
+                    egui::Align2::RIGHT_CENTER,
+                    (i + 1).to_string(),
+                    font.clone(),
+                    p.dim,
+                );
+            }
+        }
+        self.gutter = Some(Gutter {
+            rect: gutter,
+            offset: out.state.clamped_offset(),
+            text_top: out.inner_rect.top(),
+            first,
+        });
         if text.contains('\r') {
             text = document::to_lf(&text).into_owned();
         }
@@ -717,7 +821,8 @@ impl Editor {
         doc.caret = caret;
     }
 
-    fn find_bar(&mut self, kit: &Kit<'_>, ui: &mut egui::Ui, bar: Rect) {
+    /// Draw the find bar at the top of `area` and return its bottom.
+    fn find_bar(&mut self, kit: &Kit<'_>, ui: &mut egui::Ui, area: Rect) -> f32 {
         let p = kit.p();
         let ms = self.matches();
         let cur = self.current().map(|d| {
@@ -728,41 +833,6 @@ impl Editor {
         });
         let at = cur.and_then(|(s, e)| ms.iter().position(|m| m.start == s && m.end == e));
         let none = !self.find.query.is_empty() && ms.is_empty();
-        // Two rows, so the bar fits a narrow editor: find on the first,
-        // replace on the second. Each field takes what is left of its row.
-        let row_h = bar.height() / 2.0;
-        let rows = [
-            Rect::from_min_size(bar.min, egui::vec2(bar.width(), row_h)),
-            Rect::from_min_size(
-                egui::pos2(bar.left(), bar.top() + row_h),
-                egui::vec2(bar.width(), row_h),
-            ),
-        ];
-        let row = |ui: &mut egui::Ui, r: Rect| {
-            ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(r)
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-            )
-        };
-        let mut first = row(ui, rows[0]);
-        let mut second = row(ui, rows[1]);
-        let ui = &mut first;
-        if kit
-            .icon_button(ui, Icon::Close, "Close find", None)
-            .clicked()
-        {
-            self.find.open = false;
-        }
-        if kit
-            .button(ui, Button::quiet("Next").small().kind(ButtonKind::Outlined))
-            .clicked()
-        {
-            self.find_step(ui.ctx(), true);
-        }
-        if kit.button(ui, Button::quiet("Previous").small()).clicked() {
-            self.find_step(ui.ctx(), false);
-        }
         let tag = if none {
             "No match.".to_owned()
         } else if ms.is_empty() {
@@ -773,27 +843,89 @@ impl Editor {
                 None => format!("{} matches", ms.len()),
             }
         };
-        kit.text(ui, &tag, Type::Small, if none { p.alarm } else { p.dim });
-        let fid = Id::unique("find-query");
-        let w = size::FIND_W.min(ui.available_width()).max(0.0);
-        let r = kit.text_field(ui, fid, &mut self.find.query, "Find", "Find", w, none);
-        let ui2 = &mut second;
+        // Find on the first row, replace below it. Each field keeps at
+        // least `FIND_MIN`; the buttons that do not fit beside it wrap to
+        // further rows, so every control stays inside a narrow editor.
+        let gap = ui.spacing().item_spacing.x;
+        let button = |t: &str| kit.button_width(ui, &Button::quiet(t).small());
+        let tag_w = ui
+            .painter()
+            .layout_no_wrap(tag.clone(), kit.theme.font(Type::Small), p.dim)
+            .size()
+            .x;
+        let width = area.width();
+        let find_rows = pack(
+            &[
+                size::SMALL_H,
+                button("Next"),
+                button("Previous"),
+                if tag.is_empty() { 0.0 } else { tag_w },
+            ],
+            width,
+            gap,
+        );
+        let replace_rows = pack(&[button("Replace all"), button("Replace")], width, gap);
+        let n_find = find_rows.iter().max().map_or(1, |r| r + 1);
+        let n_replace = replace_rows.iter().max().map_or(1, |r| r + 1);
+        let row_h = size::CONTROL_H + size::UNIT;
+        let mut rows: Vec<egui::Ui> = (0..n_find + n_replace)
+            .map(|i| {
+                let r = Rect::from_min_size(
+                    egui::pos2(area.left(), area.top() + row_h * i as f32),
+                    egui::vec2(width, row_h),
+                );
+                ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(r)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                )
+            })
+            .collect();
         if kit
-            .button(ui2, Button::quiet("Replace all").small())
+            .icon_button(&mut rows[find_rows[0]], Icon::Close, "Close find", None)
+            .clicked()
+        {
+            self.find.open = false;
+        }
+        let ui = &mut rows[find_rows[1]];
+        if kit
+            .button(ui, Button::quiet("Next").small().kind(ButtonKind::Outlined))
+            .clicked()
+        {
+            self.find_step(ui.ctx(), true);
+        }
+        let ui = &mut rows[find_rows[2]];
+        if kit.button(ui, Button::quiet("Previous").small()).clicked() {
+            self.find_step(ui.ctx(), false);
+        }
+        if !tag.is_empty() {
+            kit.text(
+                &mut rows[find_rows[3]],
+                &tag,
+                Type::Small,
+                if none { p.alarm } else { p.dim },
+            );
+        }
+        let ui = &mut rows[n_find + replace_rows[0]];
+        if kit
+            .button(ui, Button::quiet("Replace all").small())
             .clicked()
         {
             let n = self.replace_all();
             self.news = Some((crate::kit::Level::Info, format!("Replaced {n}.")));
         }
-        if kit.button(ui2, Button::quiet("Replace").small()).clicked() {
-            self.replace_one(ui2.ctx());
+        let ui = &mut rows[n_find + replace_rows[1]];
+        if kit.button(ui, Button::quiet("Replace").small()).clicked() {
+            self.replace_one(ui.ctx());
         }
+        let ui = &mut rows[n_find];
         let rid = Id::unique("find-replace");
         let w = (size::FIND_W / 2.0 + size::STEP_32)
-            .min(ui2.available_width())
+            .max(size::FIND_MIN)
+            .min(ui.available_width())
             .max(0.0);
         kit.text_field(
-            ui2,
+            ui,
             rid,
             &mut self.find.replace,
             "Replace with",
@@ -801,6 +933,10 @@ impl Editor {
             w,
             false,
         );
+        let ui = &mut rows[0];
+        let fid = Id::unique("find-query");
+        let w = size::FIND_W.min(ui.available_width()).max(0.0);
+        let r = kit.text_field(ui, fid, &mut self.find.query, "Find", "Find", w, none);
         if std::mem::take(&mut self.find.focus) {
             r.request_focus();
         }
@@ -808,7 +944,31 @@ impl Editor {
             self.find_step(ui.ctx(), true);
             r.request_focus();
         }
+        area.top() + row_h * (n_find + n_replace) as f32
     }
+}
+
+/// The row of each control beside a field, packed right to left in
+/// `width` with `gap` between them. Row 0 keeps `FIND_MIN` for the field;
+/// a control that does not fit goes to the next row. A zero width is an
+/// absent control and takes no room.
+fn pack(widths: &[f32], width: f32, gap: f32) -> Vec<usize> {
+    let mut row = 0;
+    let mut used = size::FIND_MIN;
+    widths
+        .iter()
+        .map(|&w| {
+            if w > 0.0 {
+                if used + gap + w > width {
+                    row += 1;
+                    used = w;
+                } else {
+                    used += gap + w;
+                }
+            }
+            row
+        })
+        .collect()
 }
 
 /// The name each tab shows: the file name, or, when two open files share
@@ -1046,6 +1206,77 @@ mod replace_tests {
         e.save();
         assert_eq!(e.question, None);
         assert_eq!(std::fs::read(&f).unwrap(), b"again\n");
+    }
+
+    /// Save all asks about each document changed on disk in turn and
+    /// goes on after each answer, then counts what it saved.
+    #[test]
+    fn save_all_goes_on_after_each_question() {
+        use super::{Answer, Editor, Question};
+        let g = folder("all");
+        let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+        let mut e = Editor::default();
+        for n in names {
+            std::fs::write(g.0.join(n), b"one\n").unwrap();
+            e.open(&g.0.join(n), n.into());
+        }
+        for d in &mut e.docs {
+            d.text = "mine\n".into();
+        }
+        let ids: Vec<u64> = e.docs.iter().map(|d| d.id).collect();
+        std::fs::write(g.0.join("a.txt"), b"theirs, longer\n").unwrap();
+        std::fs::write(g.0.join("c.txt"), b"theirs, longer\n").unwrap();
+        e.save_all();
+        assert_eq!(e.question, Some(Question::Overwrite { doc: ids[0] }));
+        e.answer(ids[0], Answer::Save);
+        assert_eq!(e.question, Some(Question::Overwrite { doc: ids[2] }));
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"mine\n");
+        e.answer(ids[2], Answer::Cancel);
+        assert_eq!(e.question, None);
+        for (n, want) in [
+            ("a.txt", &b"mine\n"[..]),
+            ("b.txt", b"mine\n"),
+            ("c.txt", b"theirs, longer\n"),
+            ("d.txt", b"mine\n"),
+        ] {
+            assert_eq!(std::fs::read(g.0.join(n)).unwrap(), want, "{n}");
+        }
+        assert_eq!(
+            e.news.as_ref().map(|(_, s)| s.as_str()),
+            Some("Saved 3 documents. 1 document not saved.")
+        );
+    }
+
+    /// Quit with several edited documents asks about each in turn; every
+    /// document ends saved, dropped or kept open by its own answer.
+    #[test]
+    fn quit_asks_about_each_document_in_turn() {
+        use super::{Answer, Editor, Question};
+        let g = folder("quit");
+        let mut e = Editor::default();
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(g.0.join(n), b"one\n").unwrap();
+            e.open(&g.0.join(n), n.into());
+        }
+        for d in &mut e.docs {
+            d.text = "mine\n".into();
+        }
+        let ids: Vec<u64> = e.docs.iter().map(|d| d.id).collect();
+        assert!(!e.request_quit());
+        e.answer(ids[0], Answer::Save);
+        assert_eq!(e.question, Some(Question::Quit { doc: ids[1] }));
+        e.answer(ids[1], Answer::DoNotSave);
+        assert_eq!(e.question, Some(Question::Quit { doc: ids[2] }));
+        e.answer(ids[2], Answer::Cancel);
+        assert_eq!(e.question, None);
+        assert!(!e.quit_allowed);
+        assert_eq!(e.docs.len(), 1, "c.txt stays open");
+        assert_eq!(std::fs::read(g.0.join("a.txt")).unwrap(), b"mine\n");
+        assert_eq!(std::fs::read(g.0.join("b.txt")).unwrap(), b"one\n");
+        assert!(!e.request_quit());
+        e.answer(ids[2], Answer::DoNotSave);
+        assert!(e.quit_allowed);
+        assert_eq!(std::fs::read(g.0.join("c.txt")).unwrap(), b"one\n");
     }
 
     /// The active tab is brought into view from either side, and the

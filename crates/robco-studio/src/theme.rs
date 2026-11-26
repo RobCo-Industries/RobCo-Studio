@@ -177,6 +177,10 @@ pub mod size {
     pub const WINDOW: [f32; 2] = [1280.0, 720.0];
     /// The spacing unit. Steps are 4, 8, 12, 16 and 24.
     pub const UNIT: f32 = 4.0;
+    /// The widest a footer segment gets; longer text is cut.
+    pub const SEGMENT_MAX: f32 = 180.0;
+    /// The narrowest the footer message gets while segments remain.
+    pub const MESSAGE_MIN: f32 = 160.0;
     /// Spacing steps.
     pub const STEP_6: f32 = 6.0;
     /// 12.
@@ -301,6 +305,9 @@ pub mod size {
     pub const MENU_POPUP_W: f32 = 300.0;
     /// The find field.
     pub const FIND_W: f32 = 190.0;
+    /// The narrowest find or replace field: below it, the find bar's
+    /// buttons wrap to a further row.
+    pub const FIND_MIN: f32 = 100.0;
     /// A dialog.
     pub const DIALOG_W: f32 = 440.0;
     /// The width of an empty state's sentence.

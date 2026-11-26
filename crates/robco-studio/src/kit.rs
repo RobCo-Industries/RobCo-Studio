@@ -256,6 +256,25 @@ impl<'a> Kit<'a> {
         }
     }
 
+    /// One line of text cut to `max_w` with an ellipsis. The second value
+    /// is true when the text was cut: then the caller gives the full text
+    /// in a tooltip and to the screen reader.
+    pub fn fit(
+        &self,
+        painter: &egui::Painter,
+        text: &str,
+        t: Type,
+        color: Color32,
+        max_w: f32,
+    ) -> (std::sync::Arc<egui::Galley>, bool) {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.to_owned(), self.theme.font(t), color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
+        let g = painter.layout_job(job);
+        let cut = g.elided;
+        (g, cut)
+    }
+
     /// Body text as a widget, so that it is in the accessibility tree.
     pub fn text(&self, ui: &mut Ui, text: &str, t: Type, color: Color32) -> Response {
         ui.add(
@@ -916,12 +935,18 @@ impl<'a> Kit<'a> {
             self.art.icon(painter, slot(x), icon, fg);
         }
         x += size::ICON + size::UNIT;
-        let g = painter.layout_no_wrap(name.to_owned(), self.theme.font(Type::Body), fg);
+        let (g, cut) = self.fit(
+            painter,
+            name,
+            Type::Body,
+            fg,
+            rect.right() - size::UNIT * 2.0 - x,
+        );
         painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
         if resp.has_focus() {
             self.focus_ring(painter, rect.shrink(stroke::FOCUS_GAP + stroke::FOCUS_RING));
         }
-        resp
+        if cut { resp.on_hover_text(name) } else { resp }
     }
 
     /// A one-line text field: a 1 px `frame` on `ground`, 26 high, a hint in
@@ -1004,23 +1029,20 @@ impl<'a> Kit<'a> {
         let x = rect.left() + size::UNIT * 2.0;
         self.art.icon(painter, slot(x), icon, p.dim);
         let fg = if none { p.dim } else { p.text };
-        let g = painter.layout_no_wrap(value.to_owned(), self.theme.font(Type::Body), fg);
-        painter.galley(
-            egui::pos2(
-                x + size::ICON + size::UNIT * 2.0,
-                rect.center().y - g.size().y / 2.0,
-            ),
-            g,
-            fg,
-        );
-        self.art.icon(
-            painter,
-            slot(rect.right() - size::UNIT * 2.0 - size::ICON),
-            Icon::ChevDown,
-            p.dim,
-        );
+        let tx = x + size::ICON + size::UNIT * 2.0;
+        let chev = rect.right() - size::UNIT * 2.0 - size::ICON;
+        let (g, cut) = self.fit(painter, value, Type::Body, fg, chev - size::UNIT - tx);
+        painter.galley(egui::pos2(tx, rect.center().y - g.size().y / 2.0), g, fg);
+        self.art.icon(painter, slot(chev), Icon::ChevDown, p.dim);
         if resp.has_focus() {
             self.focus_ring(painter, rect);
+        }
+        let resp = if cut { resp.on_hover_text(value) } else { resp };
+        // Toggle before the popup reads its state, so the click's own
+        // frame lays the list out.
+        let popup_id = egui::Popup::default_response_id(&resp);
+        if resp.clicked() {
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
         }
         let mut chosen = None;
         egui::Popup::from_response(&resp)
@@ -1034,11 +1056,8 @@ impl<'a> Kit<'a> {
                     }
                 }
             });
-        if resp.clicked() {
-            egui::Popup::toggle_id(ui.ctx(), egui::Popup::default_response_id(&resp));
-        }
         if chosen.is_some() {
-            egui::Popup::close_id(ui.ctx(), egui::Popup::default_response_id(&resp));
+            egui::Popup::close_id(ui.ctx(), popup_id);
         }
         chosen
     }
@@ -1085,15 +1104,18 @@ impl<'a> Kit<'a> {
             );
         }
         x += size::ICON + size::UNIT;
-        let g = painter.layout_no_wrap(text.to_owned(), self.theme.font(Type::Body), fg);
+        let n = painter.layout_no_wrap(note.to_owned(), self.theme.font(Type::Small), p.dim);
+        let note_x = rect.right() - size::UNIT * 2.0 - n.size().x;
+        let gap = if note.is_empty() {
+            0.0
+        } else {
+            size::UNIT * 2.0
+        };
+        let (g, cut) = self.fit(painter, text, Type::Body, fg, note_x - gap - x);
         painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
-        let g = painter.layout_no_wrap(note.to_owned(), self.theme.font(Type::Small), p.dim);
         painter.galley(
-            egui::pos2(
-                rect.right() - size::UNIT * 2.0 - g.size().x,
-                rect.center().y - g.size().y / 2.0,
-            ),
-            g,
+            egui::pos2(note_x, rect.center().y - n.size().y / 2.0),
+            n,
             p.dim,
         );
         if resp.has_focus() {
@@ -1101,6 +1123,7 @@ impl<'a> Kit<'a> {
         }
         match unavailable {
             Some(why) => resp.on_hover_text(why),
+            None if cut => resp.on_hover_text(text),
             None => resp,
         }
     }
@@ -1315,50 +1338,45 @@ impl<'a> Kit<'a> {
         resp
     }
 
-    /// The width of a footer segment.
+    /// The width one footer segment wants for `text`, uncut.
     pub fn status_segment_width(&self, ui: &Ui, icon: Option<Icon>, text: &str) -> f32 {
         let g = ui.painter().layout_no_wrap(
             text.to_owned(),
             self.theme.font(Type::Small),
             self.p().text,
         );
-        let icon_w = if icon.is_some() {
-            size::ICON + size::UNIT
-        } else {
-            0.0
-        };
-        size::FOOTER_SEG_PAD * 2.0 + icon_w + g.size().x
+        Self::status_segment_chrome(icon) + g.size().x
     }
 
-    /// Paint one segment of the footer, right to left from `right`: 9 px of
-    /// padding and a 16 px line in `frame` at its left. Returns the new
-    /// right edge.
-    pub fn status_segment(
-        &self,
-        ui: &mut Ui,
-        right: f32,
-        rect: Rect,
-        icon: Option<Icon>,
-        text: &str,
-    ) -> f32 {
-        let p = self.p();
-        let w = self.status_segment_width(ui, icon, text);
-        let painter = ui.painter();
-        let g = painter.layout_no_wrap(text.to_owned(), self.theme.font(Type::Small), p.text);
-        let pad = size::FOOTER_SEG_PAD;
+    /// The padding and icon width of a segment, around its text.
+    fn status_segment_chrome(icon: Option<Icon>) -> f32 {
         let icon_w = if icon.is_some() {
             size::ICON + size::UNIT
         } else {
             0.0
         };
-        let r = Rect::from_min_max(
-            egui::pos2(right - w, rect.top()),
-            egui::pos2(right, rect.bottom()),
+        size::FOOTER_SEG_PAD * 2.0 + icon_w
+    }
+
+    /// Paint one segment of the footer in `r`: padding and a 16 px line in
+    /// `frame` at its left. Text that does not fit is cut with an ellipsis
+    /// and shown whole in a tooltip.
+    pub fn status_segment(&self, ui: &mut Ui, r: Rect, icon: Option<Icon>, text: &str) {
+        let p = self.p();
+        let painter = ui.painter().clone();
+        let pad = size::FOOTER_SEG_PAD;
+        let icon_w = Self::status_segment_chrome(icon) - pad * 2.0;
+        let (g, cut) = self.fit(
+            &painter,
+            text,
+            Type::Small,
+            p.text,
+            r.width() - Self::status_segment_chrome(icon),
         );
-        self.footer_divider(painter, r.left(), r.center().y);
+        self.footer_divider(&painter, r.left(), r.center().y);
         if let Some(i) = icon {
             self.art.icon(
-                painter,
+                &painter,
                 Rect::from_min_size(
                     egui::pos2(r.left() + pad, r.top()),
                     egui::vec2(size::ICON, r.height()),
@@ -1370,7 +1388,7 @@ impl<'a> Kit<'a> {
         let y = r.center().y - g.size().y / 2.0;
         painter.galley(egui::pos2(r.left() + pad + icon_w, y), g, p.text);
         // In the accessibility tree too: an invisible label over the segment.
-        ui.put(
+        let resp = ui.put(
             r,
             egui::Label::new(
                 egui::RichText::new(text)
@@ -1378,7 +1396,9 @@ impl<'a> Kit<'a> {
                     .font(self.theme.font(Type::Small)),
             ),
         );
-        r.left()
+        if cut {
+            resp.on_hover_text(text);
+        }
     }
 
     /// A 16 px line in `frame`, centred on `y`.
