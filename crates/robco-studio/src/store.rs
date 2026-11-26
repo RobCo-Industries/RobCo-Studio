@@ -118,6 +118,46 @@ pub fn allowed(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | '\'')
 }
 
+/// A theme's name folded for comparison: Unicode lower case, as
+/// `str::to_lowercase` gives it. Studio applies no normal form, so a
+/// letter with a combining accent and its composed letter stay apart. The
+/// cleaned names never hold a combining mark on its own, so that case
+/// cannot reach a comparison of two listed names.
+pub fn fold(name: &str) -> String {
+    name.to_lowercase()
+}
+
+/// Two theme names are one name without regard to case. Every check of
+/// a theme's name uses this: taken names, the names that ship,
+/// `--theme`, twins in the folder, rename and replace.
+pub fn same_name(a: &str, b: &str) -> bool {
+    fold(a) == fold(b)
+}
+
+/// What a file's `version` says, by the one rule for theme files and
+/// `settings.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Version {
+    /// No `version` key.
+    Missing,
+    /// The format this Studio knows.
+    Known,
+    /// A newer whole number.
+    Newer(i64),
+    /// Anything else: 0, a negative number, a string, a float, a table.
+    Bad,
+}
+
+/// The `version` value of a file, by the one rule.
+pub fn version(v: Option<&Value>) -> Version {
+    match v {
+        None => Version::Missing,
+        Some(Value::Integer(n)) if *n == FORMAT => Version::Known,
+        Some(Value::Integer(n)) if *n > FORMAT => Version::Newer(*n),
+        Some(_) => Version::Bad,
+    }
+}
+
 /// The text with every character outside the set gone, spaces at the ends
 /// gone, runs of spaces made one, cut at [`NAME_MAX`] characters. Empty
 /// when no letter or digit is left.
@@ -342,16 +382,16 @@ pub fn read_theme(file: &str, bytes: &[u8]) -> Result<Loaded, Note> {
         return Err(not_theme(file, "it is over 16 KiB"));
     }
     let root = parse(bytes).map_err(|why| not_theme(file, &why))?;
-    match root.get("version") {
-        None => return Err(not_theme(file, "no version")),
-        Some(Value::Integer(n)) if *n > FORMAT => {
+    match version(root.get("version")) {
+        Version::Missing => return Err(not_theme(file, "no version")),
+        Version::Newer(n) => {
             return Err(error(format!(
                 "%STUDIO-E-THEMENEW, {} uses theme format {n}, this Studio knows {FORMAT}. The theme is not listed. Update Studio to use it.",
                 shown(file)
             )));
         }
-        Some(Value::Integer(n)) if *n == FORMAT => {}
-        Some(_) => return Err(not_theme(file, "version is not 1")),
+        Version::Known => {}
+        Version::Bad => return Err(not_theme(file, "version is not 1")),
     }
     let base = match root.get("base") {
         None => return Err(not_theme(file, "no base colour")),
@@ -469,11 +509,7 @@ pub fn read_folder(dir: &Path) -> Folder {
             Err(n) => out.refused.push((file, n)),
         }
     }
-    let names: Vec<String> = out
-        .themes
-        .iter()
-        .map(|(_, t)| t.name.to_lowercase())
-        .collect();
+    let names: Vec<String> = out.themes.iter().map(|(_, t)| fold(&t.name)).collect();
     let mut done: Vec<&str> = Vec::new();
     for (i, n) in names.iter().enumerate() {
         if done.contains(&n.as_str()) {
@@ -618,9 +654,18 @@ impl Settings {
         Self::parse(&bytes).map_err(|why| no_settings(&why))
     }
 
-    /// The settings in `bytes`. The error is the line and kind of fault.
+    /// The settings in `bytes`. The error is the line and kind of fault,
+    /// or the version this Studio cannot read. A missing version is 1,
+    /// since every key of the file may be missing.
     pub fn parse(bytes: &[u8]) -> Result<Settings, String> {
-        parse(bytes).map(|table| Settings { table })
+        let table = parse(bytes)?;
+        match version(table.get("version")) {
+            Version::Missing | Version::Known => Ok(Settings { table }),
+            Version::Newer(n) => Err(format!(
+                "it uses settings format {n}, this Studio knows {FORMAT}"
+            )),
+            Version::Bad => Err(format!("version is not {FORMAT}")),
+        }
     }
 
     /// The file's text, unknown keys and all.
@@ -696,12 +741,22 @@ impl Settings {
         t.insert("theme".into(), Value::String(theme.to_owned()));
         t.insert("high_legibility".into(), Value::Boolean(high_legibility));
         t.insert("compact_header".into(), Value::Boolean(compact_header));
+        // A key of `[unsaved]` this Studio does not know stays. A value
+        // of the wrong kind in its place is not a table and goes.
+        let mut s = match t.remove("unsaved") {
+            Some(Value::Table(s)) => s,
+            _ => Table::new(),
+        };
+        for key in UNSAVED_KEYS.iter().chain(STRENGTH_KEYS.iter()) {
+            s.remove(*key);
+        }
         match unsaved {
             None => {
-                t.remove("unsaved");
+                if !s.is_empty() {
+                    t.insert("unsaved".into(), Value::Table(s));
+                }
             }
             Some(u) => {
-                let mut s = Table::new();
                 s.insert("from".into(), Value::String(u.from.clone()));
                 s.insert("base".into(), Value::String(hex(u.spec.base)));
                 for (i, key) in STRENGTH_KEYS.iter().enumerate() {
@@ -717,6 +772,9 @@ impl Settings {
         }
     }
 }
+
+/// The keys of `[unsaved]` besides the ten strengths.
+const UNSAVED_KEYS: [&str; 4] = ["from", "base", "moves", "rate"];
 
 fn no_settings(why: &str) -> Note {
     warn(format!(

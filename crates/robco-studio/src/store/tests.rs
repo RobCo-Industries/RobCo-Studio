@@ -463,3 +463,83 @@ fn a_broken_settings_file_is_a_note() {
     );
     assert_eq!(Settings::read(&d.0.join("none")), Ok(Settings::default()));
 }
+
+#[test]
+fn one_rule_for_versions() {
+    let rows: &[(&str, Version)] = &[
+        ("", Version::Missing),
+        ("version = 1\n", Version::Known),
+        ("version = 2\n", Version::Newer(2)),
+        ("version = 0\n", Version::Bad),
+        ("version = -1\n", Version::Bad),
+        ("version = \"1\"\n", Version::Bad),
+        ("version = 1.0\n", Version::Bad),
+    ];
+    for (text, want) in rows {
+        let t: Table = text.parse().unwrap();
+        assert_eq!(version(t.get("version")), *want, "{text}");
+    }
+}
+
+#[test]
+fn theme_file_versions() {
+    let rows: &[(&str, Result<(), &str>)] = &[
+        (
+            "",
+            Err("%STUDIO-E-NOTTHEME, t.toml is not a theme: no version."),
+        ),
+        ("version = 1\n", Ok(())),
+        (
+            "version = 2\n",
+            Err("%STUDIO-E-THEMENEW, t.toml uses theme format 2, this Studio knows 1."),
+        ),
+        (
+            "version = 0\n",
+            Err("%STUDIO-E-NOTTHEME, t.toml is not a theme: version is not 1."),
+        ),
+        (
+            "version = -1\n",
+            Err("%STUDIO-E-NOTTHEME, t.toml is not a theme: version is not 1."),
+        ),
+        (
+            "version = \"1\"\n",
+            Err("%STUDIO-E-NOTTHEME, t.toml is not a theme: version is not 1."),
+        ),
+        (
+            "version = 1.0\n",
+            Err("%STUDIO-E-NOTTHEME, t.toml is not a theme: version is not 1."),
+        ),
+    ];
+    for (v, want) in rows {
+        let text = format!("{v}base = \"#ff7a1a\"\n");
+        let got = read_theme("t.toml", text.as_bytes());
+        match want {
+            Ok(()) => assert!(got.is_ok(), "{v}"),
+            Err(start) => {
+                let line = got.unwrap_err().text;
+                assert!(line.starts_with(start), "{v}: {line}");
+            }
+        }
+    }
+}
+
+#[test]
+fn settings_file_versions() {
+    let rows: &[(&str, Result<(), &str>)] = &[
+        ("", Ok(())),
+        ("version = 1\n", Ok(())),
+        (
+            "version = 2\n",
+            Err("it uses settings format 2, this Studio knows 1"),
+        ),
+        ("version = 0\n", Err("version is not 1")),
+        ("version = -1\n", Err("version is not 1")),
+        ("version = \"1\"\n", Err("version is not 1")),
+        ("version = 1.0\n", Err("version is not 1")),
+    ];
+    for (v, want) in rows {
+        let text = format!("{v}theme = \"Amber\"\n");
+        let got = Settings::parse(text.as_bytes()).map(|_| ());
+        assert_eq!(got, want.map_err(str::to_owned), "{v}");
+    }
+}

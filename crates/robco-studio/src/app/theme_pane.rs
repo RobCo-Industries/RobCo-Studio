@@ -808,6 +808,7 @@ impl Studio {
             f,
             ThemeFault::Write(_)
                 | ThemeFault::NoFolder
+                | ThemeFault::Full
                 | ThemeFault::NotTheme(_)
                 | ThemeFault::ShippedTheme
         ) {

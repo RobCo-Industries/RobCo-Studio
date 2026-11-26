@@ -245,7 +245,7 @@ pub fn theme_items(themes: &[Spec], changed: Option<&Spec>, held: &[Held]) -> Ve
         .enumerate()
         .filter(|(_, t)| !t.is_shipped())
         .collect();
-    own.sort_by_cached_key(|(_, t)| t.name.to_lowercase());
+    own.sort_by_cached_key(|(_, t)| crate::store::fold(&t.name));
     for (k, (i, t)) in own.iter().take(THEMES_IN_MENU).enumerate() {
         out.push(Item {
             separator: k == 0,

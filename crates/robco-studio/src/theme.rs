@@ -103,7 +103,7 @@ pub static SHIPPED: [Spec; 6] = [
 pub fn shipped(name: &str) -> Option<usize> {
     SHIPPED
         .iter()
-        .position(|t| t.name.eq_ignore_ascii_case(name))
+        .position(|t| crate::store::same_name(&t.name, name))
 }
 
 /// Said when high legibility holds the theme flat.

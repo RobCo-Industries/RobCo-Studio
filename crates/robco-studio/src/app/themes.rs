@@ -38,6 +38,9 @@ pub enum ThemeFault {
     ShippedTheme,
     /// Studio has no settings folder in this run.
     NoFolder,
+    /// The themes folder holds the most files Studio reads, so a new file
+    /// would not be listed.
+    Full,
     /// The file to add is not a theme: the line that says why.
     NotTheme(String),
     /// Studio could not write or delete the file: the line that says why.
@@ -59,6 +62,10 @@ impl ThemeFault {
             ThemeFault::NoFolder => {
                 "Studio has no settings folder in this run. The theme is not saved.".into()
             }
+            ThemeFault::Full => format!(
+                "The themes folder holds {} files, the most Studio reads. Delete one first. The theme is not saved.",
+                store::MAX_FILES
+            ),
             ThemeFault::NotTheme(t) | ThemeFault::Write(t) => t.clone(),
         }
     }
@@ -139,7 +146,7 @@ impl Studio {
             .or_else(|| {
                 (0..self.themes.len()).find(|i| {
                     self.theme_files.get(*i).is_some_and(|f| f.is_some())
-                        && self.own_name(*i).eq_ignore_ascii_case(name)
+                        && store::same_name(&self.own_name(*i), name)
                 })
             })
             .or_else(|| self.find_key(name))
@@ -167,6 +174,8 @@ impl Studio {
 
     /// The place of the theme `key` names.
     pub(super) fn find_key(&self, key: &str) -> Option<usize> {
+        // A file's name is matched as it is, not as a theme's name: Studio
+        // writes the key from the file's name itself.
         if key.ends_with(".toml") {
             self.theme_files
                 .iter()
@@ -276,9 +285,8 @@ impl Studio {
         if let Some(i) = shipped(&name) {
             return Err(ThemeFault::Shipped(SHIPPED[i].name.to_string()));
         }
-        let lower = name.to_lowercase();
         let taken = (SHIPPED.len()..self.themes.len())
-            .find(|i| Some(*i) != except && self.own_name(*i).to_lowercase() == lower);
+            .find(|i| Some(*i) != except && store::same_name(&self.own_name(*i), &name));
         Ok((name, taken))
     }
 
@@ -300,6 +308,8 @@ impl Studio {
 
     /// A new file name in `dir` for the name `name`.
     fn new_file(dir: &Path, name: &str) -> String {
+        // File names, not theme names: in lower case, so a new file never
+        // lands on an old one where the system ignores case.
         let have: Vec<String> = std::fs::read_dir(dir)
             .map(|r| {
                 r.flatten()
@@ -312,10 +322,29 @@ impl Studio {
 
     /// Write `spec` as `file`, read the folder again and take that theme.
     /// The result is the line for the status line.
+    ///
+    /// A new file is refused when the folder holds [`store::MAX_FILES`]
+    /// already, since Studio would not list it. Success means the theme is
+    /// listed and in use. On failure the changed theme stays changed.
     fn keep(&mut self, dir: &Path, file: &str, spec: &Spec) -> Result<String, ThemeFault> {
+        let files = store::toml_files(dir);
+        let new = !files.iter().any(|f| f == file);
+        if new && files.len() >= store::MAX_FILES {
+            return Err(ThemeFault::Full);
+        }
         store::write_theme(dir, file, spec).map_err(|n| ThemeFault::Write(n.text))?;
         self.reload_themes();
-        self.current = self.find_key(file).unwrap_or(0);
+        let Some(i) = self.find_key(file) else {
+            // Another program filled the folder meanwhile. A new file goes
+            // again, so the folder is as it was.
+            if new {
+                let _ = std::fs::remove_file(dir.join(file));
+                self.reload_themes();
+            }
+            self.refresh_theme();
+            return Err(ThemeFault::Full);
+        };
+        self.current = i;
         self.changed = None;
         self.refresh_theme();
         self.save_settings();
