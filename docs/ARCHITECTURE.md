@@ -218,8 +218,20 @@ flowchart TB
 Rules of the screen, each with a test:
 
 - Live and Arcade ask for a frame at the chosen rate only while the window has focus. Off, Soft and Still ask for none, so an idle window costs nothing. Without focus the pass holds the still form of its last frame.
+- Each strength alone above zero, the rest at zero, asks for frames as this table says:
+
+| Strength | Frames |
+|---|---|
+| bloom, vignette, curvature, mask, aberration | Never |
+| scanlines | Always at Live and Arcade, where they drift; never at Still |
+| noise, flicker, band | Always, at the frame rate while the window has focus |
+| persistence | After a change of the picture, until the afterglow fades |
+
+- Persistence is afterglow, so it needs frames only while the picture changes. A frame counts as a change unless the screen's own request for a frame was its only cause and it brought no input. After a change the screen asks for frames, with or without focus, until what is left of the old picture is below 1/256, one step of an 8-bit channel, then stops. At full persistence and 30 frames a second that takes under a second. So Persistence works at Still, and at Live with the other moving strengths at zero, and an idle window still costs nothing.
+- The textures of the drawings, the icons, the scanline texture and the device at each zoom step are made together for one display scale and one glow state, and hold the glow state they were made with. At the start of each frame the window compares it with what the current level needs and makes them again when they differ. A level changed by the menu, a shortcut, the Adjust dialog, high legibility or at start all end in that check. The label halo atlas is made at every level; the kit decides at draw time whether to use it.
 - No double glow: at a pass level the kit draws no rectangle halo, no label halo and no scanline quad, and the drawings lose their halo groups. Bloom does that work. At Soft they are drawn as before.
 - The pointer is mapped back through the curve, so a click lands on what is drawn.
+- The accessibility tree follows the curve. The output hook replaces each node's bounds with the box around its four corners sent forward through the curve, so a screen reader's outline holds what is drawn. egui gives every node's bounds in window points, under one transform on the root node that scales to physical pixels; AccessKit reads bounds in the space of the nearest ancestor with a transform, so the bounds stay in window points. A node with its own transform is left as it is; egui sets none. With no curvature the tree is not touched.
 - Studio reads the adapter's kind at start. With a software adapter it starts in Soft, and the pass levels are not available, with the reason "This machine has no graphics adapter for the screen pass."
 - When the system asks for reduced motion, Studio starts in Still. Live and Arcade stay available.
 - High legibility forces Off and makes the other levels not available.
@@ -245,13 +257,14 @@ Known limits:
 - The Open folder button of the editor pane's empty state and the Open another folder button of its banner run File, Open folder. There is no Open recent: Studio has no settings file yet.
 - The screen pass ran only on one Mac, on Metal, in offscreen render tests. It was not opened in a real window by these tests, and it was not run on Linux or Windows. Its cost there, and on a weaker GPU, is not measured.
 - The reduced-motion setting is read on macOS only, from the Accessibility settings, once at start. Windows and Linux are not read: there Studio starts in Live on a real adapter.
-- Accessibility rectangles stay where the flat picture has them; only the pointer is mapped. In a 1280 by 720 window at Still and Live, the curvature of 0.12 moves the picture under a point in the editor, about 4 points at the toolbar's pages control, 8 at the footer's left end and 10 at a corner. At Arcade, 0.40, it is about 14 points at the pages control and 30 at a corner. A screen reader's highlight or a magnifier that follows focus is off by as much, and so are IME candidate windows.
+- Accessibility rectangles are boxes around the four mapped corners. The curve bends a rectangle's edges, so near a corner an edge's middle can sit a point or two outside the box. Tests check that each button's box holds the point where a click lands on its centre. No real screen reader was tried. IME candidate windows still use the flat position: in a 1280 by 720 window at Still and Live, about 4 points off at the toolbar and 10 at a corner; at Arcade about 14 and 30.
+- The afterglow counts any frame not asked for by the screen as a change, so a pointer move that changes nothing still runs it for under a second.
 - Flicker changes brightness by at most 3 percent, 30 times a second, and the band takes 6 seconds to cross. Nobody has read code for hours through Live.
 - A texture made in a frame reaches the pass's renderer in that frame. A partial change to a texture made before the plugin was added is skipped; the plugin is added before the first frame, so this does not happen in the window.
 - Studio has no settings file, so the level, the strengths and the frame rate last for the session.
 - Studio opens regular files only, links followed. A folder, a named pipe, a device or a socket is refused, and a named pipe is not waited on. A file or a `robco.toml` larger than 16 MiB is refused before it is read. The crate's docs name no limit, so 16 MiB is a default, not a measured need.
 
-`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, at Soft at the left and Off at the right. Its `render_the_screen_levels` writes `screen-*.png`: the Project page at each level, three Live frames half a second apart, an open menu, an open dropdown list, a tooltip and the Adjust dialog at Live, and Live at display scale 2.
+`tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, at Soft at the left and Off at the right. Its `render_the_screen_levels` writes `screen-*.png`: the Project page at each level, three Live frames half a second apart, an open menu, an open dropdown list, a tooltip and the Adjust dialog at Live, and Live at display scale 2. Its `a_level_entered_later_draws_as_at_start` compares Soft entered from Live and Off entered from Soft with the same level at start, pixel for pixel, and writes the two later pictures as `screen-soft-from-live.png` and `screen-off-from-soft.png` when `STUDIO_SHOTS` is set.
 
 The drawings live in `crates/robco-studio/assets/art/`. Each carries its SPDX lines and a provenance line. The two wordmarks, the atom and the skyline are traced from a reference picture supplied by the project owner. The application icon is built from the traced atom and letter R, on a tile drawn for Studio. The other drawings are drawn for Studio.
 
