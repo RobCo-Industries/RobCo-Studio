@@ -384,3 +384,40 @@ fn replace_goes_forward_and_stops_at_the_last_match() {
     }
     assert_eq!(h.state().editor.current().unwrap().text, "x aa b aa c aa\n");
 }
+
+/// At the smallest window the find bar lies inside the editor pane, between
+/// the Files pane and the Simulator.
+#[test]
+fn the_find_bar_fits_the_editor() {
+    let d = sample("findfit").unwrap();
+    let mut h = harness(Some(&*d));
+    open_main(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(2);
+    h.state_mut().editor.find.query = "return".into();
+    h.state_mut().editor.find.replace = "goto".into();
+    h.run_steps(3);
+    let editor = h.state().place_rect(Place::Editor).unwrap();
+    let (left, right) = (editor.left(), editor.right());
+    for label in [
+        "Find",
+        "Replace with",
+        "Previous",
+        "Next",
+        "Replace",
+        "Replace all",
+        "Close find",
+        "1 matches",
+    ] {
+        for n in h.query_all_by_label(label) {
+            let r = n.rect();
+            if r.top() > 200.0 {
+                continue; // not the find bar
+            }
+            assert!(
+                r.left() > left && r.right() < right && r.width() > 0.0,
+                "{label} {r:?} is not inside {left}..{right}"
+            );
+        }
+    }
+}

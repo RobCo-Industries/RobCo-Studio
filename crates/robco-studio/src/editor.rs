@@ -437,7 +437,10 @@ impl Editor {
         if self.find.open {
             let bar = Rect::from_min_max(
                 rect.left_top(),
-                egui::pos2(rect.right(), rect.top() + size::CONTROL_H + size::UNIT),
+                egui::pos2(
+                    rect.right(),
+                    rect.top() + 2.0 * (size::CONTROL_H + size::UNIT),
+                ),
             );
             area.min.y = bar.bottom() + size::UNIT;
             self.find_bar(kit, ui, bar);
@@ -611,38 +614,32 @@ impl Editor {
         });
         let at = cur.and_then(|(s, e)| ms.iter().position(|m| m.start == s && m.end == e));
         let none = !self.find.query.is_empty() && ms.is_empty();
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(bar)
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
-        );
-        let ui = &mut child;
+        // Two rows, so the bar fits a narrow editor: find on the first,
+        // replace on the second. Each field takes what is left of its row.
+        let row_h = bar.height() / 2.0;
+        let rows = [
+            Rect::from_min_size(bar.min, egui::vec2(bar.width(), row_h)),
+            Rect::from_min_size(
+                egui::pos2(bar.left(), bar.top() + row_h),
+                egui::vec2(bar.width(), row_h),
+            ),
+        ];
+        let row = |ui: &mut egui::Ui, r: Rect| {
+            ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(r)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            )
+        };
+        let mut first = row(ui, rows[0]);
+        let mut second = row(ui, rows[1]);
+        let ui = &mut first;
         if kit
             .icon_button(ui, Icon::Close, "Close find", None)
             .clicked()
         {
             self.find.open = false;
         }
-        if kit
-            .button(ui, Button::quiet("Replace all").small())
-            .clicked()
-        {
-            let n = self.replace_all();
-            self.news = Some((crate::kit::Level::Info, format!("Replaced {n}.")));
-        }
-        if kit.button(ui, Button::quiet("Replace").small()).clicked() {
-            self.replace_one(ui.ctx());
-        }
-        let rid = Id::unique("find-replace");
-        kit.text_field(
-            ui,
-            rid,
-            &mut self.find.replace,
-            "Replace with",
-            "Replace with",
-            size::FIND_W / 2.0 + size::STEP_32,
-            false,
-        );
         if kit
             .button(ui, Button::quiet("Next").small().kind(ButtonKind::Quiet))
             .clicked()
@@ -664,14 +661,31 @@ impl Editor {
         };
         kit.text(ui, &tag, Type::Small, if none { p.alarm } else { p.dim });
         let fid = Id::unique("find-query");
-        let r = kit.text_field(
-            ui,
-            fid,
-            &mut self.find.query,
-            "Find",
-            "Find",
-            size::FIND_W,
-            none,
+        let w = size::FIND_W.min(ui.available_width()).max(0.0);
+        let r = kit.text_field(ui, fid, &mut self.find.query, "Find", "Find", w, none);
+        let ui2 = &mut second;
+        if kit
+            .button(ui2, Button::quiet("Replace all").small())
+            .clicked()
+        {
+            let n = self.replace_all();
+            self.news = Some((crate::kit::Level::Info, format!("Replaced {n}.")));
+        }
+        if kit.button(ui2, Button::quiet("Replace").small()).clicked() {
+            self.replace_one(ui2.ctx());
+        }
+        let rid = Id::unique("find-replace");
+        let w = (size::FIND_W / 2.0 + size::STEP_32)
+            .min(ui2.available_width())
+            .max(0.0);
+        kit.text_field(
+            ui2,
+            rid,
+            &mut self.find.replace,
+            "Replace with",
+            "Replace with",
+            w,
+            false,
         );
         if std::mem::take(&mut self.find.focus) {
             r.request_focus();

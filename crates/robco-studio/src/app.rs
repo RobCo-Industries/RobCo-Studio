@@ -192,6 +192,14 @@ impl Studio {
         s
     }
 
+    /// Where `place` was drawn in the last frame, if it was.
+    pub fn place_rect(&self, place: Place) -> Option<Rect> {
+        self.places
+            .iter()
+            .find(|(p, _)| *p == place)
+            .map(|(_, r)| *r)
+    }
+
     /// Open a file of the project in the editor.
     pub fn open_file(&mut self, path: &Path) {
         let shown = self
