@@ -482,4 +482,129 @@ fn build_a_tape_from_a_fixture_index() {
     let err = String::from_utf8(o.stderr).unwrap();
     assert!(err.ends_with("build: compile: src/main.c\n"), "{err}");
     assert!(err.lines().count() > 1, "{err}");
+
+    // A source that is a link inside the project compiles under its
+    // manifest path, so the tape is the same as with the file itself.
+    #[cfg(unix)]
+    {
+        f.put("proj/main.real", MAIN_C.as_bytes());
+        fs::remove_file(f.proj().join("src/main.c")).unwrap();
+        link(&f, "../main.real", "proj/src/main.c");
+        let o = f.robco(&["build", "--json"]);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stdout)
+        );
+        assert!(steps(&o).contains(&"compile src/main.c done".to_owned()));
+        assert_eq!(lines(&o).pop().unwrap()["sources"], json!(["src/main.c"]));
+        assert_eq!(fs::read(f.tape()).unwrap(), tape);
+    }
+}
+
+/// Makes a link at `at` under the fixture's folder that points to `target`.
+#[cfg(unix)]
+fn link(f: &Fixture, target: &str, at: &str) {
+    std::os::unix::fs::symlink(target, f.dir.join(at)).unwrap();
+}
+
+/// A manifest with an icon at `icon`.
+#[cfg(unix)]
+fn with_icon(f: &Fixture, icon: &str) {
+    let m = MANIFEST.replace(
+        "subtype = \"utility\"",
+        &format!("subtype = \"utility\"\nicon = \"{icon}\""),
+    );
+    f.put("proj/robco.toml", m.as_bytes());
+}
+
+/// Step 2 passed: with no lock and no index, step 6 is the first failure.
+#[cfg(unix)]
+fn passes_step_2(f: &Fixture) {
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), ("index: location".to_owned(), 4));
+}
+
+#[cfg(unix)]
+fn fails_with(f: &Fixture, code: &str) {
+    let o = f.robco(&["build", "--json"]);
+    assert_eq!(failure(&o), (code.to_owned(), 3));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_icon_link_out_of_the_root_is_manifest_path() {
+    let f = Fixture::new("icon-out");
+    f.put("icon.bin", &[0u8; 128]);
+    link(&f, "../icon.bin", "proj/icon.bin");
+    with_icon(&f, "icon.bin");
+    fails_with(&f, "manifest: path");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_icon_link_inside_the_root_is_read() {
+    let f = Fixture::new("icon-in");
+    f.put("proj/art/icon.bin", &[0u8; 128]);
+    link(&f, "art/icon.bin", "proj/icon.bin");
+    with_icon(&f, "icon.bin");
+    passes_step_2(&f);
+    // The same link to a bad icon fails: the file was read.
+    f.put("proj/art/icon.bin", b"not an icon");
+    fails_with(&f, "manifest: icon");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_icon_link_is_manifest_icon() {
+    let f = Fixture::new("icon-dangling");
+    link(&f, "gone.bin", "proj/icon.bin");
+    with_icon(&f, "icon.bin");
+    fails_with(&f, "manifest: icon");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_link_inside_the_root_builds() {
+    let f = Fixture::new("src-in");
+    fs::rename(f.proj().join("src/main.c"), f.proj().join("main.real")).unwrap();
+    link(&f, "../main.real", "proj/src/main.c");
+    passes_step_2(&f);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_link_out_of_the_root_is_manifest_path() {
+    let f = Fixture::new("src-out");
+    f.put("away.c", MAIN_C.as_bytes());
+    link(&f, "../../away.c", "proj/src/away.c");
+    fails_with(&f, "manifest: path");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_source_link_is_manifest_sources() {
+    let f = Fixture::new("src-dangling");
+    fs::remove_file(f.proj().join("src/main.c")).unwrap();
+    link(&f, "gone.c", "proj/src/main.c");
+    fails_with(&f, "manifest: sources");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_folder_link_inside_the_root_builds() {
+    let f = Fixture::new("dir-in");
+    fs::rename(f.proj().join("src"), f.proj().join("code")).unwrap();
+    link(&f, "code", "proj/src");
+    passes_step_2(&f);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_folder_link_out_of_the_root_is_manifest_path() {
+    let f = Fixture::new("dir-out");
+    fs::rename(f.proj().join("src"), f.dir.join("code")).unwrap();
+    link(&f, "../code", "proj/src");
+    fails_with(&f, "manifest: path");
 }

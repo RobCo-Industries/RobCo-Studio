@@ -9,6 +9,13 @@
 //! manifest, so a build that fails later never leaves an older tape. The
 //! lock is written at step 10, only after a resolution and once every
 //! install passed. A lock that is there is never written.
+//!
+//! Inputs and outputs follow two rules. Every path the manifest names, the
+//! icon, each source and each source folder, may be a link that stays
+//! inside the project root, and one that leads outside fails with
+//! `manifest: path`, through [`manifest::inside_root`]; the build's own
+//! outputs, the `build` folder, the tape, the temp tape and the objects,
+//! are never written or deleted through a link.
 
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -205,7 +212,7 @@ pub fn run(out: &mut Out<'_>, cache: &Path, net: &Net, req: &Request<'_>) -> Res
     let sha = sha256_hex(&built);
     let elf = format!("build/{}.elf", m.project.name);
     out.text(&format!("built {tape_rel}, {size} bytes, sha256 {sha}"));
-    let sources = plan_sources(&project)?;
+    let sources = plan_sources(root, &project)?;
     out.ok(
         "build",
         vec![
@@ -245,11 +252,15 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
     let icon = match &manifest.project.icon {
         None => None,
         Some(rel) => {
-            let p = root.join(rel);
-            let data = match fs::read(&p) {
-                Ok(d) => Some(d),
-                Err(e) if e.kind() == ErrorKind::NotFound => None,
-                Err(e) => return Err(read_failure(&p, &e)),
+            let data = match manifest::inside_root(root, "project.icon", rel)
+                .map_err(|e| manifest_failure(&e))?
+            {
+                None => None,
+                Some(p) => match fs::read(&p) {
+                    Ok(d) => Some(d),
+                    Err(e) if e.kind() == ErrorKind::NotFound => None,
+                    Err(e) => return Err(read_failure(&p, &e)),
+                },
             };
             Some(manifest::read_icon(rel, data.as_deref()).map_err(|e| manifest_failure(&e))?)
         }
@@ -261,7 +272,7 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
         icon,
         files,
     };
-    plan_sources(&project)?;
+    plan_sources(root, &project)?;
     Ok(project)
 }
 
@@ -269,17 +280,34 @@ fn manifest_failure(e: &ManifestError) -> Failure {
     Failure::of(e)
 }
 
-/// The source list, in link order.
-fn plan_sources(p: &Project) -> Result<Vec<String>, Failure> {
+/// The source list, in link order, each source by its manifest path. A
+/// source that leads outside the project root through a link fails with
+/// `manifest: path`.
+fn plan_sources(root: &Path, p: &Project) -> Result<Vec<String>, Failure> {
     let files: Vec<&str> = p.files.iter().map(String::as_str).collect();
-    manifest::expand_sources(&p.manifest.build.sources, &files).map_err(|e| manifest_failure(&e))
+    let list = manifest::expand_sources(&p.manifest.build.sources, &files)
+        .map_err(|e| manifest_failure(&e))?;
+    for src in &list {
+        if manifest::inside_root(root, "build.sources", src)
+            .map_err(|e| manifest_failure(&e))?
+            .is_none()
+        {
+            return Err(Failure::new(
+                "manifest: sources",
+                format!("{src}: gone while the build read it"),
+            ));
+        }
+    }
+    Ok(list)
 }
 
 /// The regular files of the folders the source patterns name, relative to
 /// the project root with `/`. A pattern's `*` stands only in its last
 /// component, so a pattern reaches one folder and no other folder is read.
-/// A folder on the way that is missing, a link or not a folder gives no
-/// files, and the pattern then matches nothing. A link is not followed.
+/// A folder that is missing or not a folder gives no files, and the
+/// pattern then matches nothing. Links are followed: a folder or a file
+/// that leads outside the project root fails with `manifest: path`, here
+/// for a folder and in [`plan_sources`] for a file.
 fn source_files(root: &Path, patterns: &[String]) -> Result<Vec<String>, Failure> {
     let mut dirs: Vec<&str> = patterns
         .iter()
@@ -289,47 +317,35 @@ fn source_files(root: &Path, patterns: &[String]) -> Result<Vec<String>, Failure
     dirs.dedup();
     let mut out = Vec::new();
     for rel in dirs {
-        if real_dir(root, rel)? {
-            list_dir(root, rel, &mut out)?;
+        let dir = if rel.is_empty() {
+            Some(root.to_path_buf())
+        } else {
+            manifest::inside_root(root, "build.sources", rel).map_err(|e| manifest_failure(&e))?
+        };
+        if let Some(dir) = dir.filter(|d| d.is_dir()) {
+            list_dir(&dir, rel, &mut out)?;
         }
     }
     Ok(out)
 }
 
-/// True when every component of `rel` under the root is a folder and not
-/// a link. A missing component gives false.
-fn real_dir(root: &Path, rel: &str) -> Result<bool, Failure> {
-    let mut path = root.to_path_buf();
-    for part in rel.split('/').filter(|p| !p.is_empty()) {
-        path.push(part);
-        match fs::symlink_metadata(&path) {
-            Ok(md) if md.is_dir() => {}
-            Ok(_) => return Ok(false),
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(read_failure(&path, &e)),
-        }
-    }
-    Ok(true)
-}
-
-/// The regular files of one folder, not of its subfolders.
-fn list_dir(root: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failure> {
-    let dir = if rel.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(rel)
-    };
-    let entries = fs::read_dir(&dir).map_err(|e| read_failure(&dir, &e))?;
+/// The regular files of one folder, not of its subfolders, a link to a
+/// regular file included. A dangling link is no file.
+fn list_dir(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), Failure> {
+    let entries = fs::read_dir(dir).map_err(|e| read_failure(dir, &e))?;
     for entry in entries {
-        let entry = entry.map_err(|e| read_failure(&dir, &e))?;
+        let entry = entry.map_err(|e| read_failure(dir, &e))?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             // A name that is not UTF-8 cannot match a pattern.
             continue;
         };
-        let kind = entry
-            .file_type()
-            .map_err(|e| read_failure(&entry.path(), &e))?;
-        if kind.is_file() {
+        let path = entry.path();
+        let file = match fs::metadata(&path) {
+            Ok(md) => md.is_file(),
+            Err(e) if e.kind() == ErrorKind::NotFound => false,
+            Err(e) => return Err(read_failure(&path, &e)),
+        };
+        if file {
             out.push(if rel.is_empty() {
                 name
             } else {
