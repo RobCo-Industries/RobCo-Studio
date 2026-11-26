@@ -519,6 +519,11 @@ pub mod size {
     pub const TARGET_DROPDOWN_W: f32 = 192.0;
     /// A menu popup.
     pub const MENU_POPUP_W: f32 = 300.0;
+    /// The check mark of a menu row, and the lock in its place.
+    pub const MENU_MARK: f32 = 16.0;
+    /// From a menu row's left edge to its label. The mark sits in this
+    /// indent, which every row keeps, marked or not, so labels line up.
+    pub const MENU_MARK_INDENT: f32 = 28.0;
     /// The find field.
     pub const FIND_W: f32 = 190.0;
     /// The narrowest find or replace field: below it, the find bar's

@@ -6,7 +6,7 @@
 use crate::art::{Art, Icon, Mark};
 use crate::chooser::{self, Choice, FolderChooser, SystemChooser};
 use crate::editor::{Answer, Editor};
-use crate::kit::{Button, ButtonKind, Kit, Level};
+use crate::kit::{Button, ButtonKind, Kit, Level, MenuMark};
 use crate::menus::{self, Command};
 use crate::project::{Manifest, Project, Row};
 use crate::screen::{self, Adapter};
@@ -491,6 +491,17 @@ impl Studio {
             }
             Command::ScreenAdjust => (!self.theme.screen().pass()).then(|| ADJUST_NOT.to_owned()),
             _ => it.unavailable.map(str::to_owned),
+        }
+    }
+
+    /// The mark the in-window menu draws for command `c`: its kind by
+    /// [`menus::check`], its state by [`Studio::checked`], as the macOS
+    /// menu bar shows it.
+    pub fn menu_mark(&self, c: Command) -> MenuMark {
+        match menus::check(c) {
+            menus::Check::Plain => MenuMark::None,
+            menus::Check::Toggle => MenuMark::Check(self.checked(c)),
+            menus::Check::Choice(_) => MenuMark::Radio(self.checked(c)),
         }
     }
 
@@ -1115,7 +1126,7 @@ impl Studio {
             ui,
             it.text,
             &note,
-            matches!(it.command, Command::Screen(_)).then(|| self.checked(it.command)),
+            self.menu_mark(it.command),
             why.as_deref(),
             size::MENU_POPUP_W,
         );
@@ -3282,6 +3293,7 @@ mod tests {
                 menus::Check::Plain => {
                     assert_eq!(n.kind, menus::NativeKind::Plain, "{}", it.text);
                     assert!(!n.checked && !s.checked(c), "{}", it.text);
+                    assert_eq!(s.menu_mark(c), MenuMark::None, "{}", it.text);
                 }
                 check => {
                     assert_eq!(n.kind, menus::NativeKind::Check, "{}", it.text);
@@ -3299,6 +3311,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The in-window menu marks exactly the items the macOS bar marks,
+    /// as check boxes for toggles and radio items for a choice.
+    fn window_and_bar_agree(s: &Studio) {
+        for n in menus::native_items(s) {
+            let m = s.menu_mark(n.command);
+            match n.kind {
+                menus::NativeKind::Plain => assert_eq!(m, MenuMark::None, "{}", n.title),
+                menus::NativeKind::Check => {
+                    assert_ne!(m, MenuMark::None, "{}", n.title);
+                    assert_eq!(m.on(), n.checked, "{}", n.title);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_window_menu_marks_what_the_bar_marks() {
+        let ctx = egui::Context::default();
+        let mut s = Studio::new(None);
+        window_and_bar_agree(&s);
+        for c in [
+            Command::HighLegibility,
+            Command::CompactHeader,
+            Command::PageCard,
+            Command::Phosphor(crate::theme::Scheme::Amber),
+            Command::HighLegibility,
+            Command::Screen(Screen::Live),
+            Command::ToggleBottom,
+        ] {
+            s.run(&ctx, c);
+            window_and_bar_agree(&s);
+        }
+        s.screen.strengths.bloom += 0.25;
+        window_and_bar_agree(&s);
     }
 
     /// The level in use is marked, alone; Custom marks none; Adjust is

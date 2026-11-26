@@ -1541,7 +1541,7 @@ fn scale_items(h: &mut Harness<'static, Studio>) -> Option<Vec<Option<String>>> 
         .map(|l| {
             let n = h
                 .query_all_by_label(l)
-                .find(|n| n.accesskit_node().role() == Role::MenuItem)?;
+                .find(|n| n.accesskit_node().role() == Role::MenuItemRadio)?;
             let a = n.accesskit_node();
             Some(
                 a.is_disabled()
@@ -2621,4 +2621,30 @@ fn the_arrow_keys_move_a_slider_of_adjust() {
     h.key_press(Key::ArrowRight);
     h.run_steps(2);
     assert_ne!(h.state().screen.strengths, before);
+}
+
+/// High legibility in the window's View menu is a check box whose state
+/// follows the toggle, as the macOS bar's check item does.
+#[test]
+fn high_legibility_is_a_checked_box_in_the_window_menu() {
+    use egui::accesskit::Toggled;
+    let state = |h: &mut Harness<'static, Studio>| -> Option<Toggled> {
+        h.query_all_by_label("View")
+            .find(|n| n.accesskit_node().role() == Role::MenuItem)?
+            .click();
+        h.run_steps(2);
+        let t = h
+            .query_all_by_label("High legibility")
+            .find(|n| n.accesskit_node().role() == Role::MenuItemCheckBox)?
+            .accesskit_node()
+            .toggled();
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        t
+    };
+    let mut h = harness(None);
+    assert_eq!(state(&mut h), Some(Toggled::False));
+    h.state_mut().theme.high_legibility = true;
+    h.run_steps(2);
+    assert_eq!(state(&mut h), Some(Toggled::True));
 }

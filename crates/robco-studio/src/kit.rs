@@ -48,6 +48,24 @@ impl Level {
     }
 }
 
+/// The mark a menu row carries, and whether it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuMark {
+    /// No state: the row only acts.
+    None,
+    /// A check item, on or off.
+    Check(bool),
+    /// One of a set of radio items, chosen or not.
+    Radio(bool),
+}
+
+impl MenuMark {
+    /// The row shows its tick.
+    pub fn on(self) -> bool {
+        matches!(self, MenuMark::Check(true) | MenuMark::Radio(true))
+    }
+}
+
 /// The kinds of button of the design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -1198,17 +1216,19 @@ impl<'a> Kit<'a> {
         unavailable: Option<&str>,
         width: f32,
     ) -> Response {
-        self.menu_choice(ui, text, note, None, unavailable, width)
+        self.menu_choice(ui, text, note, MenuMark::None, unavailable, width)
     }
 
-    /// A menu row that is one of a set of radio items when `checked` is
-    /// Some: the chosen one shows a tick where the lock would be.
+    /// A menu row with a mark: a check item or one of a set of radio
+    /// items. A marked row shows a tick at its left in its own text colour;
+    /// an unmarked one keeps that place empty, or shows the lock when it
+    /// cannot act.
     pub fn menu_choice(
         &self,
         ui: &mut Ui,
         text: &str,
         note: &str,
-        checked: Option<bool>,
+        mark: MenuMark,
         unavailable: Option<&str>,
         width: f32,
     ) -> Response {
@@ -1220,9 +1240,10 @@ impl<'a> Kit<'a> {
         };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::ROW_TREE), sense);
         let on = unavailable.is_none();
-        resp.widget_info(|| match checked {
-            Some(c) => WidgetInfo::selected(Role::MenuItemRadio, on, c, text),
-            None => WidgetInfo::labeled(Role::MenuItem, on, text),
+        resp.widget_info(|| match mark {
+            MenuMark::None => WidgetInfo::labeled(Role::MenuItem, on, text),
+            MenuMark::Check(c) => WidgetInfo::selected(Role::MenuItemCheckBox, on, c, text),
+            MenuMark::Radio(c) => WidgetInfo::selected(Role::MenuItemRadio, on, c, text),
         });
         if let Some(why) = unavailable {
             ui.ctx().accesskit_node_builder(resp.id, |n| {
@@ -1235,26 +1256,29 @@ impl<'a> Kit<'a> {
             painter.rect_filled(rect, CornerRadius::ZERO, p.raised);
         }
         let fg = if unavailable.is_some() { p.dim } else { p.text };
-        let mut x = rect.left() + size::UNIT * 2.0;
-        let mark = if unavailable.is_some() {
-            Some((Icon::Lock, p.dim))
-        } else if checked == Some(true) {
-            Some((Icon::Ok, p.bright))
+        let icon = if mark.on() {
+            Some(Icon::Ok)
+        } else if unavailable.is_some() {
+            Some(Icon::Lock)
         } else {
             None
         };
-        if let Some((icon, colour)) = mark {
+        if let Some(icon) = icon {
             self.art.icon(
                 painter,
+                // The mark ends one unit before the label.
                 Rect::from_min_size(
-                    egui::pos2(x, rect.top()),
-                    egui::vec2(size::ICON, rect.height()),
+                    egui::pos2(
+                        rect.left() + size::MENU_MARK_INDENT - size::UNIT - size::MENU_MARK,
+                        rect.top(),
+                    ),
+                    egui::vec2(size::MENU_MARK, rect.height()),
                 ),
                 icon,
-                colour,
+                fg,
             );
         }
-        x += size::ICON + size::UNIT;
+        let x = rect.left() + size::MENU_MARK_INDENT;
         let n = painter.layout_no_wrap(note.to_owned(), self.theme.font(Type::Small), p.dim);
         let note_x = rect.right() - size::UNIT * 2.0 - n.size().x;
         let gap = if note.is_empty() {
