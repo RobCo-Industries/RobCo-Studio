@@ -15,13 +15,34 @@ pub enum Manifest {
     Read {
         /// `project.name`.
         name: String,
-        /// The target, as the status bar shows it.
-        target: String,
+        /// The target.
+        target: Target,
+        /// What it builds, as the Tape pane shows it: "Holotape, game".
+        kind: String,
     },
     /// It has one and the core refused it, with the core's reason.
     Refused(String),
     /// It is there but could not be read, with the system's reason.
     Unreadable(String),
+}
+
+/// The machine a project builds for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The Pip-OS ABI, as "1.3".
+    pub abi: String,
+}
+
+impl Target {
+    /// Its name, as the toolbar's Target dropdown shows it.
+    pub fn name(&self) -> String {
+        format!("Pip-OS, ABI {}", self.abi)
+    }
+
+    /// What a tape needs, as the Tape pane states it.
+    pub fn needs(&self) -> String {
+        format!("Pip-OS ABI {}", self.abi)
+    }
 }
 
 /// One row of the tree.
@@ -53,10 +74,21 @@ pub struct Project {
     pub selected: Option<PathBuf>,
     /// The last error from reading a folder.
     pub error: Option<String>,
+    /// Whether the tree's root row, the project itself, is open.
+    pub root_open: bool,
+}
+
+/// `p` as an absolute path without `.` or `..`: resolved through links
+/// when it can be, else joined to the working folder.
+fn absolute(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p)
+        .or_else(|_| std::path::absolute(p))
+        .unwrap_or_else(|_| p.to_owned())
 }
 
 impl Project {
-    /// Open `root` and read its top level.
+    /// Open `root` and read its top level. The root is kept as an
+    /// absolute path, so `.` or `my-project` has a name and a parent.
     pub fn open(root: &Path) -> Result<Project, String> {
         if !root.is_dir() {
             return Err(format!(
@@ -64,6 +96,7 @@ impl Project {
                 root.display()
             ));
         }
+        let root = &absolute(root);
         let path = root.join("robco.toml");
         let manifest = match crate::document::read_regular(&path, crate::document::MAX_FILE) {
             Err(_)
@@ -83,7 +116,16 @@ impl Project {
             Ok(bytes) => match studio_core::manifest::parse(&bytes) {
                 Ok(m) => Manifest::Read {
                     name: m.project.name.clone(),
-                    target: format!("Pip-OS ABI {}.{}", m.target.abi.major, m.target.abi.minor),
+                    target: Target {
+                        abi: format!("{}.{}", m.target.abi.major, m.target.abi.minor),
+                    },
+                    kind: format!(
+                        "Holotape, {}",
+                        match m.project.subtype {
+                            studio_core::manifest::Subtype::Game => "game",
+                            studio_core::manifest::Subtype::Utility => "utility",
+                        }
+                    ),
                 },
                 Err(e) => Manifest::Refused(e.to_string()),
             },
@@ -95,6 +137,7 @@ impl Project {
             rows: Vec::new(),
             selected: None,
             error: None,
+            root_open: true,
         };
         p.refresh();
         Ok(p)
@@ -122,6 +165,10 @@ impl Project {
 
     /// Open or close a folder row.
     pub fn toggle(&mut self, path: &Path) {
+        if path == self.root {
+            self.root_open = !self.root_open;
+            return;
+        }
         if !self.open.remove(path) {
             self.open.insert(path.to_owned());
         }
@@ -130,7 +177,9 @@ impl Project {
 
     /// Open (`true`) or close a folder row.
     pub fn set_open(&mut self, path: &Path, open: bool) {
-        if open != self.open.contains(path) {
+        if path == self.root {
+            self.root_open = open;
+        } else if open != self.open.contains(path) {
             self.toggle(path);
         }
     }
@@ -203,10 +252,13 @@ mod tests {
         let names: Vec<_> = p.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["src", "a.txt"]);
         assert_eq!(p.manifest, Manifest::Missing);
-        p.toggle(&d.join("src"));
+        // The root is absolute and through links: rows hang from it.
+        assert_eq!(p.root, std::fs::canonicalize(&d).unwrap());
+        let root = p.root.clone();
+        p.toggle(&root.join("src"));
         let names: Vec<_> = p.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["src", "main.c", "a.txt"]);
-        assert_eq!(p.shown(&d.join("src/main.c")), "src/main.c");
+        assert_eq!(p.shown(&root.join("src/main.c")), "src/main.c");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
