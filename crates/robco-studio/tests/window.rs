@@ -2076,6 +2076,125 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
     assert!(menu_item(&h, "Screen").is_none(), "a menu opened");
 }
 
+/// The Bloom slider of the Adjust dialog, open on a window at Live whose
+/// chooser answers what `fake` holds.
+fn adjust_with_fake(folder: &Path) -> (Harness<'static, Studio>, Fake, egui::Rect) {
+    let fake = Fake::default();
+    let mut s = Studio::new(Some(folder)).with_chooser(Box::new(FakeChooser(fake.clone())));
+    s.choose_screen(
+        robco_studio::screen::Adapter::Hardware,
+        Some(false),
+        Some(robco_studio::theme::Screen::Live),
+    );
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.run_steps(3);
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::ScreenAdjust);
+    h.run_steps(2);
+    let r = bloom(&h).map_or(egui::Rect::NOTHING, |n| n.rect());
+    (h, fake, r)
+}
+
+fn bloom<'a>(h: &'a Harness<'static, Studio>) -> Option<egui_kittest::Node<'a>> {
+    h.query_all_by_label("Bloom")
+        .find(|n| n.accesskit_node().role() == Role::Slider)
+}
+
+fn close_chooser(h: &mut Harness<'static, Studio>, fake: &Fake) {
+    fake.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .answer = Some(Choice::Cancelled);
+    h.run_steps(3);
+    assert!(!h.state().choosing());
+}
+
+/// A press held when the chooser opens and released while it is open
+/// ends in egui with no click and no drag once the chooser closes.
+#[test]
+fn a_press_held_over_the_chooser_ends_with_no_click() {
+    let a = pipes("chooser-press").unwrap();
+    let (mut h, fake, r) = adjust_with_fake(&a);
+    let at = r.right_center() - egui::vec2(4.0, 0.0);
+    h.event(Event::PointerMoved(at));
+    h.event(Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(1);
+    // A slider follows a press at once: the value from here on must hold.
+    let before = h.state().screen.strengths;
+    press_open(&mut h);
+    assert!(h.state().choosing());
+    h.event(Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    close_chooser(&mut h, &fake);
+    assert!(
+        h.ctx
+            .input(|i| !i.pointer.any_down() && i.pointer.press_origin().is_none()),
+        "a press is left down"
+    );
+    h.event(Event::PointerMoved(r.left_center()));
+    h.run_steps(2);
+    h.event(Event::PointerMoved(r.center()));
+    h.run_steps(2);
+    assert_eq!(
+        h.state().screen.strengths,
+        before,
+        "a click or a drag acted"
+    );
+}
+
+/// A key held when the chooser opens is released for egui, and its
+/// repeats after the chooser closes do nothing until a new press.
+#[test]
+fn a_key_held_over_the_chooser_does_not_repeat() {
+    let a = pipes("chooser-key").unwrap();
+    let (mut h, fake, _) = adjust_with_fake(&a);
+    bloom(&h).unwrap().focus();
+    h.run_steps(2);
+    let key = |h: &mut Harness<'static, Studio>, pressed, repeat| {
+        h.event(Event::Key {
+            key: Key::ArrowLeft,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: Modifiers::NONE,
+        });
+        h.run_steps(2);
+    };
+    let bloom_now = |h: &Harness<'static, Studio>| h.state().screen.strengths.bloom;
+    let start = bloom_now(&h);
+    key(&mut h, true, false);
+    let pressed = bloom_now(&h);
+    assert!(pressed < start, "the arrow moves the focused slider");
+    press_open(&mut h);
+    assert!(h.state().choosing());
+    key(&mut h, true, true);
+    close_chooser(&mut h, &fake);
+    assert!(
+        h.ctx.input(|i| !i.key_down(Key::ArrowLeft)),
+        "the key is left down"
+    );
+    bloom(&h).unwrap().focus();
+    h.run_steps(2);
+    key(&mut h, true, true);
+    key(&mut h, true, true);
+    assert_eq!(bloom_now(&h), pressed, "a repeat acted");
+    key(&mut h, false, false);
+    key(&mut h, true, false);
+    assert!(bloom_now(&h) < pressed, "a new press acts");
+}
+
 /// A menu open when the chooser opens is closed.
 #[test]
 fn the_chooser_closes_an_open_menu() {

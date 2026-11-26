@@ -26,6 +26,7 @@ use eframe::egui::{
     epaint::{ClippedPrimitive, ClippedShape},
 };
 use eframe::egui_wgpu::{self, RenderState, ScreenDescriptor, wgpu};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// The shader, for the tests that validate it with no GPU.
@@ -120,7 +121,146 @@ struct Plugin {
     link: Shared,
     /// Present when the pass can draw: eframe's device has it.
     pending: Option<Arc<Pending>>,
+    /// What egui was last told is down.
+    down: Down,
 }
+
+/// What egui was told is down: the pointer's buttons, the keys and the
+/// touches. When input is held, all of it is released first, so nothing is
+/// left pressed while the release itself is held back.
+#[derive(Default)]
+struct Down {
+    buttons: [bool; egui::NUM_POINTER_BUTTONS],
+    keys: HashSet<egui::Key>,
+    touches: BTreeMap<(egui::TouchDeviceId, egui::TouchId), egui::Pos2>,
+    /// Keys released while held that may still be down: their presses and
+    /// repeats are dropped until each one's real release.
+    released: HashSet<egui::Key>,
+    /// The pointer's last place egui was told.
+    pos: Option<egui::Pos2>,
+    /// The input was held at the last frame.
+    held: bool,
+}
+
+impl Down {
+    /// Keep what the events of a frame egui sees press and release.
+    fn track(&mut self, events: &[egui::Event]) {
+        for e in events {
+            match e {
+                egui::Event::PointerMoved(p) => self.pos = Some(*p),
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    ..
+                } => {
+                    self.pos = Some(*pos);
+                    self.buttons[*button as usize] = *pressed;
+                }
+                egui::Event::Key { key, pressed, .. } => {
+                    if *pressed {
+                        self.keys.insert(*key);
+                    } else {
+                        self.keys.remove(key);
+                    }
+                }
+                egui::Event::WindowFocused(false) => self.keys.clear(),
+                egui::Event::Touch {
+                    device_id,
+                    id,
+                    phase,
+                    pos,
+                    ..
+                } => {
+                    if matches!(phase, egui::TouchPhase::Start | egui::TouchPhase::Move) {
+                        self.touches.insert((*device_id, *id), *pos);
+                    } else {
+                        self.touches.remove(&(*device_id, *id));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Drop the presses and repeats of a key released while held, until the
+    /// key's real release, which is dropped too: egui has it up already.
+    fn drop_stale_keys(&mut self, events: &mut Vec<egui::Event>) {
+        if self.released.is_empty() {
+            return;
+        }
+        events.retain(|e| match e {
+            egui::Event::Key { key, pressed, .. } if self.released.contains(key) => {
+                if !*pressed {
+                    self.released.remove(key);
+                }
+                false
+            }
+            _ => true,
+        });
+    }
+
+    /// The events that end everything down, for the first frame held.
+    /// Touches are cancelled and keys released. The pointer moves far off
+    /// the window and back, then its buttons are released where it was:
+    /// the press counts as moved too far, so egui reports the release with
+    /// no click, and a drag under way stops where the pointer last was.
+    /// The pointer leaves right after, so the moves make no drag delta.
+    fn release(&mut self, screen: egui::Rect) -> Vec<egui::Event> {
+        let mut out = Vec::new();
+        for ((device_id, id), pos) in std::mem::take(&mut self.touches) {
+            out.push(egui::Event::Touch {
+                device_id,
+                id,
+                phase: egui::TouchPhase::Cancel,
+                pos,
+                force: None,
+            });
+        }
+        for key in std::mem::take(&mut self.keys) {
+            self.released.insert(key);
+            out.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        if !self.buttons.iter().any(|b| *b) {
+            return out;
+        }
+        let at = self.pos.unwrap_or(screen.min);
+        out.push(egui::Event::PointerMoved(
+            screen.min - egui::vec2(OFF_WINDOW, OFF_WINDOW),
+        ));
+        out.push(egui::Event::PointerMoved(at));
+        for (i, button) in BUTTONS.into_iter().enumerate() {
+            if std::mem::take(&mut self.buttons[i]) {
+                out.push(egui::Event::PointerButton {
+                    pos: at,
+                    button,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// How far off the window, in points, the pointer moves before a held
+/// press is released: far past any click distance.
+const OFF_WINDOW: f32 = 10_000.0;
+
+/// Every pointer button, in the order of egui's own table.
+const BUTTONS: [egui::PointerButton; egui::NUM_POINTER_BUTTONS] = [
+    egui::PointerButton::Primary,
+    egui::PointerButton::Secondary,
+    egui::PointerButton::Middle,
+    egui::PointerButton::Extra1,
+    egui::PointerButton::Extra2,
+];
 
 impl egui::Plugin for Plugin {
     fn debug_name(&self) -> &'static str {
@@ -132,11 +272,23 @@ impl egui::Plugin for Plugin {
             let link = lock(&self.link);
             (link.curvature, link.inert)
         };
-        if inert {
-            hold(input);
-        }
         let rect = input.screen_rect.unwrap_or_else(|| ctx.content_rect());
         map_input(input, rect, curvature);
+        if inert {
+            let release = if self.down.held {
+                Vec::new()
+            } else {
+                self.down.release(rect)
+            };
+            // A real release while held ends the wait for it.
+            self.down.drop_stale_keys(&mut input.events);
+            hold(input, release);
+            self.down.held = true;
+        } else {
+            self.down.drop_stale_keys(&mut input.events);
+            self.down.track(&input.events);
+            self.down.held = false;
+        }
     }
 
     fn output_hook(&mut self, ctx: &egui::Context, output: &mut egui::FullOutput) {
@@ -175,11 +327,13 @@ impl egui::Plugin for Plugin {
 /// pointer, keys, text, accessibility actions and files. Every area, the
 /// root interface, dialogs, menus, dropdown lists, tooltips, gets the same
 /// nothing, and the pointer leaves, so no hover or tooltip stays. Focus still
-/// passes, and the modifiers read as none.
-fn hold(input: &mut egui::RawInput) {
+/// passes, and the modifiers read as none. `release` ends what was down; it
+/// comes before the pointer leaves.
+fn hold(input: &mut egui::RawInput, release: Vec<egui::Event>) {
     input
         .events
         .retain(|e| matches!(e, egui::Event::WindowFocused(_)));
+    input.events.extend(release);
     input.events.push(egui::Event::PointerGone);
     input
         .events
@@ -206,7 +360,11 @@ pub fn plug(ctx: &egui::Context, link: Shared, gpu: Option<&RenderState>) {
         rs.renderer.write().callback_resources.insert(pass);
         Arc::new(Pending::default())
     });
-    ctx.add_plugin(Plugin { link, pending });
+    ctx.add_plugin(Plugin {
+        link,
+        pending,
+        down: Down::default(),
+    });
 }
 
 /// The paint callback that carries one frame's picture.
@@ -575,6 +733,129 @@ fn uniforms(sd: &ScreenDescriptor, f: &Frame) -> [f32; UNIFORM_FLOATS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What one frame showed of a widget that senses clicks and drags.
+    #[derive(Debug, Default)]
+    struct Seen {
+        clicked: bool,
+        any_click: bool,
+        down: bool,
+        dragged: bool,
+        delta: egui::Vec2,
+        stopped_at: Option<egui::Pos2>,
+        a_pressed: bool,
+        a_down: bool,
+    }
+
+    /// A window with one widget over its top left quarter, held or not.
+    fn frame(ctx: &egui::Context, link: &Shared, held: bool, events: Vec<egui::Event>) -> Seen {
+        lock(link).inert = held;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut seen = Seen::default();
+        let mut out = ctx.run_ui(input, |ui| {
+            let r = ui.allocate_rect(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 200.0)),
+                egui::Sense::click_and_drag(),
+            );
+            seen.clicked = r.clicked();
+            seen.dragged = r.dragged();
+            seen.delta = r.drag_delta();
+            seen.stopped_at = r.drag_stopped().then(|| r.interact_pointer_pos()).flatten();
+            ui.input(|i| {
+                seen.any_click = i.pointer.any_click();
+                seen.down = i.pointer.any_down() || i.pointer.press_origin().is_some();
+                seen.a_pressed = i.key_pressed(egui::Key::A);
+                seen.a_down = i.key_down(egui::Key::A);
+            });
+        });
+        out.textures_delta.clear();
+        seen
+    }
+
+    fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn key_a(pressed: bool, repeat: bool) -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// A press and a key down when the input is held end in egui while
+    /// it is held: no click, no drag, nothing left down, and the key's
+    /// repeats after the hold do nothing until a new press.
+    #[test]
+    fn a_hold_ends_what_is_down_with_no_click() {
+        for drag_first in [false, true] {
+            let ctx = egui::Context::default();
+            let link = Shared::default();
+            plug(&ctx, link.clone(), None);
+            let p = egui::pos2(50.0, 50.0);
+            frame(&ctx, &link, false, vec![egui::Event::PointerMoved(p)]);
+            frame(
+                &ctx,
+                &link,
+                false,
+                vec![button(p, true), key_a(true, false)],
+            );
+            let mut at = p;
+            if drag_first {
+                at = egui::pos2(120.0, 50.0);
+                let f = frame(&ctx, &link, false, vec![egui::Event::PointerMoved(at)]);
+                assert!(f.dragged, "the drag is under way");
+            }
+            let mut seen = Vec::new();
+            seen.push(frame(&ctx, &link, true, vec![]));
+            seen.push(frame(
+                &ctx,
+                &link,
+                true,
+                vec![button(at, false), key_a(true, true)],
+            ));
+            seen.push(frame(&ctx, &link, true, vec![]));
+            let q = egui::pos2(150.0, 150.0);
+            seen.push(frame(
+                &ctx,
+                &link,
+                false,
+                vec![egui::Event::PointerMoved(q)],
+            ));
+            seen.push(frame(&ctx, &link, false, vec![key_a(true, true)]));
+            for (i, f) in seen.iter().enumerate() {
+                let tag = format!("drag {drag_first}, frame {i}: {f:?}");
+                assert!(!f.clicked && !f.any_click, "{tag}");
+                assert!(!f.dragged || i == 0, "{tag}");
+                assert_eq!(f.delta, egui::Vec2::ZERO, "{tag}");
+                assert!(f.stopped_at.is_none_or(|s| s == at), "{tag}");
+                assert!(!f.down && !f.a_pressed && !f.a_down, "{tag}");
+            }
+            assert_eq!(
+                seen.iter().filter(|f| f.stopped_at.is_some()).count(),
+                usize::from(drag_first),
+                "a drag under way stops once, where it was"
+            );
+            frame(&ctx, &link, false, vec![key_a(false, false)]);
+            let f = frame(&ctx, &link, false, vec![key_a(true, false)]);
+            assert!(f.a_pressed, "a new press acts");
+        }
+    }
 
     /// One frame of a few buttons, with or without the plugin at
     /// `curvature`, and its accessibility tree update.
