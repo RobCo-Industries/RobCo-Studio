@@ -446,20 +446,25 @@ fn read_sdk(cache: &Path, p: &LockedPackage) -> Result<SdkJson, Failure> {
     sdk_json::parse(&bytes).map_err(|e| Failure::of(&e))
 }
 
-/// Reads a file of an installed package. One that is missing or not a file
-/// is `package: manifest`, naming the file; a refusal of the host is
-/// `io: read`.
+/// Reads a file of an installed package. One that is missing or not a
+/// regular file is `package: manifest`, naming the file; a regular file
+/// the host refuses to read is `io: read`. The path's type is looked at
+/// first, so the answer does not hang on which error a system gives for
+/// reading a folder: Unix says `IsADirectory`, Windows `PermissionDenied`.
 fn read_package_file(path: &Path, name: &str) -> Result<Vec<u8>, Failure> {
-    match fs::read(path) {
-        Ok(b) => Ok(b),
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::IsADirectory) => {
-            Err(Failure::new(
-                "package: manifest",
-                format!("{name} is missing from the installed package"),
-            ))
-        }
-        Err(e) => Err(read_failure(path, &e)),
+    let missing = || {
+        Failure::new(
+            "package: manifest",
+            format!("{name} is missing from the installed package"),
+        )
+    };
+    match fs::metadata(path) {
+        Ok(md) if md.is_file() => {}
+        Ok(_) => return Err(missing()),
+        Err(e) if e.kind() == ErrorKind::NotFound => return Err(missing()),
+        Err(e) => return Err(read_failure(path, &e)),
     }
+    fs::read(path).map_err(|e| read_failure(path, &e))
 }
 
 /// Step 9: installs the locked `gcc` for the running host, or finds it.
@@ -811,6 +816,24 @@ fn seal(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_package_file_that_is_a_folder_is_a_manifest_error() {
+        let p = std::env::temp_dir().join(format!("robco-unit-pkgdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        for name in ["sdk.json", "flags.json"] {
+            fs::create_dir_all(p.join(name)).unwrap();
+            let e = read_package_file(&p.join(name), name).unwrap_err();
+            assert_eq!(e.code, "package: manifest", "{name}");
+            assert_eq!(
+                e.detail,
+                format!("{name} is missing from the installed package")
+            );
+            let e = read_package_file(&p.join("gone").join(name), name).unwrap_err();
+            assert_eq!(e.code, "package: manifest", "{name}");
+        }
+        let _ = fs::remove_dir_all(&p);
+    }
 
     #[test]
     fn in_build_takes_only_paths_under_build() {
