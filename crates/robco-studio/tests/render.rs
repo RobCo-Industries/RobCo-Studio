@@ -12,6 +12,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use robco_studio::Studio;
 use robco_studio::app::Page;
+use robco_studio::art::{Art, Icon, Mark};
 use robco_studio::theme::Scheme;
 use std::path::{Path, PathBuf};
 
@@ -147,4 +148,87 @@ fn find_fields_show_their_text() {
             "{label}: {hits} text-coloured pixels in {inner:?}"
         );
     }
+}
+
+/// Every drawing, every icon and the label styles on the green ground,
+/// tinted `bright`. The left column has effects on, the right one off.
+fn paint_sheet(ui: &mut egui::Ui, arts: &mut Option<[Art; 2]>) {
+    use robco_studio::theme::{Effects, Theme, effect, text};
+    let ctx = ui.ctx().clone();
+    let soft = Theme::default();
+    let off = Theme {
+        effects: Effects::Off,
+        ..soft
+    };
+    let [on_art, off_art] =
+        arts.get_or_insert_with(|| [Art::new(&ctx, &soft), Art::new(&ctx, &off)]);
+    let p = soft.palette();
+    let painter = ui.painter().clone();
+    painter.rect_filled(ui.max_rect(), 0.0, p.ground);
+    for (col, art) in [(0.0, &*on_art), (500.0, &*off_art)] {
+        let x = 20.0 + col;
+        let mut y = 20.0;
+        for m in Mark::ALL {
+            let r = art.mark(&painter, m, egui::pos2(x, y), p.bright);
+            painter.rect_stroke(r, 0.0, (1.0, p.frame_dim), egui::StrokeKind::Outside);
+            y = r.bottom() + 20.0;
+        }
+        let d = art.device(&painter, egui::pos2(x + 12.0, y + 14.0), 1, p.bright);
+        painter.rect_stroke(d, 0.0, (1.0, p.frame_dim), egui::StrokeKind::Outside);
+        y = d.bottom() + 24.0;
+        for (i, icon) in Icon::ALL.iter().enumerate() {
+            let at = egui::pos2(x + (i % 16) as f32 * 26.0, y + (i / 16) as f32 * 26.0);
+            art.icon(
+                &painter,
+                egui::Rect::from_min_size(at, egui::vec2(24.0, 24.0)),
+                *icon,
+                p.bright,
+            );
+        }
+        y += 3.0 * 26.0 + 10.0;
+        let halo = (art.effects == Effects::Soft).then_some(effect::LABEL_HALO_SOFT);
+        art.label.paint(
+            &painter,
+            egui::pos2(x, y),
+            "PLAIN LABEL",
+            p.bright,
+            1.0,
+            0.0,
+        );
+        art.label.paint_lit(
+            &painter,
+            egui::pos2(x + 120.0, y),
+            "LIT LABEL",
+            p.bright,
+            1.0,
+            0.0,
+            halo,
+        );
+        art.label.paint_lit(
+            &painter,
+            egui::pos2(x, y + 24.0),
+            "APPLICATION & SYSTEM",
+            p.bright,
+            1.0,
+            text::LABEL_TRACKING,
+            halo,
+        );
+    }
+}
+
+#[test]
+#[ignore = "writes a PNG file; needs a wgpu adapter"]
+fn render_the_art_sheet() {
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1000.0, 1250.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_ui_state(paint_sheet, None);
+    h.run_steps(3);
+    let img = h.render().unwrap();
+    img.save(dir.join("sheet-green.png")).unwrap();
 }
