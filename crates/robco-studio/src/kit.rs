@@ -693,6 +693,10 @@ impl<'a> Kit<'a> {
         let p = self.p();
         let (rect, _) = ui.allocate_exact_size(egui::vec2(width, size::FIELD_H), Sense::hover());
         let inner = rect.shrink2(egui::vec2(size::UNIT * 2.0, size::UNIT));
+        // The fill goes first: shapes later on the same layer cover earlier
+        // ones, so a fill after the text would hide it.
+        ui.painter()
+            .rect_filled(rect, self.theme.control_radius(), p.ground);
         let resp = ui.put(
             inner,
             egui::TextEdit::singleline(value)
@@ -706,7 +710,6 @@ impl<'a> Kit<'a> {
         ui.ctx()
             .accesskit_node_builder(id, |n| n.set_label(name.to_owned()));
         let painter = ui.painter();
-        painter.rect_filled(rect, self.theme.control_radius(), p.ground);
         let (line, w) = if refused {
             (p.alarm, stroke::FRAME * 2.0)
         } else if resp.has_focus() {

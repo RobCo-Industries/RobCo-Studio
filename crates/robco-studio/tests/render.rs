@@ -9,7 +9,7 @@
 
 use eframe::egui;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use robco_studio::Studio;
 use robco_studio::app::Page;
 use robco_studio::theme::Scheme;
@@ -98,4 +98,53 @@ fn render_the_window() {
     h.state_mut().page = Page::Sdk;
     shot(&mut h, &dir, "sdk-empty-green.png").unwrap();
     std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// The find fields show their text: inside each field's rectangle some
+/// pixels are near the text colour, not only the fill and the border.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn find_fields_show_their_text() {
+    let d = sample().unwrap();
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _gone = Gone(d.clone());
+    let mut h = harness(Some(&d));
+    h.get_by_label("src").click();
+    h.run_steps(2);
+    h.get_by_label("main.c").click();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run_steps(2);
+    h.state_mut().editor.find.query = "return".into();
+    h.state_mut().editor.find.replace = "goto".into();
+    h.run_steps(4);
+    let img = h.render().unwrap();
+    let c = h.state().theme.palette().text;
+    let text = [c.r(), c.g(), c.b()];
+    for label in ["Find", "Replace with"] {
+        let r = h
+            .query_all_by_label(label)
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::TextInput)
+            .unwrap()
+            .rect();
+        // Inside the border, where the text is.
+        let inner = r.shrink(3.0);
+        let mut hits = 0;
+        for y in inner.top() as u32..inner.bottom() as u32 {
+            for x in inner.left() as u32..inner.right() as u32 {
+                let px = img.get_pixel(x, y).0;
+                let near = (0..3).all(|i| px[i].abs_diff(text[i]) < 24);
+                hits += usize::from(near);
+            }
+        }
+        assert!(
+            hits > 10,
+            "{label}: {hits} text-coloured pixels in {inner:?}"
+        );
+    }
 }
