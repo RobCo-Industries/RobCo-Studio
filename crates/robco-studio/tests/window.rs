@@ -1978,3 +1978,112 @@ fn the_tree_follows_the_curve() {
         assert_eq!(seen, [true; 3], "{level:?}: centre, toolbar, corner");
     }
 }
+
+/// A window at Live on `folder` whose chooser stays open once asked.
+fn live_with_fake(folder: &Path) -> Harness<'static, Studio> {
+    let fake = Fake::default();
+    let mut s = Studio::new(Some(folder)).with_chooser(Box::new(FakeChooser(fake)));
+    s.choose_screen(
+        robco_studio::screen::Adapter::Hardware,
+        Some(false),
+        Some(robco_studio::theme::Screen::Live),
+    );
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 720.0))
+        .build_ui_state(|ui, s: &mut Studio| s.ui(ui), s);
+    h.run_steps(3);
+    h
+}
+
+fn menu_item<'a>(
+    h: &'a Harness<'static, Studio>,
+    label: &'a str,
+) -> Option<egui_kittest::Node<'a>> {
+    h.query_all_by_label(label)
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)
+}
+
+/// While the chooser is open the Adjust dialog, drawn above the scrim,
+/// takes no drag, no click and no screen reader's action, and a click
+/// that would open a menu opens none.
+#[test]
+fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
+    let a = pipes("chooser-adjust").unwrap();
+    let mut h = live_with_fake(&a);
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::ScreenAdjust);
+    h.run_steps(2);
+    let bloom = h
+        .query_all_by_label("Bloom")
+        .find(|n| n.accesskit_node().role() == Role::Slider)
+        .unwrap();
+    bloom.set_value_accesskit(0.9);
+    h.run_steps(2);
+    let before = h.state().screen.strengths;
+    assert!((before.bloom - 0.9).abs() < 1e-6);
+    press_open(&mut h);
+    assert!(h.state().choosing());
+    assert!(h.state().screen.adjusting);
+    // A drag along the slider, from its left end to its right end.
+    let r = h
+        .query_all_by_label("Bloom")
+        .find(|n| n.accesskit_node().role() == Role::Slider)
+        .unwrap()
+        .rect();
+    let (from, to) = (r.left_center(), r.right_center());
+    h.event(Event::PointerMoved(from));
+    h.event(Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.event(Event::PointerMoved(to));
+    h.event(Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    h.query_all_by_label("Bloom")
+        .find(|n| n.accesskit_node().role() == Role::Slider)
+        .unwrap()
+        .set_value_accesskit(0.1);
+    h.run_steps(2);
+    let resets = h.query_all_by_label("Reset").count();
+    assert!(resets > 0);
+    for i in 0..resets {
+        h.query_all_by_label("Reset").nth(i).unwrap().click();
+        h.run_steps(2);
+    }
+    h.query_all_by_label("Close")
+        .next()
+        .unwrap()
+        .click_accesskit();
+    h.run_steps(2);
+    assert_eq!(h.state().screen.strengths, before, "the dialog took input");
+    assert!(h.state().screen.adjusting, "Close acted");
+    // A click on View opens no menu.
+    menu_item(&h, "View").unwrap().click();
+    h.run_steps(3);
+    assert!(menu_item(&h, "Screen").is_none(), "a menu opened");
+}
+
+/// A menu open when the chooser opens is closed.
+#[test]
+fn the_chooser_closes_an_open_menu() {
+    let a = pipes("chooser-menu").unwrap();
+    let mut h = live_with_fake(&a);
+    menu_item(&h, "View").unwrap().click();
+    h.run_steps(3);
+    assert!(menu_item(&h, "Screen").is_some(), "View is open");
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::OpenFolder);
+    h.run_steps(3);
+    assert!(h.state().choosing());
+    assert!(menu_item(&h, "Screen").is_none(), "the menu stayed open");
+}

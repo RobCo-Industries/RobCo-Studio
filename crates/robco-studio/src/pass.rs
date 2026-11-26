@@ -43,6 +43,8 @@ pub struct Link {
     /// The frame to draw through the pass, or None to leave egui's output
     /// as it is. The output hook takes it.
     pub frame: Option<Frame>,
+    /// The window takes no input: a system dialog is open over it.
+    pub inert: bool,
 }
 
 /// The window's side of the link, shared with the plugin.
@@ -126,7 +128,13 @@ impl egui::Plugin for Plugin {
     }
 
     fn input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
-        let curvature = lock(&self.link).curvature;
+        let (curvature, inert) = {
+            let link = lock(&self.link);
+            (link.curvature, link.inert)
+        };
+        if inert {
+            hold(input);
+        }
         let rect = input.screen_rect.unwrap_or_else(|| ctx.content_rect());
         map_input(input, rect, curvature);
     }
@@ -161,6 +169,23 @@ impl egui::Plugin for Plugin {
             egui_wgpu::Callback::new_paint_callback(rect, callback),
         )];
     }
+}
+
+/// Keep from the window every input a person or a screen reader gives:
+/// pointer, keys, text, accessibility actions and files. Every area, the
+/// root interface, dialogs, menus, dropdown lists, tooltips, gets the same
+/// nothing, and the pointer leaves, so no hover or tooltip stays. Focus still
+/// passes, and the modifiers read as none.
+fn hold(input: &mut egui::RawInput) {
+    input
+        .events
+        .retain(|e| matches!(e, egui::Event::WindowFocused(_)));
+    input.events.push(egui::Event::PointerGone);
+    input
+        .events
+        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    input.hovered_files.clear();
+    input.dropped_files.clear();
 }
 
 /// Add the screen's plugin to `ctx`, linked to the window by `link`. With

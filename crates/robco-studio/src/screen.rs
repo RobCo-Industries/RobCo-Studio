@@ -322,6 +322,15 @@ impl Settings {
         self.link.clone()
     }
 
+    /// Hold the window's input from the next frame on, or let it through:
+    /// while a system dialog is open over the window, nothing in it acts.
+    pub fn hold_input(&self, hold: bool) {
+        self.link
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .inert = hold;
+    }
+
     /// End the frame: hand the frame to the pass at a pass level, set the
     /// curve the next input is mapped through, and ask for the next frame
     /// by the rules. Call last in the frame.

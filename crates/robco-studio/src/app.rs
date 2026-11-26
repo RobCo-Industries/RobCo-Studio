@@ -387,6 +387,9 @@ impl Studio {
     fn choose_folder(&mut self, ctx: &egui::Context) {
         if self.choosing == Choosing::Due {
             self.choosing = Choosing::Open;
+            // A menu or a dropdown list open now would stay open, inert,
+            // over the scrim.
+            egui::Popup::close_all(ctx);
             let start = chooser::start_folder(self.project.as_ref().map(|p| p.root.as_path()));
             self.chooser.start(ctx, start.as_deref());
         }
@@ -732,8 +735,9 @@ impl Studio {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.keys(&ctx);
-        // While the chooser is open nothing in the window acts: the whole
-        // frame is drawn disabled, under the scrim of the window's dialogs.
+        // While the chooser is open nothing in the window acts: its input
+        // is held, see the end of this function, and the whole frame is
+        // drawn disabled, under the scrim of the window's dialogs.
         let choosing = self.choosing();
         if choosing {
             ui.disable();
@@ -793,6 +797,9 @@ impl Studio {
         }
         self.focus_request = None;
         self.art = Some(art);
+        // The one rule for every area while the chooser is open or due:
+        // the next frame's input is held before egui sees it.
+        self.screen.hold_input(self.choosing());
         self.screen.end_frame(&ctx, self.theme.screen());
     }
 
