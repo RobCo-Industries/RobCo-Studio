@@ -213,6 +213,7 @@ flowchart TB
 - `pass::plug` adds the plugin before the first frame and puts the pass in eframe's callback resources. `Context::add_plugin`, `Plugin::input_hook` and `Plugin::output_hook`, `Context::tessellate`, `egui_wgpu::Callback::new_paint_callback` and `CallbackTrait::prepare` and `paint` are the calls it leans on.
 - The output hook sees the shapes after egui drained its layers in its own order, so menus, dropdown lists, tooltips and dialogs draw above the panes as they do without the pass.
 - The output hook copies every texture change for the pass's renderer: the font atlas, the Spleen label atlas, the icons, the drawings, the device and the scanline texture. With every strength at zero the pass draws what egui draws, which a render test checks.
+- The pass's renderer applies a frame's new textures before it draws the frame, and frees its dropped textures at the start of the next frame it draws, once eframe has submitted the frame that may still paint them. A texture made, painted and dropped in one frame is in that frame's picture; a render test checks it. A frame the pass does not draw, hidden or dropped, keeps its changes in the queue, and the next frame drawn takes them all once.
 - Each strength is 0 to 1. At zero the shader skips its work, and with bloom at zero the three bloom passes are not run.
 
 Rules of the screen, each with a test:

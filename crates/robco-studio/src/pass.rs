@@ -52,14 +52,64 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The texture changes between egui and the pass's renderer.
+///
+/// egui gives a frame's changes with its output: the sets are applied
+/// before the frame is painted, the frees after, since a texture can be
+/// painted in the frame that frees it. eframe frees once the frame's
+/// commands are submitted. The pass's renderer gets its turn in `prepare`,
+/// before eframe submits, so it frees the textures of a frame at the start
+/// of the next frame it draws.
+///
+/// A frame the pass does not draw, because the window is hidden or the
+/// frame is dropped, leaves its changes here. The next frame drawn takes
+/// all of them at once, sets before its picture, so nothing is lost and
+/// nothing is applied twice.
+#[derive(Default)]
+struct Queue {
+    /// The changes of the frames given since the last frame drawn.
+    waiting: TexturesDelta,
+    /// The frees of the last frame drawn, done at the next one.
+    freed: Vec<egui::TextureId>,
+}
+
+/// What the renderer does with the textures for one frame, in order.
+struct Step {
+    /// Free these first: no frame left to draw paints them.
+    free: Vec<egui::TextureId>,
+    /// Then apply these, before the frame is drawn.
+    set: TexturesDelta,
+}
+
+impl Queue {
+    /// Keep a frame's changes until a frame is drawn.
+    fn push(&mut self, delta: &TexturesDelta) {
+        for (id, deltas) in &delta.set {
+            for d in deltas {
+                self.waiting.push(*id, d.clone());
+            }
+        }
+        self.waiting.free.extend(delta.free.iter().copied());
+    }
+
+    /// The step of the frame drawn now. Its own frees wait for the next.
+    fn take(&mut self) -> Step {
+        let later = self.waiting.free.drain().collect();
+        Step {
+            free: std::mem::replace(&mut self.freed, later),
+            set: std::mem::take(&mut self.waiting),
+        }
+    }
+}
+
 /// Texture changes that the pass's renderer has not taken yet.
 #[derive(Default)]
-struct Pending(Mutex<TexturesDelta>);
+struct Pending(Mutex<Queue>);
 
 impl Drop for Pending {
     fn drop(&mut self) {
         // Changes no frame will draw: egui asks that they are cleared.
-        lock(&self.0).clear();
+        lock(&self.0).waiting.clear();
     }
 }
 
@@ -94,17 +144,7 @@ impl egui::Plugin for Plugin {
         let Some(pending) = &self.pending else {
             return;
         };
-        {
-            let mut p = lock(&pending.0);
-            for (id, deltas) in &output.textures_delta.set {
-                for d in deltas {
-                    p.push(*id, d.clone());
-                }
-            }
-            for id in &output.textures_delta.free {
-                p.free(*id);
-            }
-        }
+        lock(&pending.0).push(&output.textures_delta);
         let Some(frame) = frame else {
             return;
         };
@@ -155,8 +195,8 @@ impl egui_wgpu::CallbackTrait for Callback {
         let Some(pass) = res.get_mut::<Pass>() else {
             return Vec::new();
         };
-        let mut delta = std::mem::take(&mut *lock(&self.pending.0));
-        pass.textures(device, queue, &mut delta);
+        let step = lock(&self.pending.0).take();
+        pass.textures(device, queue, step);
         pass.encode(device, queue, encoder, &self.prims, sd, &self.frame)
     }
 
@@ -307,19 +347,19 @@ impl Pass {
         }
     }
 
-    /// Apply the texture changes egui gave since the last frame drawn. A
+    /// Apply one frame's step of texture changes, before it is drawn. A
     /// change to part of a texture the renderer never had is skipped: it
     /// can only come before the pass was plugged in.
-    fn textures(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, delta: &mut TexturesDelta) {
-        for (id, deltas) in delta.set.drain() {
+    fn textures(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mut step: Step) {
+        for id in &step.free {
+            self.renderer.free_texture(id);
+        }
+        for (id, deltas) in step.set.set.drain() {
             for d in deltas {
                 if d.pos.is_none() || self.renderer.texture(&id).is_some() {
                     self.renderer.update_texture(device, queue, id, &d);
                 }
             }
-        }
-        for id in delta.free.drain() {
-            self.renderer.free_texture(&id);
         }
     }
 
@@ -561,6 +601,43 @@ mod tests {
         ] {
             assert!(module.entry_points.iter().any(|p| p.name == e), "{e}");
         }
+    }
+
+    /// Two frames' changes before one frame drawn: every set comes before
+    /// that frame, no free of a texture it may paint comes before it, and
+    /// each change is taken once.
+    #[test]
+    fn the_queue_frees_after_the_frame_that_paints() {
+        let id = egui::TextureId::Managed;
+        let img =
+            || egui::epaint::ImageDelta::full(egui::ColorImage::example(), Default::default());
+        let mut q = Queue::default();
+        // Frame one makes A and B, paints A and drops it.
+        let mut one = TexturesDelta::default();
+        one.set.insert(id(1), [img()].into_iter().collect());
+        one.set.insert(id(2), [img()].into_iter().collect());
+        one.free.insert(id(1));
+        q.push(&one);
+        one.clear();
+        // Frame two drops B. Neither frame was drawn.
+        let mut two = TexturesDelta::default();
+        two.free.insert(id(2));
+        q.push(&two);
+        two.clear();
+        let mut step = q.take();
+        assert!(step.free.is_empty(), "nothing freed before the frame");
+        let mut set: Vec<_> = step.set.set.keys().copied().collect();
+        set.sort_by_key(|i| format!("{i:?}"));
+        assert_eq!(set, [id(1), id(2)]);
+        assert!(step.set.free.is_empty());
+        step.set.clear();
+        // The next frame drawn frees both, and sets nothing again.
+        let step = q.take();
+        let mut free = step.free;
+        free.sort_by_key(|i| format!("{i:?}"));
+        assert_eq!(free, [id(1), id(2)]);
+        assert!(step.set.is_empty());
+        assert!(q.take().free.is_empty());
     }
 
     /// The uniform block puts each strength where the shader reads it.

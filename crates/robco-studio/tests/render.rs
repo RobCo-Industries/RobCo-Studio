@@ -520,3 +520,49 @@ fn the_pass_at_zero_draws_what_egui_draws() {
         assert!(p[..3].iter().all(|c| *c < 4), "corner {x},{y}: {p:?}");
     }
 }
+
+/// A texture made, painted and dropped in one frame is in that frame's
+/// picture through the pass: egui frees it after the frame is painted, and
+/// the pass's renderer must too.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
+    use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
+    use robco_studio::screen::{Adapter, Settings};
+    use robco_studio::theme::{Screen, Strengths};
+    let rs = create_render_state(default_wgpu_setup(), Default::default());
+    if Adapter::of(rs.adapter.get_info().device_type) != Adapter::Hardware {
+        return; // A software adapter: no pass.
+    }
+    let mut settings = Settings::default();
+    settings.strengths = Strengths::NONE;
+    let link = settings.link();
+    let gpu = rs.clone();
+    let spot = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(64.0, 64.0));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(320.0, 240.0))
+        .with_pixels_per_point(1.0)
+        .with_context_setup(move |ctx| robco_studio::pass::plug(ctx, link, Some(&gpu)))
+        .renderer(WgpuTestRenderer::from_render_state(rs))
+        .build_ui_state(
+            move |ui, s: &mut Settings| {
+                let ctx = ui.ctx().clone();
+                let red = egui::ColorImage::filled([4, 4], egui::Color32::RED);
+                let tex = ctx.load_texture("dropped", red, Default::default());
+                ui.painter().image(
+                    tex.id(),
+                    spot,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                drop(tex);
+                s.end_frame(&ctx, Screen::Still);
+            },
+            settings,
+        );
+    h.run_steps(3);
+    let img = h.render().unwrap();
+    let c = spot.center();
+    let p = img.get_pixel(c.x as u32, c.y as u32).0;
+    assert!(p[0] > 200 && p[1] < 40 && p[2] < 40, "{p:?}");
+}
