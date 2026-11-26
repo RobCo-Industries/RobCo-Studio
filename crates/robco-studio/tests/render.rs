@@ -604,3 +604,80 @@ fn a_second_plug_keeps_the_pass() {
         .count();
     assert_eq!(differ, 0, "{differ} pixels differ after a second plug");
 }
+
+/// Back at a moving level the pass keeps nothing of the picture it drew
+/// before it stopped: Live on a white page, Soft on a dark one, then Live
+/// on a third. Its first frame is the frame drawn with no history. Every
+/// strength is zero but persistence, so the pictures compare exactly.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn the_afterglow_starts_empty_when_the_pass_resumes() {
+    use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
+    use robco_studio::pass::Shared;
+    use robco_studio::screen::{Adapter, Frame};
+    use robco_studio::theme::Strengths;
+    /// What one frame shows: a page colour, through the pass or not.
+    #[derive(Clone, Copy)]
+    struct Shown {
+        page: egui::Color32,
+        pass: bool,
+    }
+    let picture = |frames: &[Shown]| {
+        let rs = create_render_state(default_wgpu_setup(), Default::default());
+        if Adapter::of(rs.adapter.get_info().device_type) != Adapter::Hardware {
+            return None; // A software adapter: no pass.
+        }
+        let link = Shared::default();
+        let plugged = link.clone();
+        let gpu = rs.clone();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(160.0, 120.0))
+            .with_pixels_per_point(1.0)
+            .with_context_setup(move |ctx| robco_studio::pass::plug(ctx, plugged, Some(&gpu)))
+            .renderer(WgpuTestRenderer::from_render_state(rs))
+            .build_ui_state(
+                move |ui, shown: &mut Shown| {
+                    let r = ui.ctx().content_rect();
+                    ui.painter().rect_filled(r, 0.0, shown.page);
+                    let mut l = link.lock().unwrap();
+                    l.frame = shown.pass.then_some(Frame {
+                        strengths: Strengths {
+                            persistence: 1.0,
+                            ..Strengths::NONE
+                        },
+                        time: 0.0,
+                        scan_offset: 0.0,
+                        keep: 0.9,
+                    });
+                },
+                frames[0],
+            );
+        let mut last = None;
+        for f in frames {
+            *h.state_mut() = *f;
+            h.step();
+            last = Some(h.render().unwrap());
+        }
+        last
+    };
+    let live = |page| Shown { page, pass: true };
+    let soft = |page| Shown { page, pass: false };
+    let dark = egui::Color32::from_rgb(10, 20, 30);
+    let resumed = picture(&[
+        live(egui::Color32::WHITE),
+        live(egui::Color32::WHITE),
+        soft(egui::Color32::BLACK),
+        soft(egui::Color32::BLACK),
+        live(dark),
+    ]);
+    let fresh = picture(&[live(dark)]);
+    let (Some(resumed), Some(fresh)) = (resumed, fresh) else {
+        return;
+    };
+    let differ = resumed
+        .pixels()
+        .zip(fresh.pixels())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(differ, 0, "{differ} pixels keep the old picture");
+}

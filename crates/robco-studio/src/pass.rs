@@ -186,6 +186,9 @@ struct Plugin {
     pending: Option<Arc<Pending>>,
     /// What egui was last told is down.
     down: Down,
+    /// The number of outputs seen, this one included. The pass's
+    /// afterglow is valid only after the output just before its own.
+    seq: u64,
 }
 
 /// What egui was told is down: the pointer's buttons, the keys and the
@@ -359,6 +362,7 @@ impl egui::Plugin for Plugin {
             let mut link = lock(&self.link);
             (link.frame.take(), link.curvature)
         };
+        self.seq = self.seq.wrapping_add(1);
         // The pointer is mapped back through the curve whether or not the
         // pass draws, so the tree's rectangles follow it the same way.
         if let Some(update) = &mut output.platform_output.accesskit_update {
@@ -377,6 +381,7 @@ impl egui::Plugin for Plugin {
         let callback = Callback {
             prims,
             frame,
+            seq: self.seq,
             pending: Arc::clone(pending),
         };
         output.shapes = vec![ClippedShape::new(
@@ -427,6 +432,7 @@ pub fn plug(ctx: &egui::Context, link: Shared, gpu: Option<&RenderState>) {
         link,
         pending,
         down: Down::default(),
+        seq: 0,
     });
 }
 
@@ -434,6 +440,8 @@ pub fn plug(ctx: &egui::Context, link: Shared, gpu: Option<&RenderState>) {
 struct Callback {
     prims: Vec<ClippedPrimitive>,
     frame: Frame,
+    /// The output this frame came with, as counted by the plugin.
+    seq: u64,
     pending: Arc<Pending>,
 }
 
@@ -451,7 +459,15 @@ impl egui_wgpu::CallbackTrait for Callback {
         };
         let step = lock(&self.pending.0).take();
         pass.textures(device, queue, step);
-        pass.encode(device, queue, encoder, &self.prims, sd, &self.frame)
+        pass.encode(
+            device,
+            queue,
+            encoder,
+            &self.prims,
+            sd,
+            &self.frame,
+            self.seq,
+        )
     }
 
     fn paint(
@@ -490,6 +506,8 @@ struct Pass {
     targets: Option<Targets>,
     /// Which of the two outputs holds the last frame.
     cur: usize,
+    /// The output the pass drew last, and at which display scale.
+    drawn: Option<(u64, f32)>,
     blit_group: Option<wgpu::BindGroup>,
 }
 
@@ -597,6 +615,7 @@ impl Pass {
             uniforms,
             targets: None,
             cur: 0,
+            drawn: None,
             blit_group: None,
         }
     }
@@ -617,9 +636,10 @@ impl Pass {
         }
     }
 
-    fn targets(&mut self, device: &wgpu::Device, size: [u32; 2]) {
+    /// Make the targets for `size` unless they are made. True when made.
+    fn targets(&mut self, device: &wgpu::Device, size: [u32; 2]) -> bool {
         if self.targets.as_ref().is_some_and(|t| t.size == size) {
-            return;
+            return false;
         }
         let make = |w: u32, h: u32| {
             device
@@ -648,6 +668,7 @@ impl Pass {
             half_b: make(w / 2, h / 2),
             out: [make(w, h), make(w, h)],
         });
+        true
     }
 
     fn group(
@@ -700,6 +721,13 @@ impl Pass {
     }
 
     /// Draw egui's picture into the scene texture and run the passes.
+    ///
+    /// The last output is the afterglow's history only when the pass drew
+    /// the output just before this one, `seq`, at this size and display
+    /// scale. After any frame it did not draw, a level without the pass,
+    /// a frame dropped, new targets, a new scale or the first frame, the
+    /// history is empty and the frame keeps nothing of it.
+    #[allow(clippy::too_many_arguments)]
     fn encode(
         &mut self,
         device: &wgpu::Device,
@@ -708,8 +736,15 @@ impl Pass {
         prims: &[ClippedPrimitive],
         sd: &ScreenDescriptor,
         frame: &Frame,
+        seq: u64,
     ) -> Vec<wgpu::CommandBuffer> {
-        self.targets(device, sd.size_in_pixels);
+        let made = self.targets(device, sd.size_in_pixels);
+        let follows = self.drawn == Some((seq.wrapping_sub(1), sd.pixels_per_point));
+        self.drawn = Some((seq, sd.pixels_per_point));
+        let frame = &Frame {
+            keep: if follows && !made { frame.keep } else { 0.0 },
+            ..*frame
+        };
         let cmds = self
             .renderer
             .update_buffers(device, queue, encoder, prims, sd);
