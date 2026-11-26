@@ -2332,12 +2332,19 @@ mod tests {
         h.state_mut().set_screen(Screen::Soft);
         h.run_steps(4);
         h.step();
-        assert!(!h.ctx.has_requested_repaint(), "Soft at rest asks for nothing");
+        assert!(
+            !h.ctx.has_requested_repaint(),
+            "Soft at rest asks for nothing"
+        );
         h.state_mut().pending.push(Command::Screen(Screen::Off));
         h.step();
         assert!(h.ctx.has_requested_repaint(), "the change asks for a frame");
         h.step();
-        let art = h.state().art.as_ref().map(|a| (a.halos(), a.has_scanlines()));
+        let art = h
+            .state()
+            .art
+            .as_ref()
+            .map(|a| (a.halos(), a.has_scanlines()));
         assert_eq!(art, Some((false, false)));
     }
 
