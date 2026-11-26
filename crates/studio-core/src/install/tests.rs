@@ -541,6 +541,146 @@ fn install_two_at_once() {
     assert!(d.temp_is_empty());
 }
 
+/// A transport whose download always fails, as a lost network would.
+struct Offline;
+
+impl Transport for Offline {
+    fn fetch(&self, _url: &str, _out: &mut dyn Write) -> Result<(), String> {
+        Err("offline".to_owned())
+    }
+}
+
+/// Sets the hook of this thread: `f` runs once, at `step`.
+fn hook_once(step: Step, f: impl FnOnce() + 'static) {
+    let mut f = Some(f);
+    HOOK.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move |s| {
+            if s == step
+                && let Some(f) = f.take()
+            {
+                f();
+            }
+        }));
+    });
+}
+
+fn clear_hook() {
+    HOOK.with(|h| *h.borrow_mut() = None);
+}
+
+/// An unfinished folder at the package's place, as a crash leaves it.
+fn leave_unfinished(d: &Dir) {
+    let dir = pkg_dir(d);
+    fs::create_dir_all(dir.join("holotape-c")).unwrap();
+    fs::write(dir.join("templates.json"), b"half").unwrap();
+}
+
+/// The package folder holds the install of `bytes`, whole.
+fn holds_whole(d: &Dir, bytes: &[u8]) {
+    assert_eq!(cached(&pkg_dir(d)), Ok(Cached::Holds(sha256_hex(bytes))));
+    for (p, b) in files() {
+        assert_eq!(fs::read(pkg_dir(d).join(p)).unwrap(), b, "{p}");
+    }
+    assert!(d.temp_is_empty(), "a temporary folder was left");
+}
+
+/// A and B both find the folder unfinished. B takes it aside and finishes
+/// before A renames. A's rename takes B's finished install: A must put it
+/// back, even though A's own download would fail.
+#[test]
+fn install_puts_back_a_finished_install_it_took_aside() {
+    let d = Dir::new("aside-back");
+    let bytes = good_zip();
+    d.put("p.zip", &bytes);
+    leave_unfinished(&d);
+    let (cache, local) = (d.cache(), d.local());
+    let e = entry_for("p.zip", &bytes);
+    let b = e.clone();
+    hook_once(Step::BeforeAside, move || {
+        assert_eq!(
+            package(&cache, &b, &local, Pin::Index),
+            Ok(State::Installed)
+        );
+    });
+    let r = package(&d.cache(), &e, &Offline, Pin::Index);
+    clear_hook();
+    assert_eq!(r, Ok(State::Present));
+    holds_whole(&d, &bytes);
+}
+
+/// As above, with B's install of another archive: A puts it back too and
+/// reports the mismatch, and the other archive stays.
+#[test]
+fn install_puts_back_another_finished_install_it_took_aside() {
+    let d = Dir::new("aside-other");
+    let bytes = good_zip();
+    d.put("p.zip", &bytes);
+    leave_unfinished(&d);
+    let (cache, local) = (d.cache(), d.local());
+    let b = entry_for("p.zip", &bytes);
+    hook_once(Step::BeforeAside, move || {
+        assert_eq!(
+            package(&cache, &b, &local, Pin::Index),
+            Ok(State::Installed)
+        );
+    });
+    let other = entry_with("p.zip", 1, &sha256_hex(b"other"));
+    let r = package(&d.cache(), &other, &Offline, Pin::Index);
+    clear_hook();
+    assert_eq!(r.unwrap_err().error_code(), "package: hash");
+    holds_whole(&d, &bytes);
+}
+
+/// A took B's finished install aside, and C installed into the free place
+/// before A puts it back. A keeps C's install and reports it.
+#[test]
+fn install_keeps_the_install_that_took_the_place() {
+    let d = Dir::new("aside-taken");
+    let bytes = good_zip();
+    d.put("p.zip", &bytes);
+    leave_unfinished(&d);
+    let e = entry_for("p.zip", &bytes);
+    let (cache, local, b) = (d.cache(), d.local(), e.clone());
+    hook_once(Step::BeforeAside, move || {
+        assert_eq!(
+            package(&cache, &b, &local, Pin::Index),
+            Ok(State::Installed)
+        );
+        let (cache, local, c) = (cache.clone(), local.clone(), b.clone());
+        hook_once(Step::BeforePutBack, move || {
+            assert_eq!(
+                package(&cache, &c, &local, Pin::Index),
+                Ok(State::Installed)
+            );
+        });
+    });
+    let r = package(&d.cache(), &e, &Offline, Pin::Index);
+    clear_hook();
+    assert_eq!(r, Ok(State::Present));
+    holds_whole(&d, &bytes);
+}
+
+/// B takes the unfinished folder aside before A does: A's rename finds
+/// nothing, and A installs into the free place.
+#[test]
+fn install_finds_the_unfinished_folder_gone() {
+    let d = Dir::new("aside-gone");
+    let bytes = good_zip();
+    d.put("p.zip", &bytes);
+    leave_unfinished(&d);
+    let (dir, gone) = (pkg_dir(&d), d.0.join("gone"));
+    hook_once(Step::BeforeAside, move || fs::rename(dir, gone).unwrap());
+    let r = package(
+        &d.cache(),
+        &entry_for("p.zip", &bytes),
+        &d.local(),
+        Pin::Index,
+    );
+    clear_hook();
+    assert_eq!(r, Ok(State::Installed));
+    holds_whole(&d, &bytes);
+}
+
 // Tools.
 
 fn archive_of(url: &str, bytes: &[u8], root: &str) -> Archive {

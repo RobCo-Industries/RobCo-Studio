@@ -22,7 +22,9 @@
 //!   moves the folder into the cache. So a cache folder either holds every
 //!   checked file and its record, or it is not there.
 //! - A cache folder without a valid record is not an install that ended.
-//!   The next install moves it aside and removes it, then installs.
+//!   The next install renames it into its temporary folder, reads it there
+//!   and removes it only when it is still unfinished. A finished install
+//!   that another install put in its place meanwhile goes back.
 //! - When two installs of one item race, the second rename fails. The
 //!   second install then reads the first one's record and compares it.
 //! - A failure removes the temporary folder. Nothing is retried from
@@ -423,16 +425,8 @@ fn install(
         Cached::Unfinished => true,
     };
     let temp = TempDir::new(cache)?;
-    if unfinished {
-        // Moved aside first, so an interrupted removal leaves nothing in
-        // the cache's place.
-        let aside = temp.0.join("old");
-        match fs::rename(&item.dir, &aside) {
-            Ok(()) => {}
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => return Err(write_err(&item.dir, &e)),
-        }
-        let _ = fs::remove_dir_all(&aside);
+    if unfinished && let Some(h) = clear_unfinished(&temp.0, &item.dir)? {
+        return compare(item, &h, pin);
     }
     let archive = download(&temp.0, item, transport)?;
     let out = temp.0.join("x");
@@ -466,6 +460,94 @@ fn install(
             _ => Err(write_err(&item.dir, &e)),
         },
     }
+}
+
+/// The points of [`clear_unfinished`] where a test may act, to drive the
+/// interleavings of two installs without sleeping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// After the check that found the place unfinished, before the rename
+    /// that takes it aside.
+    BeforeAside,
+    /// After a finished install was taken aside, before it is put back.
+    BeforePutBack,
+}
+
+#[cfg(test)]
+type Hook = Box<dyn FnMut(Step)>;
+
+#[cfg(test)]
+thread_local! {
+    /// The hook of the running thread. It is taken while it runs, so an
+    /// install that it starts on the same thread does not call it again.
+    static HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn at(step: Step) {
+    let hook = HOOK.with(|h| h.borrow_mut().take());
+    if let Some(mut f) = hook {
+        f(step);
+        HOOK.with(|h| {
+            let mut h = h.borrow_mut();
+            if h.is_none() {
+                *h = Some(f);
+            }
+        });
+    }
+}
+
+#[cfg(not(test))]
+fn at(_step: Step) {}
+
+/// Clears the unfinished folder at `dir`, so that an install can take the
+/// place. Returns the hash of the record when the place holds a finished
+/// install instead, which the caller then compares.
+///
+/// Another install may finish at `dir` between any check and any rename.
+/// So nothing is removed from `dir` itself. One rename, atomic on the file
+/// system, takes whatever is at `dir` into `temp`, and only then is it
+/// read. What holds a valid record is a finished install, and it is never
+/// removed: it goes back to `dir`, or, when another one took the place
+/// meanwhile, the one at `dir` is kept. Only what this install holds and
+/// found unfinished is removed. The spec says nothing more about two
+/// tools at work on one cache.
+fn clear_unfinished(temp: &Path, dir: &Path) -> Result<Option<String>, Error> {
+    // A finished install this call took aside and must put back.
+    let mut held: Option<(PathBuf, String)> = None;
+    for n in 0..8 {
+        if let Some((p, h)) = &held {
+            at(Step::BeforePutBack);
+            // A rename never replaces a folder that holds files, so it
+            // cannot replace another finished install.
+            if fs::rename(p, dir).is_ok() {
+                return Ok(Some(h.clone()));
+            }
+        }
+        match cached(dir)? {
+            Cached::Holds(h) => return Ok(Some(h)),
+            Cached::Missing if held.is_none() => return Ok(None),
+            Cached::Missing => continue,
+            Cached::Unfinished => {}
+        }
+        at(Step::BeforeAside);
+        let aside = temp.join(format!("old-{n}"));
+        match fs::rename(dir, &aside) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(write_err(dir, &e)),
+        }
+        match cached(&aside)? {
+            Cached::Holds(h) => held = Some((aside, h)),
+            _ => {
+                let _ = fs::remove_dir_all(&aside);
+            }
+        }
+    }
+    Err(Error::IoWrite {
+        path: dir.display().to_string(),
+        reason: "the folder kept changing while the install cleared it".to_owned(),
+    })
 }
 
 /// A writer that hashes and counts what it passes to a file, and refuses
