@@ -981,6 +981,44 @@ fn install_refuses_a_link_out_of_the_installed_folder() {
     assert_eq!(fs::read(tool_path_of(&d).join("bin/gcc")).unwrap(), b"g");
 }
 
+#[cfg(unix)]
+#[test]
+fn install_refuses_a_link_outside_in_a_folder_root_leaves_out() {
+    let d = Dir::new("tool-link-left");
+    let side = side_folder(&d);
+    // `pkg` is installed; `other/out` leads from the extraction folder,
+    // `<cache>/tmp/<one>/x`, to the user's folder beside the cache.
+    let bytes = tool_tgz(&[
+        T::Dir("pkg/bin/"),
+        T::File("pkg/bin/gcc", b"g"),
+        T::Dir("other/"),
+        T::Link("other/out", "../../../../../side"),
+    ]);
+    let msg = tool_refused(&d, install_tool(&d, &bytes, "pkg"), "tool: archive");
+    assert!(msg.contains("extraction folder"), "{msg}");
+    side_untouched(&side);
+}
+
+#[cfg(unix)]
+#[test]
+fn install_writes_nothing_through_a_link_in_a_folder_root_leaves_out() {
+    let d = Dir::new("tool-link-write");
+    let side = side_folder(&d);
+    // Through a link to the user's folder, and through one that stays
+    // inside: both are refused before anything is written.
+    for (target, name) in [("../../../../../side", "bin/evil"), ("../pkg", "bin/x")] {
+        let through = format!("other/l/{name}");
+        let bytes = tool_tgz(&[
+            T::Dir("pkg/bin/"),
+            T::Dir("other/"),
+            T::Link("other/l", target),
+            T::File(&through, b"x"),
+        ]);
+        tool_refused(&d, install_tool(&d, &bytes, "pkg"), "tool: archive");
+    }
+    side_untouched(&side);
+}
+
 struct Failing;
 
 impl io::Read for Failing {

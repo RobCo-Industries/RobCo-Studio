@@ -830,8 +830,16 @@ fn extract_tool(archive: &Path, out: &Path, root: &str) -> Result<PathBuf, Error
             "neither a zip archive nor a gzip tar archive".to_owned()
         ));
     }
+    // "Tool archives" refuses with `tool: archive` "an entry would land
+    // outside the extraction folder: ... a link that leads outside". That
+    // holds for every entry, so every link of the extraction is checked,
+    // in the folders that `root` leaves out too. Then each link of the
+    // folder that is installed must lead inside that folder, since only it
+    // is kept.
+    let real_out = fs::canonicalize(out).map_err(|e| read_err(out, &e))?;
+    check_links(&real_out, "the extraction folder")?;
     let folder = root_folder(out, root)?;
-    check_links(&folder)?;
+    check_links(&folder, "the installed folder")?;
     if !fs::symlink_metadata(folder.join("bin")).is_ok_and(|m| m.is_dir()) {
         return Err(bad(format!("root {root:?} holds no bin/")));
     }
@@ -1038,12 +1046,12 @@ fn symlink(_target: &str, _path: &Path) -> io::Result<()> {
     Err(io::Error::from(ErrorKind::Unsupported))
 }
 
-/// Checks, once everything is extracted, that each link inside `folder`,
-/// the real path of the folder that is installed, leads to something that
-/// exists inside it. The system resolves the link, so a chain of links
-/// counts. A link that leads nowhere, or out of `folder`, is refused: only
-/// `folder` is kept.
-fn check_links(folder: &Path) -> Result<(), Error> {
+/// Checks, once everything is extracted, that each link inside `folder`, a
+/// real path, leads to something that exists inside it. The system
+/// resolves the link, so a chain of links counts. A link that leads
+/// nowhere, or out of `folder`, is refused: any doubt is a refusal.
+/// `what` names `folder` in the message.
+fn check_links(folder: &Path, what: &str) -> Result<(), Error> {
     let mut stack = vec![folder.to_path_buf()];
     while let Some(d) = stack.pop() {
         let entries = fs::read_dir(&d).map_err(|e| read_err(&d, &e))?;
@@ -1056,7 +1064,7 @@ fn check_links(folder: &Path) -> Result<(), Error> {
                 if !inside {
                     let rel = p.strip_prefix(folder).unwrap_or(&p);
                     return Err(Error::ToolArchive(format!(
-                        "{}: the link leads outside the installed folder, or to nothing",
+                        "{}: the link leads outside {what}, or to nothing",
                         rel.display()
                     )));
                 }
