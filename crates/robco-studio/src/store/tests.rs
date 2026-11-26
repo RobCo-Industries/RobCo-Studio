@@ -543,3 +543,140 @@ fn settings_file_versions() {
         assert_eq!(got, want.map_err(str::to_owned), "{v}");
     }
 }
+
+#[test]
+fn one_verdict_per_entry() {
+    use std::io::{Error, ErrorKind};
+    let err = |k: ErrorKind| Error::new(k, "made up");
+    let name = |s: &str| OsString::from(s);
+    let long = format!("{}.toml", "a".repeat(FILE_MAX - 5));
+    let listed = |f: &str| Entry::Listed(f.to_owned());
+    let unreadable = |f: &str| {
+        Entry::Refused(
+            f.to_owned(),
+            Refusal::Unreadable(file_unreadable(f, "made up")),
+        )
+    };
+    type Seen = std::io::Result<(OsString, std::io::Result<bool>)>;
+    let rows: Vec<(&str, Seen, Entry)> = vec![
+        (
+            "a file",
+            Ok((name("ember.toml"), Ok(true))),
+            listed("ember.toml"),
+        ),
+        (
+            "a folder",
+            Ok((name("ember.toml"), Ok(false))),
+            Entry::Skipped,
+        ),
+        (
+            "another name",
+            Ok((name("notes.txt"), Ok(true))),
+            Entry::Skipped,
+        ),
+        (
+            "a hidden file",
+            Ok((name(".x.toml"), Ok(true))),
+            Entry::Skipped,
+        ),
+        (
+            "a leftover",
+            Ok((name(&temp_name(u32::MAX, u64::MAX)), Ok(true))),
+            Entry::Skipped,
+        ),
+        (
+            "gone at the lookup",
+            Ok((name("ember.toml"), Err(err(ErrorKind::NotFound)))),
+            Entry::Skipped,
+        ),
+        (
+            "refused at the lookup",
+            Ok((name("ember.toml"), Err(err(ErrorKind::PermissionDenied)))),
+            unreadable("ember.toml"),
+        ),
+        (
+            "another fault at the lookup",
+            Ok((name("ember.toml"), Err(err(ErrorKind::Interrupted)))),
+            unreadable("ember.toml"),
+        ),
+        (
+            "a lookup fault on another name",
+            Ok((name("notes.txt"), Err(err(ErrorKind::PermissionDenied)))),
+            Entry::Skipped,
+        ),
+        (
+            "the entry is not found",
+            Err(err(ErrorKind::NotFound)),
+            Entry::ListingUnreadable("made up".into()),
+        ),
+        (
+            "the entry is refused",
+            Err(err(ErrorKind::PermissionDenied)),
+            Entry::ListingUnreadable("made up".into()),
+        ),
+        (
+            "the entry fails another way",
+            Err(err(ErrorKind::Other)),
+            Entry::ListingUnreadable("made up".into()),
+        ),
+        (
+            "a name at the limit",
+            Ok((name(&long), Ok(true))),
+            listed(&long),
+        ),
+        (
+            "a name over the limit",
+            Ok((name(&format!("a{long}")), Ok(true))),
+            Entry::Refused(
+                format!("a{long}"),
+                Refusal::NotTheme(not_theme(
+                    &format!("a{long}"),
+                    &format!("its name is over {FILE_MAX} bytes"),
+                )),
+            ),
+        ),
+    ];
+    for (row, input, want) in rows {
+        assert_eq!(entry(input), want, "{row}");
+    }
+}
+
+#[test]
+fn a_temporary_name_is_short_and_never_a_theme() {
+    for (pid, n) in [(0, 0), (1, 2), (u32::MAX, u64::MAX)] {
+        let t = temp_name(pid, n);
+        assert!(!t.ends_with(".toml"), "{t}");
+        assert!(t.starts_with('.') && t.len() <= 64, "{t}");
+    }
+    // Studio's longest own name, with a clash number, fits the limit.
+    let longest = format!("{}-{}.toml", "a".repeat(NAME_MAX), u32::MAX);
+    assert!(longest.len() <= FILE_MAX, "{longest}");
+}
+
+#[test]
+fn a_leftover_is_not_listed_and_does_not_count() {
+    let d = TempDir::new("leftover");
+    for i in 0..MAX_FILES {
+        std::fs::write(d.0.join(format!("t{i:02}.toml")), "x").unwrap();
+    }
+    std::fs::write(d.0.join(temp_name(7, 9)), "version = 1\n").unwrap();
+    let l = toml_files(&d.0);
+    assert_eq!(l.files().len(), MAX_FILES);
+    assert!(l.files().iter().all(|f| !f.starts_with('.')));
+    assert!(read_folder(&d.0).notes.is_empty());
+}
+
+#[test]
+fn a_long_destination_name_writes() {
+    let d = TempDir::new("longname");
+    for len in [1usize, 40, 200, 250, 255] {
+        let file = "b".repeat(len);
+        // Some systems or temp folders take shorter names: skip the row.
+        if std::fs::write(d.0.join(&file), "").is_err() {
+            eprintln!("skipped: a name of {len} bytes cannot be made here");
+            continue;
+        }
+        write_file(&d.0, &file, b"x").unwrap_or_else(|e| panic!("{len}: {e}"));
+        assert_eq!(std::fs::read(d.0.join(&file)).unwrap(), b"x", "{len}");
+    }
+}

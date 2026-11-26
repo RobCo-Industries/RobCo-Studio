@@ -417,6 +417,8 @@ impl Studio {
                 let mut have = Vec::new();
                 for e in r {
                     let e = e.map_err(|e| unlisted(name, &e.to_string()))?;
+                    // A name that is not UTF-8 cannot equal the ASCII
+                    // names Studio makes, so the lossy form is safe here.
                     have.push(e.file_name().to_string_lossy().to_lowercase());
                 }
                 have
@@ -436,6 +438,7 @@ impl Studio {
     fn keep(&mut self, dir: &Path, file: &str, spec: &Spec) -> Result<String, ThemeFault> {
         let files = match store::toml_files(dir) {
             store::Listing::Unreadable(why) => return Err(unlisted(file, &why)),
+            // A missing folder holds no file: a fact, and the write makes it.
             l => l.files().to_vec(),
         };
         let new = !files.iter().any(|f| f == file);
@@ -448,6 +451,8 @@ impl Studio {
             // Another program filled the folder meanwhile. A new file goes
             // again, so the folder is as it was.
             if new {
+                // The person is told the folder is full. A file that stays
+                // is a whole theme Studio wrote, listed when room comes.
                 let _ = std::fs::remove_file(dir.join(file));
                 self.reload_themes();
             }
@@ -579,6 +584,7 @@ impl Studio {
     /// Read the theme file at `path` as untrusted text: the theme it gives,
     /// with its name cleaned, when it is one.
     pub(super) fn read_theme_file(&mut self, path: &Path) -> Result<Spec, ThemeFault> {
+        // A path with no file name fails the read below, which says why.
         let file = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());

@@ -26,6 +26,11 @@ pub const MAX_BYTES: u64 = 16384;
 pub const MAX_FILES: usize = 64;
 /// The most characters of a theme's name.
 pub const NAME_MAX: usize = 32;
+/// The most bytes of a theme file's name Studio lists. Studio's own names
+/// hold at most 32 characters, `-` and a number, and `.toml`, so a name
+/// over this was not made by Studio, and Studio refuses it rather than
+/// list a file it may fail to write again.
+pub const FILE_MAX: usize = 64;
 /// The most characters of a file's name in a message.
 pub const FILE_SHOWN_MAX: usize = 40;
 /// The theme format this Studio knows.
@@ -186,6 +191,7 @@ pub fn shown(file: &str) -> String {
 /// name less `.toml`, else "Theme". A name of a theme that ships gets the
 /// file's name after it. The flag says the `name` key had to be cleaned.
 pub fn theme_name(raw: Option<&str>, file: &str) -> (String, bool) {
+    // No `name` key is a fact of the file: the file's name stands in.
     let mut name = raw.map(clean).unwrap_or_default();
     let cleaned = raw.is_some_and(|r| !r.is_empty() && name != r);
     if name.is_empty() {
@@ -468,18 +474,65 @@ pub enum Listing {
     /// The folder is there and Studio could not read it: the system's
     /// reason.
     Unreadable(String),
-    /// The plain `.toml` files of the folder, in file name order.
-    Files(Vec<String>),
+    /// The plain `.toml` files of the folder, in file name order, and the
+    /// `.toml` entries refused at the listing, with the reason.
+    Files(Vec<String>, Vec<(String, Refusal)>),
 }
 
 impl Listing {
     /// The files, none when the folder is missing or could not be read.
     pub fn files(&self) -> &[String] {
         match self {
-            Listing::Files(f) => f,
+            Listing::Files(f, _) => f,
             _ => &[],
         }
     }
+}
+
+/// What one entry of the themes folder is, from what the system said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    /// A plain `.toml` file to read.
+    Listed(String),
+    /// Not a theme file: another kind, another name, or gone.
+    Skipped,
+    /// A `.toml` entry Studio does not list, with the reason.
+    Refused(String, Refusal),
+    /// The entry's name is not known, so the listing tells nothing.
+    ListingUnreadable(String),
+}
+
+/// The verdict on one entry of a listing. `entry` is the entry, or the
+/// error in its place; for an entry, its name and whether it is a plain
+/// file. A failed lookup is never "not a file": it makes the entry
+/// unreadable. Only "not found" is a fact, the entry is gone.
+pub fn entry(entry: std::io::Result<(OsString, std::io::Result<bool>)>) -> Entry {
+    let (name, plain) = match entry {
+        Ok(e) => e,
+        Err(e) => return Entry::ListingUnreadable(e.to_string()),
+    };
+    let lossy = name.to_string_lossy().into_owned();
+    if !lossy.ends_with(".toml") || lossy.starts_with('.') {
+        return Entry::Skipped;
+    }
+    match plain {
+        Ok(true) => {}
+        Ok(false) => return Entry::Skipped,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Entry::Skipped,
+        Err(e) => {
+            let n = file_unreadable(&lossy, &e.to_string());
+            return Entry::Refused(lossy, Refusal::Unreadable(n));
+        }
+    }
+    let Ok(file) = name.into_string() else {
+        let n = not_theme(&lossy, "its name is not UTF-8");
+        return Entry::Refused(lossy, Refusal::NotTheme(n));
+    };
+    if file.len() > FILE_MAX {
+        let n = not_theme(&file, &format!("its name is over {FILE_MAX} bytes"));
+        return Entry::Refused(file, Refusal::NotTheme(n));
+    }
+    Entry::Listed(file)
 }
 
 /// Why a file of the themes folder is not listed.
@@ -522,26 +575,21 @@ pub fn toml_files(dir: &Path) -> Listing {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Listing::Missing,
         Err(e) => return Listing::Unreadable(e.to_string()),
     };
-    let mut files = Vec::new();
+    let (mut files, mut refused) = (Vec::new(), Vec::new());
     for e in entries {
         // A folder that fails while it is listed is a folder Studio could
         // not read, not a shorter list.
-        let e = match e {
-            Ok(e) => e,
-            Err(e) => return Listing::Unreadable(e.to_string()),
-        };
-        if !e.file_type().is_ok_and(|t| t.is_file()) {
-            continue;
-        }
-        if let Ok(n) = e.file_name().into_string()
-            && n.ends_with(".toml")
-            && !n.starts_with('.')
-        {
-            files.push(n);
+        let e = e.map(|e| (e.file_name(), e.file_type().map(|t| t.is_file())));
+        match entry(e) {
+            Entry::Listed(f) => files.push(f),
+            Entry::Skipped => {}
+            Entry::Refused(f, r) => refused.push((f, r)),
+            Entry::ListingUnreadable(why) => return Listing::Unreadable(why),
         }
     }
     files.sort();
-    Listing::Files(files)
+    refused.sort_by(|a, b| a.0.cmp(&b.0));
+    Listing::Files(files, refused)
 }
 
 /// The line for a themes folder Studio could not read.
@@ -571,7 +619,10 @@ pub fn read_folder(dir: &Path) -> Folder {
             out.unreadable = Some(folder_unreadable(&why));
             return out;
         }
-        Listing::Files(f) => f,
+        Listing::Files(f, refused) => {
+            out.refused = refused;
+            f
+        }
     };
     if files.len() > MAX_FILES {
         out.notes.push(warn(format!(
@@ -582,6 +633,7 @@ pub fn read_folder(dir: &Path) -> Folder {
     for file in files.into_iter().take(MAX_FILES) {
         let bytes = match read_plain(&dir.join(&file), MAX_BYTES) {
             Ok(b) => b,
+            // Gone between the listing and the read: a fact.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) if e.kind() == std::io::ErrorKind::Other => {
                 // A link, a folder or a device: Studio read what it is.
@@ -661,6 +713,13 @@ pub fn hex(c: Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
+/// The name of a temporary file for a write: short, fixed in shape, and
+/// apart from every destination name. It starts with `.` and ends in
+/// `.tmp`, so the listing never takes one left by a crash as a theme.
+pub fn temp_name(pid: u32, n: u64) -> String {
+    format!(".robco-{pid}-{n}.tmp")
+}
+
 /// Write `bytes` as `dir/file`, through a new temporary file in `dir` and
 /// a rename. The folder is made when it is missing. A link at the place is
 /// replaced, never written through. On failure the temporary file goes.
@@ -671,7 +730,7 @@ pub fn write_file(dir: &Path, file: &str, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let (tmp, mut f) = loop {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!(".{file}.tmp-{}-{n}", std::process::id()));
+        let tmp = dir.join(temp_name(std::process::id(), n));
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -690,6 +749,8 @@ pub fn write_file(dir: &Path, file: &str, bytes: &[u8]) -> std::io::Result<()> {
             std::fs::rename(&tmp, dir.join(file))
         });
     if done.is_err() {
+        // The caller tells the person about the write. A temporary file
+        // that stays is never listed as a theme.
         let _ = std::fs::remove_file(&tmp);
     }
     done
@@ -762,24 +823,29 @@ impl Settings {
         }
     }
 
-    /// The file's text, unknown keys and all.
-    pub fn text(&self) -> String {
+    /// The file's text, unknown keys and all. The error is why the table
+    /// gives no TOML, so a write never puts an empty file in its place.
+    pub fn text(&self) -> Result<String, toml::ser::Error> {
         let mut t = self.table.clone();
         t.insert("version".into(), Value::Integer(FORMAT));
-        toml::to_string(&t).unwrap_or_default()
+        toml::to_string(&t)
     }
 
     /// Write the file to `dir`, through a temporary file and a rename.
     pub fn write(&self, dir: &Path) -> std::io::Result<()> {
-        write_file(dir, SETTINGS, self.text().as_bytes())
+        let text = self.text().map_err(std::io::Error::other)?;
+        write_file(dir, SETTINGS, text.as_bytes())
     }
 
+    /// A value of the wrong kind is off, as a missing one: a fact of the
+    /// file, and Studio writes the key back right.
     fn flag(&self, key: &str) -> bool {
         matches!(self.table.get(key), Some(Value::Boolean(true)))
     }
 
     /// The theme in use: a theme that ships by name, or a file of the
     /// themes folder.
+    /// A value of the wrong kind names no theme: a fact of the file.
     pub fn theme(&self) -> Option<&str> {
         match self.table.get("theme") {
             Some(Value::String(s)) => Some(s),
@@ -797,7 +863,8 @@ impl Settings {
         self.flag("compact_header")
     }
 
-    /// The changed theme, when one was kept and its keys are right.
+    /// The changed theme, when one was kept and its keys are right. A key
+    /// of the wrong kind is a fact of the file: no changed theme.
     pub fn unsaved(&self) -> Option<Unsaved> {
         let Some(Value::Table(t)) = self.table.get("unsaved") else {
             return None;

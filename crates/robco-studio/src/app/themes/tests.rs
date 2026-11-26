@@ -1026,7 +1026,7 @@ fn a_failed_read_keeps_the_stored_choice() {
                 let u = a.unsaved().unwrap();
                 assert_eq!(u.from, "ember.toml", "{row}");
                 assert_eq!(store::hex(u.spec.base), "#123456", "{row}");
-                assert!(a.text().contains("later = \"kept\""), "{row}");
+                assert!(a.text().unwrap().contains("later = \"kept\""), "{row}");
             }
             Wrote::Theme(t) => assert_eq!(parsed(&after).theme(), Some(t), "{row}"),
         }
@@ -1068,4 +1068,50 @@ fn a_save_into_an_unreadable_folder_writes_nothing() {
         "{e:?}"
     );
     assert!(!themes(&d).join("night.toml").exists());
+}
+
+#[test]
+fn a_file_name_of_any_length_saves_renames_and_deletes_or_is_refused() {
+    // The stem's bytes: with `.toml`, 6 to 260 bytes, so the row of 250
+    // is a name of 255 bytes, the limit of many systems.
+    for stem in [1usize, 40, 200, 250, 255] {
+        let file = format!("{}.toml", "e".repeat(stem));
+        for action in ["save", "rename", "delete"] {
+            let row = format!("{} bytes, {action}", file.len());
+            let d = TempDir::new("namelen");
+            if std::fs::write(themes(&d).join(&file), EMBER).is_err() {
+                eprintln!("skipped {row}: the name cannot be made here");
+                continue;
+            }
+            let mut s = Studio::new(None).with_settings(d.0.clone());
+            let Some(i) = s.find_key(&file) else {
+                assert!(file.len() > store::FILE_MAX, "{row}");
+                let why = format!("its name is over {} bytes", store::FILE_MAX);
+                assert!(
+                    s.refused
+                        .iter()
+                        .any(|(f, t)| *f == file && t.contains(&why)),
+                    "{row}"
+                );
+                continue;
+            };
+            assert!(file.len() <= store::FILE_MAX, "{row}");
+            s.pick_theme(i);
+            match action {
+                "save" => {
+                    s.edit_theme(|t| t.strengths.noise = 0.3);
+                    assert!(s.save_theme().is_ok(), "{row}");
+                    let text = std::fs::read_to_string(themes(&d).join(&file)).unwrap();
+                    assert!(text.contains("noise = 0.30"), "{row}");
+                }
+                "rename" => {
+                    assert_eq!(s.rename_theme("Dusk"), Ok("Theme: Dusk.".into()), "{row}");
+                }
+                _ => {
+                    assert!(s.delete_theme().is_ok(), "{row}");
+                    assert!(!themes(&d).join(&file).exists(), "{row}");
+                }
+            }
+        }
+    }
 }
