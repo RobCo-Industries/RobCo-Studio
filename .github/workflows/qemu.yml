@@ -1,10 +1,18 @@
 name: qemu
 
-# Build QEMU for the three hosts with tools/qemu, pack it, and run
-# RobCo-Core's canary suite against each package on a fresh runner.
-# Artifacts stay on the run: this workflow publishes nothing.
+# Build QEMU for the three hosts with tools/qemu, pack it, fetch the
+# sources of the packed libraries, and run RobCo-Core's canary suite
+# against each package on a fresh runner. The release job gathers the
+# release files and their list as a workflow artifact on every run.
+#
+# Only the publish job publishes, and only for a pushed tag of the form
+# qemu-<QEMU version>-r<n>, such as qemu-10.1.2-r1. A pull request, a
+# manual start or a branch is a dry run: the same files, as an artifact.
 
 on:
+  push:
+    tags:
+      - "qemu-*"
   pull_request:
     paths:
       - tools/qemu/**
@@ -60,25 +68,34 @@ jobs:
         include:
           # The oldest hosted Ubuntu: its glibc is the oldest the package runs on.
           - { os: ubuntu-22.04, name: linux }
-          - { os: macos-latest, name: macos }
+          # The archive is named macos-arm64. macOS 15 runners are Apple
+          # silicon, and the label does not move as macos-latest does.
+          # release.py refuses a program of another machine.
+          - { os: macos-15, name: macos }
           - { os: windows-latest, name: windows }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      # On a release tag the NOTICE names the release page. Empty otherwise.
+      QEMU_RELEASE_URL: ${{ startsWith(github.ref, 'refs/tags/qemu-') && format('{0}/{1}/releases/tag/{2}', github.server_url, github.repository, github.ref_name) || '' }}
     steps:
       - uses: actions/checkout@v4
       # build.sh pins the QEMU tarball's SHA-256, so its hash keys both the
-      # recipe and the source. Packing is not in the key: a change to it
+      # recipe and the source. prefix-map.sh gives it compiler flags. Packing is not in the key: a change to it
       # packs the cached build again.
       - name: Cached QEMU build
         id: cache
         uses: actions/cache@v4
         with:
           path: out/build
-          key: qemu-build-${{ matrix.os }}-${{ hashFiles('tools/qemu/build.sh') }}
+          key: qemu-build-${{ matrix.os }}-${{ hashFiles('tools/qemu/build.sh', 'tools/qemu/prefix-map.sh') }}
       # The packing step needs the libraries even when the build is cached.
       - name: Build tools (Linux)
         if: matrix.name == 'linux'
         run: |
+          # sources.sh fetches the source packages through deb-src lines.
+          sed -n 's/^deb /deb-src /p' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/deb-src.list
+          test -s /etc/apt/sources.list.d/deb-src.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential ninja-build \
             pkg-config python3-venv libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev patchelf
@@ -92,7 +109,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            make tar xz curl diffutils bison flex git
+            make tar xz zstd curl diffutils bison flex git
             mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-glib2
             mingw-w64-ucrt-x86_64-pixman mingw-w64-ucrt-x86_64-dtc
             mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf
@@ -161,6 +178,93 @@ jobs:
           test "$code" -eq 1
           grep -F "FAIL: the record names licence texts 'GPL-2.0' for libfdt.so.1 (libfdt), but GPL-2.0 BSD-2-Clause apply" short.log
           grep -F "FAIL: libnew.so.3 is a packed library this script does not know" short.log
+      # In the same job as the packing: a packager may stop serving an old
+      # version, so the release keeps the sources fetched now.
+      - name: Fetch the sources of the packed libraries
+        if: matrix.name != 'windows'
+        run: bash tools/qemu/sources.sh ${{ matrix.name }} out
+      - name: Fetch the sources of the packed libraries (MSYS2)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: bash tools/qemu/sources.sh windows out
+      # No packed file may hold a path, user or host name of this machine,
+      # nor the folder QEMU was built in. The scan is first shown to fail
+      # on a copy that holds one.
+      # The scan's Python, on every host. On Windows the default shell is
+      # Git Bash, which does not see MSYS2's Python. Set up after the
+      # build, packing and sources steps, so it changes none of them.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The forbidden values reach the scan through the environment and
+      # Python's own host and user names, so Git Bash cannot rewrite them as
+      # it does a path passed as an argument to a native program. The user
+      # name is searched only in a home path or before an @, never alone.
+      - name: No path or name of the build machine in the package
+        run: |
+          py=python
+          SCAN_WORK=$(sed -n 's/^work: //p' out/build/build.txt)
+          test -n "$SCAN_WORK"
+          export SCAN_WORK
+          forbid=(--forbid-env SCAN_WORK --forbid-env HOME --forbid-env GITHUB_WORKSPACE --forbid-env RUNNER_TEMP --forbid-host --forbid-user)
+          rm -rf scanned && cp -r out/qemu scanned
+          # The home folder, planted in each spelling, each in its own file,
+          # one in UTF-16. Python reads it from the environment; the shell
+          # writes its own spelling too.
+          echo "$HOME" > scanned/planted-shell
+          names=$($py - scanned <<'EOF'
+          import os, re, sys
+          sys.path.insert(0, "tools/qemu")
+          import release
+          home, d = os.environ["HOME"], sys.argv[1]
+          user = release.this_user()
+          plant = {"as-is": home, "slash": home.replace("\\", "/"), "backslash": home.replace("/", "\\")}
+          m = re.match(r"^(?:([A-Za-z]):[\\/]|/([A-Za-z])/)(.*)$", home)
+          if m:
+              drive, rest = (m.group(1) or m.group(2)), m.group(3).replace("\\", "/")
+              plant |= {"upper-drive": f"{drive.upper()}:\\{rest}".replace("/", "\\"),
+                        "lower-drive": f"{drive.lower()}:/{rest}",
+                        "msys": f"/{drive.lower()}/{rest}", "cygdrive": f"/cygdrive/{drive.lower()}/{rest}"}
+          for name, text in plant.items():
+              with open(os.path.join(d, f"planted-{name}"), "wb") as f:
+                  f.write(b"x " + text.encode() + b"\n")
+          with open(os.path.join(d, "planted-utf16"), "wb") as f:
+              f.write(("x " + home + "\n").encode("utf-16-le"))
+          # The user name alone, in each form this system's tools write it,
+          # each in its own file. The bare name goes in planted-user-bare,
+          # which the scan must not name.
+          forms = {"linux": {"user-home": f"/home/{user}/x"},
+                   "darwin": {"user-users": f"/Users/{user}/x"},
+                   "win32": {"user-users-backslash": f"\\Users\\{user}\\x",
+                             "user-users-slash": f"/Users/{user}/x"}}[sys.platform]
+          forms["user-at"] = f"ssh {user}@host"
+          for name, text in forms.items():
+              with open(os.path.join(d, f"planted-{name}"), "wb") as f:
+                  f.write(b"x " + text.encode() + b"\n")
+          with open(os.path.join(d, "planted-user-utf16"), "wb") as f:
+              f.write(f"x {user}@host\n".encode("utf-16-le"))
+          with open(os.path.join(d, "planted-user-bare"), "wb") as f:
+              f.write(f"x {user} y\n".encode())
+          print(" ".join(["shell", "utf16", "user-utf16"] + sorted(plant) + sorted(forms)))
+          EOF
+          )
+          echo "Planted: $names"
+          case $RUNNER_OS in Windows) case " $names " in *" cygdrive "*) ;; *) echo "no drive spelling planted"; exit 1 ;; esac ;; esac
+          set +e
+          $py tools/qemu/release.py scan scanned "${forbid[@]}" > scan.log 2>&1
+          code=$?
+          set -e
+          echo "The copy with a planted path in each spelling, which must fail on each:"
+          cat scan.log
+          test "$code" -eq 1
+          for n in $names; do
+            grep -qF "FAIL: planted-$n holds" scan.log || { echo "the scan missed planted-$n"; exit 1; }
+          done
+          if grep -qF "FAIL: planted-user-bare" scan.log; then echo "the scan named the bare user name"; exit 1; fi
+          echo "The bare user name alone is not a hit."
+          # Each hit is followed by the string around it and its offset.
+          echo "The package itself:"
+          $py tools/qemu/release.py scan out/qemu "${forbid[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-${{ matrix.name }}
@@ -170,6 +274,18 @@ jobs:
         with:
           name: report-${{ matrix.name }}
           path: out/report.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sources-${{ matrix.name }}
+          path: out/sources
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.name == 'linux'
+        with:
+          name: qemu-source
+          path: out/build/qemu-*.tar.xz
+          if-no-files-found: error
 
   canary:
     needs: [checker, build]
@@ -180,7 +296,7 @@ jobs:
           # A bare image of the oldest supported Ubuntu, with only what the
           # canary needs: none of the hosted runner's libraries.
           - { os: ubuntu-latest, name: linux, container: "ubuntu:22.04", gcc: linux-x64.tar.gz, gcc_sha: da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6 }
-          - { os: macos-latest, name: macos, container: "", gcc: darwin-arm64.tar.gz, gcc_sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870 }
+          - { os: macos-15, name: macos, container: "", gcc: darwin-arm64.tar.gz, gcc_sha: 574082d35e49a2bcbdc355836b2a3ae5e5bb3b9456c9f5e37177db2ab4aad870 }
           - { os: windows-latest, name: windows, container: "", gcc: win32-x64.zip, gcc_sha: bae6a3d1667697ce750c3b13d6d26d80973ecedc2cc87bf04869e83447fd93ea }
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
@@ -259,7 +375,7 @@ jobs:
           qemu-system-arm --version
           qemu-system-arm -M help | grep -E '^raspi(0|1ap|2b) '
           qemu-system-aarch64 -M help | grep -E '^raspi3b '
-          arm-none-eabi-gcc --version | head -1
+          arm-none-eabi-gcc --version | sed -n 1p
       - name: Python test tools
         run: |
           py=python; command -v python >/dev/null || py=python3
@@ -280,3 +396,70 @@ jobs:
         with:
           name: canary-${{ matrix.name }}
           path: canary*.xml
+
+  # Every run: gather the release files and their list, check them, and
+  # keep them as an artifact. Only builds that passed the canary go in.
+  release:
+    needs: [build, canary]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Every artifact of the run, each in in/<name>/. release.py reads
+      # the ones it names and ignores the canary reports.
+      - uses: actions/download-artifact@v4
+        with:
+          path: in
+      - name: Gather the release
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/qemu-') && github.ref_name || '' }}
+        run: |
+          args=(--in in --out dist --repo .)
+          if [ -n "$TAG" ]; then
+            args+=(--tag "$TAG" --base-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG")
+          fi
+          python tools/qemu/release.py gather "${args[@]}"
+      - name: Check the list against the files
+        run: |
+          python tools/qemu/release.py verify dist
+          cd dist && sha256sum -c qemu-*-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-release
+          path: dist
+          if-no-files-found: error
+
+  # Publishes only for a pushed tag that starts with qemu-. The release
+  # job has already refused a tag of any other form than
+  # qemu-<version>-r<n>. Never on a branch, a pull request or a manual start.
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/qemu-')
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-release
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          v=$(echo "$TAG" | sed -n 's/^qemu-\([0-9.]*\)-r[0-9]*$/\1/p')
+          test -n "$v"
+          {
+            echo "QEMU $v for Arm, built by RobCo Studio, under the GNU GPL version 2."
+            echo
+            echo "Beside the three archives: QEMU's source archive, the build recipe, the notices"
+            echo "and the sources of the libraries packed with each, and qemu-$v-files.json and"
+            echo "qemu-$v-SHA256SUMS with the size and SHA-256 of every file. See docs/THIRD_PARTY.md."
+          } > notes.md
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "QEMU $v ($TAG)" --notes-file notes.md
