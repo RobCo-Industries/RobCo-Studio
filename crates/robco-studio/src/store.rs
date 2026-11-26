@@ -212,7 +212,8 @@ pub struct Loaded {
     pub notes: Vec<Note>,
 }
 
-fn not_theme(file: &str, why: &str) -> Note {
+/// The line for a file that is not a theme, for the reason `why`.
+pub fn not_theme(file: &str, why: &str) -> Note {
     error(format!(
         "%STUDIO-E-NOTTHEME, {} is not a theme: {why}. The file is not listed and is untouched.",
         shown(file)
@@ -264,9 +265,7 @@ pub fn colour(text: &str) -> Option<Color32> {
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    let v = u32::from_str_radix(hex, 16).ok()?;
-    let [_, r, g, b] = v.to_be_bytes();
-    Some(Color32::from_rgb(r, g, b))
+    u32::from_str_radix(hex, 16).ok().map(crate::palette::hex)
 }
 
 /// The screen keys of a theme: ten strengths, `moves` and `rate`, from
@@ -708,7 +707,7 @@ impl Settings {
                 for (i, key) in STRENGTH_KEYS.iter().enumerate() {
                     let v = u.spec.strengths.get(i).unwrap_or(0.0);
                     // Two decimals, the slider's step, so 0.35 stays 0.35.
-                    let v = (f64::from(v) * 100.0).round() / 100.0;
+                    let v = (f64::from(v) / crt::SLIDER_STEP).round() / crt::SLIDER_STEP.recip();
                     s.insert((*key).into(), Value::Float(v));
                 }
                 s.insert("moves".into(), Value::Boolean(u.spec.moves));
@@ -731,4 +730,4 @@ fn no_settings(why: &str) -> Note {
     clippy::expect_used,
     reason = "a test; a failed unwrap is a failed test"
 )]
-mod tests;
+pub(crate) mod tests;

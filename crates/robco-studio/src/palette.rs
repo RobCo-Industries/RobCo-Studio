@@ -161,7 +161,8 @@ pub const HUE_WORDS: [(&str, f64); 12] = [
     ("rose", 345.0),
 ];
 
-const fn hex(v: u32) -> Color32 {
+/// The colour of `0xrrggbb`.
+pub const fn hex(v: u32) -> Color32 {
     Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
 }
 
