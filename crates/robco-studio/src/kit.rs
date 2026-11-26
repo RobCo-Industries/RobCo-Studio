@@ -205,6 +205,25 @@ impl<'a> Kit<'a> {
         }
     }
 
+    /// One line of text cut to `max_w` with an ellipsis. The second value
+    /// is true when the text was cut: then the caller gives the full text
+    /// in a tooltip and to the screen reader.
+    pub fn fit(
+        &self,
+        painter: &egui::Painter,
+        text: &str,
+        t: Type,
+        color: Color32,
+        max_w: f32,
+    ) -> (std::sync::Arc<egui::Galley>, bool) {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.to_owned(), self.theme.font(t), color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
+        let g = painter.layout_job(job);
+        let cut = g.elided;
+        (g, cut)
+    }
+
     /// Body text as a widget, so that it is in the accessibility tree.
     pub fn text(&self, ui: &mut Ui, text: &str, t: Type, color: Color32) -> Response {
         ui.add(
@@ -668,12 +687,18 @@ impl<'a> Kit<'a> {
             self.art.icon(painter, slot(x), icon, fg);
         }
         x += size::ICON + size::UNIT;
-        let g = painter.layout_no_wrap(name.to_owned(), self.theme.font(Type::Body), fg);
+        let (g, cut) = self.fit(
+            painter,
+            name,
+            Type::Body,
+            fg,
+            rect.right() - size::UNIT * 2.0 - x,
+        );
         painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
         if resp.has_focus() {
             self.focus_ring(painter, rect.shrink(stroke::FOCUS_GAP + stroke::FOCUS_RING));
         }
-        resp
+        if cut { resp.on_hover_text(name) } else { resp }
     }
 
     /// A one-line text field: a 1 px `frame` on `ground`, 26 high, a hint in
@@ -756,24 +781,15 @@ impl<'a> Kit<'a> {
         let x = rect.left() + size::UNIT * 2.0;
         self.art.icon(painter, slot(x), icon, p.dim);
         let fg = if none { p.dim } else { p.text };
-        let g = painter.layout_no_wrap(value.to_owned(), self.theme.font(Type::Body), fg);
-        painter.galley(
-            egui::pos2(
-                x + size::ICON + size::UNIT * 2.0,
-                rect.center().y - g.size().y / 2.0,
-            ),
-            g,
-            fg,
-        );
-        self.art.icon(
-            painter,
-            slot(rect.right() - size::UNIT * 2.0 - size::ICON),
-            Icon::ChevDown,
-            p.dim,
-        );
+        let tx = x + size::ICON + size::UNIT * 2.0;
+        let chev = rect.right() - size::UNIT * 2.0 - size::ICON;
+        let (g, cut) = self.fit(painter, value, Type::Body, fg, chev - size::UNIT - tx);
+        painter.galley(egui::pos2(tx, rect.center().y - g.size().y / 2.0), g, fg);
+        self.art.icon(painter, slot(chev), Icon::ChevDown, p.dim);
         if resp.has_focus() {
             self.focus_ring(painter, rect);
         }
+        let resp = if cut { resp.on_hover_text(value) } else { resp };
         // Toggle before the popup reads its state, so the click's own
         // frame lays the list out.
         let popup_id = egui::Popup::default_response_id(&resp);
@@ -840,15 +856,18 @@ impl<'a> Kit<'a> {
             );
         }
         x += size::ICON + size::UNIT;
-        let g = painter.layout_no_wrap(text.to_owned(), self.theme.font(Type::Body), fg);
+        let n = painter.layout_no_wrap(note.to_owned(), self.theme.font(Type::Small), p.dim);
+        let note_x = rect.right() - size::UNIT * 2.0 - n.size().x;
+        let gap = if note.is_empty() {
+            0.0
+        } else {
+            size::UNIT * 2.0
+        };
+        let (g, cut) = self.fit(painter, text, Type::Body, fg, note_x - gap - x);
         painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, fg);
-        let g = painter.layout_no_wrap(note.to_owned(), self.theme.font(Type::Small), p.dim);
         painter.galley(
-            egui::pos2(
-                rect.right() - size::UNIT * 2.0 - g.size().x,
-                rect.center().y - g.size().y / 2.0,
-            ),
-            g,
+            egui::pos2(note_x, rect.center().y - n.size().y / 2.0),
+            n,
             p.dim,
         );
         if resp.has_focus() {
@@ -856,6 +875,7 @@ impl<'a> Kit<'a> {
         }
         match unavailable {
             Some(why) => resp.on_hover_text(why),
+            None if cut => resp.on_hover_text(text),
             None => resp,
         }
     }

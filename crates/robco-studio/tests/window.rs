@@ -536,3 +536,38 @@ fn a_dropdown_shows_its_list_on_the_click_that_opens_it() {
         "the list shows in the frame after the click, with no new input"
     );
 }
+
+#[test]
+fn a_long_project_name_is_cut_and_given_in_full_on_hover() {
+    let d = sample("a-long-project-name").unwrap();
+    let name = folder_name(&d);
+    let mut h = harness(Some(&*d));
+    let label = format!("Project: {name}");
+    // The status bar names the project too: count before the hover.
+    let before = h.query_all_by_label(&name).count();
+    h.get_by_label(&label).hover();
+    h.run_steps(90);
+    assert_eq!(
+        h.query_all_by_label(&name).count(),
+        before + 1,
+        "a cut name gives its full text in a tooltip"
+    );
+    // The screen reader gets the full name too.
+    h.get_by_label(&label);
+}
+
+#[test]
+fn a_long_file_name_is_cut_in_the_tree_and_given_in_full_on_hover() {
+    let d = sample("longfile").unwrap();
+    let name = "a_file_name_far_too_long_for_the_files_pane_to_show_in_one_row.c";
+    std::fs::write(d.join(name), "").unwrap();
+    let mut h = harness(Some(&*d));
+    let before = h.query_all_by_label(name).count();
+    h.get_by_label(name).hover();
+    h.run_steps(90);
+    assert_eq!(
+        h.query_all_by_label(name).count(),
+        before + 1,
+        "a cut name gives its full text in a tooltip"
+    );
+}
