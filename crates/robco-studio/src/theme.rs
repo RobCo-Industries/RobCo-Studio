@@ -285,6 +285,10 @@ pub mod size {
     pub const CARD_ART: [f32; 2] = [120.0, 160.0];
     /// One icon.
     pub const ICON: f32 = 16.0;
+    /// The application icon given to the window, in pixels.
+    pub const APP_ICON: u32 = 256;
+    /// The application icon shows its small form up to this size, in pixels.
+    pub const APP_ICON_SMALL_MAX: u32 = 32;
     /// The editor gutter.
     pub const GUTTER_W: f32 = 52.0;
     /// Indent of one tree level.
@@ -563,7 +567,10 @@ impl Theme {
     /// The focused pane's halo: the halo at part of its strength.
     pub fn pane_halo(&self) -> Option<Shadow> {
         self.halo().map(|mut h| {
-            h.color = self.palette().bright.gamma_multiply(effect::HALO_ALPHA * effect::HALO_PANE);
+            h.color = self
+                .palette()
+                .bright
+                .gamma_multiply(effect::HALO_ALPHA * effect::HALO_PANE);
             h
         })
     }
@@ -719,7 +726,10 @@ mod tests {
     fn pressed_moves_towards_ink() {
         let t = Theme::default();
         let p = t.palette();
-        assert_eq!(t.pressed(p.bright), mix(p.bright, p.ink, effect::PRESS_DARKEN));
+        assert_eq!(
+            t.pressed(p.bright),
+            mix(p.bright, p.ink, effect::PRESS_DARKEN)
+        );
         assert!(luminance(t.pressed(p.bright)) < luminance(p.bright));
     }
 

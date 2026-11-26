@@ -161,19 +161,33 @@ impl<'a> Kit<'a> {
 
     /// The width of a caps label.
     pub fn caps_width(&self, ui: &Ui, text: &str) -> f32 {
+        self.caps_width_tracked(ui, text, 0.0)
+    }
+
+    /// The width of a caps label with `tracking` font pixels after each
+    /// cell but the last.
+    pub fn caps_width_tracked(&self, ui: &Ui, text: &str, tracking: f32) -> f32 {
         match self.label_scale(ui) {
-            Some(k) => LabelFont::width(text, k, ui.ctx().pixels_per_point()),
+            Some(k) => LabelFont::width(text, k, ui.ctx().pixels_per_point(), tracking),
             None => {
                 ui.painter()
-                    .layout_no_wrap(
-                        text.to_uppercase(),
-                        self.theme.font(Type::LabelFallback),
-                        Color32::PLACEHOLDER,
-                    )
+                    .layout_job(self.fallback_job(text, tracking, Color32::PLACEHOLDER))
                     .size()
                     .x
             }
         }
+    }
+
+    fn fallback_job(&self, text: &str, tracking: f32, color: Color32) -> egui::text::LayoutJob {
+        egui::text::LayoutJob::single_section(
+            text.to_uppercase(),
+            egui::TextFormat {
+                font_id: self.theme.font(Type::LabelFallback),
+                extra_letter_spacing: tracking,
+                color,
+                ..Default::default()
+            },
+        )
     }
 
     /// Paint a caps label in Spleen, or in Plex Mono bold caps when the
@@ -186,19 +200,37 @@ impl<'a> Kit<'a> {
         text: &str,
         color: Color32,
     ) -> Rect {
+        self.caps_styled(painter, egui::pos2(x, y), text, color, 0.0, false)
+    }
+
+    /// Paint a caps label as [`Kit::caps`] does, with `tracking` font
+    /// pixels after each cell, and over its halo when `lit` and effects are
+    /// on. Light only `bright` labels on `ground` or `pane`. The Plex Mono
+    /// fallback has no halo. `at` is the left end of the label's centre line.
+    pub fn caps_styled(
+        &self,
+        painter: &egui::Painter,
+        at: egui::Pos2,
+        text: &str,
+        color: Color32,
+        tracking: f32,
+        lit: bool,
+    ) -> Rect {
         let half = crate::theme::text::LABEL_CELL_H / 2.0;
+        let halo = if lit { self.theme.label_halo() } else { None };
         match LabelFont::device_scale(painter.ctx().pixels_per_point()) {
-            Some(k) => self
-                .art
-                .label
-                .paint(painter, egui::pos2(x, y - half), text, color, k),
+            Some(k) => self.art.label.paint_lit(
+                painter,
+                egui::pos2(at.x, at.y - half),
+                text,
+                color,
+                k,
+                tracking,
+                halo,
+            ),
             None => {
-                let g = painter.layout_no_wrap(
-                    text.to_uppercase(),
-                    self.theme.font(Type::LabelFallback),
-                    color,
-                );
-                let r = Rect::from_min_size(egui::pos2(x, y - g.size().y / 2.0), g.size());
+                let g = painter.layout_job(self.fallback_job(text, tracking, color));
+                let r = Rect::from_min_size(egui::pos2(at.x, at.y - g.size().y / 2.0), g.size());
                 painter.galley(r.min, g, color);
                 r
             }
