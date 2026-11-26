@@ -1147,6 +1147,8 @@ struct Pkg {
     files: Vec<(String, Vec<u8>)>,
     dirs: Vec<String>,
     pad: Option<u64>,
+    /// Top-level fields of `sdk.json` set to another value.
+    sdk_set: Vec<(&'static str, Value)>,
 }
 
 impl Pkg {
@@ -1155,6 +1157,7 @@ impl Pkg {
             files: package_files(json),
             dirs: Vec::new(),
             pad: None,
+            sdk_set: Vec::new(),
         }
     }
     fn spec() -> Self {
@@ -1182,8 +1185,16 @@ impl Pkg {
         self.pad = Some(size);
         self
     }
+    fn set(mut self, field: &'static str, v: Value) -> Self {
+        self.sdk_set.push((field, v));
+        self
+    }
     fn sdk(&self) -> Vec<u8> {
-        let mut b = sdk_json(&self.files).to_string().into_bytes();
+        let mut v = sdk_json(&self.files);
+        for (k, x) in &self.sdk_set {
+            v[*k] = x.clone();
+        }
+        let mut b = v.to_string().into_bytes();
         if let Some(n) = self.pad {
             b.resize(usize::try_from(n).unwrap(), b' ');
         }
@@ -1269,6 +1280,12 @@ fn verdict_cases() -> Vec<(&'static str, Pkg, bool)> {
         ("listed file absent", Pkg::spec().without("holotape-c/icon.pbm"), false),
         ("unknown field", Pkg::edit("\"kind\": \"holotape\",", "\"kind\": \"holotape\", \"x\": 1,"), false),
         ("token in a path", Pkg::edit("\"icon.pbm\"", "\"@NAME@.pbm\"").without("holotape-c/icon.pbm").with("holotape-c/@NAME@.pbm", b"x\n"), false),
+        ("licences by folder, all MIT", Pkg::spec().set("licences", json!([{"paths": ["holotape-c/", "LICENSES/", "templates.json"], "spdx": "MIT"}])), true),
+        ("requires nonempty", Pkg::spec().set("requires", json!([{"name": "pipos", "abi": "1.3"}])), false),
+        ("licence not MIT", Pkg::spec().set("licences", json!([{"paths": [""], "spdx": "GPL-3.0-only"}])), false),
+        ("a path no licence covers", Pkg::spec().set("licences", json!([{"paths": ["holotape-c/", "LICENSES/"], "spdx": "MIT"}])), false),
+        ("abi present", Pkg::spec().set("abi", json!("0.1")), false),
+        ("built_from other repo", Pkg::spec().set("built_from", json!([{"repo": "Pip-OS", "commit": "3333333333333333333333333333333333333333"}])), false),
     ]
 }
 
