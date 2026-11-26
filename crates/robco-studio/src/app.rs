@@ -186,6 +186,73 @@ pub fn header_tall(inner_h: f32, compact: bool) -> bool {
     !compact && inner_h >= size::HEADER_TALL_FROM
 }
 
+/// Where the header's parts sit, in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeaderLayout {
+    /// The wordmark's box.
+    pub wordmark: Rect,
+    /// The atom's box.
+    pub atom: Rect,
+    /// The divider's x.
+    pub divider_x: f32,
+    /// The caps lines, one box around both.
+    pub text: Rect,
+    /// The skyline's box, None when it gives way.
+    pub skyline: Option<Rect>,
+}
+
+/// Lay out the header in `rect`, its rule included, for caps lines
+/// `text_w` points wide. The skyline stands with its own rule on the
+/// header's rule, and gives way when less than the skyline room would stay
+/// between it and the caps lines.
+pub fn header_layout(rect: Rect, tall: bool, text_w: f32) -> HeaderLayout {
+    let rule = rect.bottom() - stroke_w() / 2.0;
+    let cy = (rect.top() + rect.bottom() - stroke_w()) / 2.0;
+    let (wm, atom) = if tall {
+        (Mark::Wordmark, Mark::Atom)
+    } else {
+        (Mark::WordmarkCompact, Mark::AtomCompact)
+    };
+    let ws = Art::mark_size(wm);
+    let wordmark = Rect::from_min_size(
+        egui::pos2(rect.left() + size::HEADER_PAD, cy - ws.y / 2.0),
+        ws,
+    );
+    let a = Art::mark_size(atom);
+    let atom = Rect::from_min_size(
+        egui::pos2(wordmark.right() + size::HEADER_MARK_GAP, cy - a.y / 2.0),
+        a,
+    );
+    let divider_x = atom.right() + size::HEADER_GAP;
+    let tx = divider_x + stroke_w() + size::HEADER_GAP;
+    let text_h = if tall {
+        crate::theme::text::LABEL_CELL_H * 2.0 + size::HEADER_LINE_GAP
+    } else {
+        crate::theme::text::LABEL_CELL_H
+    };
+    let text = Rect::from_min_size(
+        egui::pos2(tx, cy - text_h / 2.0),
+        egui::vec2(text_w, text_h),
+    );
+    let skyline = tall
+        .then(|| {
+            let sky = Art::mark_size(Mark::Skyline);
+            let top = rule - size::SKYLINE_RULE_Y * sky.y / size::SKYLINE[1];
+            Rect::from_min_size(
+                egui::pos2(rect.right() - size::HEADER_MARK_GAP - sky.x, top),
+                sky,
+            )
+        })
+        .filter(|r| r.left() - text.right() >= size::SKYLINE_ROOM);
+    HeaderLayout {
+        wordmark,
+        atom,
+        divider_x,
+        text,
+        skyline,
+    }
+}
+
 /// The window's strips, top to bottom.
 #[derive(Debug, Clone, Copy)]
 pub struct Strips {
@@ -542,46 +609,35 @@ impl Studio {
                 size::HEADER_DIVIDER_COMPACT_H,
             )
         };
-        let ws = Art::mark_size(wm);
-        let wr = kit.art.mark(
-            &painter,
-            wm,
-            egui::pos2(rect.left() + size::HEADER_PAD, cy - ws.y / 2.0),
-            p.bright,
-        );
-        let a = Art::mark_size(atom);
-        let ar = kit.art.mark(
-            &painter,
-            atom,
-            egui::pos2(wr.right() + size::HEADER_MARK_GAP, cy - a.y / 2.0),
-            p.bright,
-        );
-        let dx = ar.right() + size::HEADER_GAP;
+        let track = crate::theme::text::LABEL_TRACKING;
+        let line = format!("{} {}", HEADER_LINES[0], HEADER_LINES[1]);
+        let text_w = if tall {
+            HEADER_LINES
+                .iter()
+                .map(|l| kit.caps_width_tracked(ui, l, track))
+                .fold(0.0, f32::max)
+        } else {
+            kit.caps_width_tracked(ui, &line, track)
+        };
+        let l = header_layout(rect, tall, text_w);
+        kit.art.mark(&painter, wm, l.wordmark.min, p.bright);
+        kit.art.mark(&painter, atom, l.atom.min, p.bright);
         painter.vline(
-            dx,
+            l.divider_x,
             egui::Rangef::new(cy - div_h / 2.0, cy + div_h / 2.0),
             kit.theme.frame(p.frame),
         );
-        let tx = dx + stroke_w() + size::HEADER_GAP;
-        let track = crate::theme::text::LABEL_TRACKING;
-        let mut text_right = tx;
+        let tx = l.text.left();
         if tall {
             let step = (crate::theme::text::LABEL_CELL_H + size::HEADER_LINE_GAP) / 2.0;
             for (line, y) in [(HEADER_LINES[0], cy - step), (HEADER_LINES[1], cy + step)] {
-                let r = kit.caps_styled(&painter, egui::pos2(tx, y), line, p.bright, track, true);
-                text_right = text_right.max(r.right());
-            }
-            let sky = Art::mark_size(Mark::Skyline);
-            let at = egui::pos2(
-                rect.right() - size::HEADER_MARK_GAP - sky.x,
-                band.bottom() - sky.y,
-            );
-            if at.x - text_right >= size::SKYLINE_ROOM {
-                kit.art.mark(&painter, Mark::Skyline, at, p.bright);
+                kit.caps_styled(&painter, egui::pos2(tx, y), line, p.bright, track, true);
             }
         } else {
-            let line = format!("{} {}", HEADER_LINES[0], HEADER_LINES[1]);
             kit.caps_styled(&painter, egui::pos2(tx, cy), &line, p.bright, track, true);
+        }
+        if let Some(sky) = l.skyline {
+            kit.art.mark(&painter, Mark::Skyline, sky.min, p.bright);
         }
         let resp = ui.interact(band, Id::unique("header"), Sense::hover());
         resp.widget_info(|| egui::WidgetInfo::labeled(Role::Image, true, "RobCo Studio"));
@@ -1987,6 +2043,69 @@ mod tests {
             Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0 - 100.0)),
         );
         assert!(p.show_files && p.editor.width() > size::FILES_MIN);
+    }
+
+    /// At the smallest window the header's parts do not overlap, the caps
+    /// lines keep clear space on both sides, the atom stays off the rule,
+    /// and the skyline gives way exactly where the skyline room runs out.
+    #[test]
+    fn the_header_parts_keep_apart() {
+        use crate::art::LabelFont;
+        let track = crate::theme::text::LABEL_TRACKING;
+        let two = HEADER_LINES
+            .iter()
+            .map(|l| LabelFont::width(l, 1.0, 1.0, track))
+            .fold(0.0, f32::max);
+        let one = LabelFont::width(&HEADER_LINES.join(" "), 1.0, 1.0, track);
+        let w = size::WINDOW[0];
+        let tall = header_layout(
+            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, size::HEADER_H)),
+            true,
+            two,
+        );
+        let rule = size::HEADER_H - stroke_w() / 2.0;
+        assert!(tall.wordmark.right() < tall.atom.left());
+        assert!(
+            tall.atom.top() > 0.0 && tall.atom.bottom() < rule - 1.0,
+            "{:?}",
+            tall.atom
+        );
+        assert!(tall.text.left() - tall.divider_x >= size::HEADER_GAP);
+        assert!(tall.divider_x - tall.atom.right() >= size::HEADER_GAP);
+        let sky = tall
+            .skyline
+            .expect("the skyline shows at the smallest window");
+        assert!(sky.left() - tall.text.right() >= size::SKYLINE_ROOM);
+        assert!(sky.right() <= w - size::HEADER_MARK_GAP);
+        assert!((sky.top() + size::SKYLINE_RULE_Y - rule).abs() < 0.01);
+        for r in [tall.wordmark, tall.atom, tall.text] {
+            assert!(!r.intersects(sky), "{r:?}");
+        }
+        // The skyline gives way below the width that leaves its room.
+        let edge = tall.text.right()
+            + size::SKYLINE_ROOM
+            + Art::mark_size(Mark::Skyline).x
+            + size::HEADER_MARK_GAP;
+        let at = |w: f32| {
+            header_layout(
+                Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, size::HEADER_H)),
+                true,
+                two,
+            )
+        };
+        assert!(at(edge).skyline.is_some());
+        assert!(at(edge - 1.0).skyline.is_none());
+        assert!(edge < w);
+        // The compact header has no skyline, and its one caps line fits.
+        let c = header_layout(
+            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, size::HEADER_COMPACT_H)),
+            false,
+            one,
+        );
+        assert!(c.skyline.is_none());
+        assert!(c.wordmark.right() < c.atom.left());
+        assert!(c.text.right() + size::HEADER_PAD <= w);
+        assert!(c.atom.top() > 0.0 && c.atom.bottom() < size::HEADER_COMPACT_H - 1.0);
     }
 
     /// The page area starts at the page margin, and the editor takes all
