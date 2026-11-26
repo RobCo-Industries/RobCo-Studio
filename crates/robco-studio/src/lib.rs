@@ -25,6 +25,7 @@ pub mod native_menu;
 pub mod palette;
 pub mod pass;
 pub mod project;
+pub mod safe_write;
 pub mod screen;
 pub mod store;
 pub mod theme;

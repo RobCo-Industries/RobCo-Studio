@@ -713,47 +713,14 @@ pub fn hex(c: Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
-/// The name of a temporary file for a write: short, fixed in shape, and
-/// apart from every destination name. It starts with `.` and ends in
-/// `.tmp`, so the listing never takes one left by a crash as a theme.
-pub fn temp_name(pid: u32, n: u64) -> String {
-    format!(".robco-{pid}-{n}.tmp")
-}
+pub use crate::safe_write::temp_name;
 
-/// Write `bytes` as `dir/file`, through a new temporary file in `dir` and
-/// a rename. The folder is made when it is missing. A link at the place is
-/// replaced, never written through. On failure the temporary file goes.
+/// Write `bytes` as `dir/file`, a person's settings. The folder is made
+/// when it is missing, private on Unix. A new file is private on Unix. See
+/// [`crate::safe_write`] for the rest.
 pub fn write_file(dir: &Path, file: &str, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::fs::create_dir_all(dir)?;
-    let (tmp, mut f) = loop {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(temp_name(std::process::id(), n));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-        {
-            Ok(f) => break (tmp, f),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
-    };
-    let done = f
-        .write_all(bytes)
-        .and_then(|()| f.sync_all())
-        .and_then(|()| {
-            drop(f);
-            std::fs::rename(&tmp, dir.join(file))
-        });
-    if done.is_err() {
-        // The caller tells the person about the write. A temporary file
-        // that stays is never listed as a theme.
-        let _ = std::fs::remove_file(&tmp);
-    }
-    done
+    crate::safe_write::make_private_dir(dir)?;
+    crate::safe_write::write(&dir.join(file), bytes, crate::safe_write::New::Private)
 }
 
 /// Write `spec` as the theme file `file` of `dir`. The error is the line
