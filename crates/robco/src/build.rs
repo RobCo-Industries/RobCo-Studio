@@ -28,7 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use studio_core::install::{self, Cached, LocalFiles, Phase, Pin, Progress, sha256_hex};
-use studio_core::manifest::{self, Manifest, ManifestError};
+use studio_core::manifest::{self, Manifest, ManifestError, OnDisk};
 use studio_core::plan::{self, BuildPlan, Host, PlanError, PlanInput, Step};
 use studio_core::resolve::index::{Index, IndexPackage};
 use studio_core::resolve::lock::{self, Installed, LockedPackage, LockedTool, Resolution};
@@ -261,9 +261,7 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
     let icon = match &manifest.project.icon {
         None => None,
         Some(rel) => {
-            let data = match manifest::inside_root(root, "project.icon", rel)
-                .map_err(|e| manifest_failure(&e))?
-            {
+            let data = match resolve(root, "project.icon", rel)? {
                 None => None,
                 Some(p) => match fs::read(&p) {
                     Ok(d) => Some(d),
@@ -281,6 +279,20 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
         files,
         sources,
     })
+}
+
+/// [`manifest::inside_root`] with its errors as failures: a link out of
+/// the root or a link loop is `manifest: path`, a host refusal `io: read`
+/// with the path, and nothing there `None`.
+fn resolve(root: &Path, key: &str, rel: &str) -> Result<Option<PathBuf>, Failure> {
+    match manifest::inside_root(root, key, rel).map_err(|e| manifest_failure(&e))? {
+        OnDisk::Inside(p) => Ok(Some(p)),
+        OnDisk::Missing => Ok(None),
+        OnDisk::Unreadable { path, kind } => Err(Failure::new(
+            "io: read",
+            format!("{}: {kind}", path.display()),
+        )),
+    }
 }
 
 fn manifest_failure(e: &ManifestError) -> Failure {
@@ -308,7 +320,7 @@ fn plan_sources(root: &Path, patterns: &[String]) -> Result<(Vec<String>, Vec<St
         let dir = if rel.is_empty() {
             Some(root.to_path_buf())
         } else {
-            manifest::inside_root(root, "build.sources", rel).map_err(|e| manifest_failure(&e))?
+            resolve(root, "build.sources", rel)?
         };
         let mut matched = Vec::new();
         if let Some(dir) = dir.filter(|d| d.is_dir()) {
@@ -316,10 +328,7 @@ fn plan_sources(root: &Path, patterns: &[String]) -> Result<(Vec<String>, Vec<St
         }
         matched.sort();
         for src in &matched {
-            if manifest::inside_root(root, "build.sources", src)
-                .map_err(|e| manifest_failure(&e))?
-                .is_none()
-            {
+            if resolve(root, "build.sources", src)?.is_none() {
                 return Err(Failure::new(
                     "manifest: sources",
                     format!("{src}: gone while the build read it"),
@@ -894,6 +903,35 @@ mod tests {
         let e = got.err().unwrap();
         assert_eq!(e.code, "io: read");
         assert!(e.detail.contains("src"), "{}", e.detail);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pattern_through_a_folder_without_search_is_io_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("nosearch");
+        fs::create_dir(d.0.join("src/sub")).unwrap();
+        fs::write(
+            d.0.join("robco.toml"),
+            format!("{MANIFEST}[build]\nsources = [\"src/sub/*.c\"]\n"),
+        )
+        .unwrap();
+        let src = d.0.join("src");
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+        let readable = fs::metadata(src.join("sub")).is_ok();
+        let got = read_project(&d.0);
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            println!("skipped: this process can search a folder without search permission");
+            return;
+        }
+        let e = got.err().unwrap();
+        assert_eq!(
+            (e.code, e.detail.ends_with("src/sub: permission denied")),
+            ("io: read", true),
+            "{}",
+            e.detail
+        );
     }
 
     /// `d/build` and a file outside the project, `outside`, removed with it.

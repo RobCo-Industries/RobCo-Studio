@@ -740,25 +740,65 @@ pub fn expand_sources(patterns: &[String], files: &[&str]) -> Result<Vec<String>
 /// component. A root reached through a link is fine, since both sides are
 /// canonical. A link whose target stays inside the root is allowed.
 ///
-/// Returns the path under `root` to read, `None` when nothing is there,
-/// a dangling link included, so the caller gives the error of a missing
-/// file. A path that leads outside the root fails with `path` and `key`.
-pub fn inside_root(root: &Path, key: &str, rel: &str) -> Result<Option<PathBuf>, ManifestError> {
-    let outside = |reason: String| ManifestError::Path {
+/// A link loop never names a file, so it is refused like a link out of
+/// the root, with `path` and `key`. Any other failure to resolve, such as
+/// a folder without search permission, is the host's refusal to read and
+/// comes back as [`OnDisk::Unreadable`], so the caller reports `io: read`.
+pub fn inside_root(root: &Path, key: &str, rel: &str) -> Result<OnDisk, ManifestError> {
+    let refused = |reason: String| ManifestError::Path {
         key: key.to_owned(),
         reason,
     };
-    let real_root = std::fs::canonicalize(root)
-        .map_err(|e| outside(format!("{rel}: cannot resolve the project root: {e}")))?;
+    let real_root = match std::fs::canonicalize(root) {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(OnDisk::Unreadable {
+                path: root.to_path_buf(),
+                kind: e.kind(),
+            });
+        }
+    };
     let path = root.join(rel);
     match std::fs::canonicalize(&path) {
-        Ok(real) if real.starts_with(&real_root) => Ok(Some(path)),
-        Ok(_) => Err(outside(format!(
+        Ok(real) if real.starts_with(&real_root) => Ok(OnDisk::Inside(path)),
+        Ok(_) => Err(refused(format!(
             "{rel}: a symbolic link leads outside the project root"
         ))),
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => Ok(None),
-        Err(e) => Err(outside(format!("{rel}: cannot resolve: {e}"))),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            Ok(OnDisk::Missing)
+        }
+        Err(e) if is_loop(&e) => Err(refused(format!("{rel}: a symbolic link loop"))),
+        Err(e) => Ok(OnDisk::Unreadable {
+            path,
+            kind: e.kind(),
+        }),
     }
+}
+
+/// What [`inside_root`] found at a manifest path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnDisk {
+    /// The path under the root to read; it resolves inside the root.
+    Inside(PathBuf),
+    /// Nothing is there, a dangling link included: the caller gives the
+    /// error of a missing file.
+    Missing,
+    /// The host refused to resolve the path: `io: read`, with the path.
+    Unreadable {
+        /// The path the host refused.
+        path: PathBuf,
+        /// Why, as the host said.
+        kind: ErrorKind,
+    },
+}
+
+/// True for the error of a symbolic link loop, `ELOOP`.
+fn is_loop(e: &std::io::Error) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const ELOOP: i32 = 40;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const ELOOP: i32 = 62;
+    cfg!(unix) && e.raw_os_error() == Some(ELOOP)
 }
 
 /// Checks the icon file and returns its 128 META bytes.

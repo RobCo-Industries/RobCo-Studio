@@ -601,7 +601,7 @@ impl Drop for LinkDir {
 }
 
 #[cfg(unix)]
-fn path_reason(r: Result<Option<std::path::PathBuf>, ManifestError>) -> String {
+fn path_reason(r: Result<OnDisk, ManifestError>) -> String {
     match r {
         Err(e @ ManifestError::Path { .. }) => e.detail(),
         other => panic!("not a path error: {other:?}"),
@@ -624,7 +624,7 @@ fn inside_root_keeps_a_link_inside_the_root() {
         "lib/real.c",
     ] {
         let got = inside_root(&root, "build.sources", rel).unwrap();
-        assert_eq!(got, Some(root.join(rel)), "{rel}");
+        assert_eq!(got, OnDisk::Inside(root.join(rel)), "{rel}");
     }
 }
 
@@ -650,7 +650,11 @@ fn inside_root_gives_none_for_a_dangling_link() {
     d.link("../../gone.c", "src/far.c");
     let root = d.root();
     for rel in ["src/main.c", "src/far.c", "src/missing.c", "src/real.c/x"] {
-        assert_eq!(inside_root(&root, "k", rel).unwrap(), None, "{rel}");
+        assert_eq!(
+            inside_root(&root, "k", rel).unwrap(),
+            OnDisk::Missing,
+            "{rel}"
+        );
     }
 }
 
@@ -662,6 +666,40 @@ fn inside_root_accepts_a_root_reached_through_a_link() {
     let alias = d.0.join("alias");
     assert_eq!(
         inside_root(&alias, "k", "src/real.c").unwrap(),
-        Some(alias.join("src/real.c"))
+        OnDisk::Inside(alias.join("src/real.c"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_refuses_a_link_loop_as_path() {
+    let d = LinkDir::new("loop");
+    d.link("b.c", "src/a.c");
+    d.link("a.c", "src/b.c");
+    let why = path_reason(inside_root(&d.root(), "build.sources", "src/a.c"));
+    assert_eq!(why, "build.sources: src/a.c: a symbolic link loop");
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_gives_unreadable_for_a_folder_without_search() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = LinkDir::new("nosearch");
+    let root = d.root();
+    let src = root.join("src");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let readable = std::fs::metadata(src.join("real.c")).is_ok();
+    let got = inside_root(&root, "build.sources", "src/real.c");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        println!("skipped: this process can search a folder without search permission");
+        return;
+    }
+    assert_eq!(
+        got.unwrap(),
+        OnDisk::Unreadable {
+            path: root.join("src/real.c"),
+            kind: std::io::ErrorKind::PermissionDenied,
+        }
     );
 }
