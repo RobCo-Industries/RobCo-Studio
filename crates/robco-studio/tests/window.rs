@@ -44,8 +44,12 @@ fn harness(folder: Option<&Path>) -> Harness<'static, Studio> {
 }
 
 fn harness_at(folder: Option<&Path>, height: f32) -> Harness<'static, Studio> {
+    harness_sized(folder, egui::vec2(1280.0, height))
+}
+
+fn harness_sized(folder: Option<&Path>, size: egui::Vec2) -> Harness<'static, Studio> {
     let mut h = Harness::builder()
-        .with_size(egui::vec2(1280.0, height))
+        .with_size(size)
         .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(folder));
     h.run_steps(3);
     h
@@ -608,4 +612,61 @@ fn the_log_filters_stand_in_the_tab_row_while_the_log_is_on() {
     h.run_steps(2);
     assert_eq!(h.state().log.show, 1);
     assert!(h.query_by_label("Follow").is_some());
+}
+
+#[test]
+fn the_new_parts_have_their_names() {
+    let d = sample("names").unwrap();
+    let h = harness(Some(&*d));
+    for (name, role) in [
+        ("RobCo Studio", Role::Image),
+        ("RobCo Industries", Role::Image),
+        ("Stop", Role::Button),
+        ("Reset", Role::Button),
+        ("Fit", Role::Button),
+        ("Smaller", Role::Button),
+        ("Larger", Role::Button),
+    ] {
+        assert!(
+            h.query_all_by_label(name)
+                .any(|n| n.accesskit_node().role() == role),
+            "{name}"
+        );
+    }
+    // A short status line leaves room for the division.
+    harness(None).get_by_label("Engineering division");
+}
+
+#[test]
+fn the_zoom_menu_and_the_row_share_one_step() {
+    use robco_studio::menus::Command;
+    let mut h = harness(None);
+    assert_eq!(h.state().sim_zoom, 1);
+    // At the side of a 1280 px window only 1x fits: 2x from the menu
+    // falls back, and Larger says why.
+    h.state_mut()
+        .run(&egui::Context::default(), Command::SimZoom(2));
+    h.run_steps(2);
+    assert_eq!(h.state().sim_zoom, 1);
+    let larger = h
+        .query_all_by_label("Larger")
+        .find(|n| n.accesskit_node().role() == Role::Button)
+        .unwrap();
+    assert!(larger.accesskit_node().is_disabled());
+    assert!(
+        larger
+            .accesskit_node()
+            .description()
+            .is_some_and(|s| s.contains("2x does not fit"))
+    );
+    // With room for it, the menu's step is the row's step.
+    let mut h = harness_sized(None, egui::vec2(1400.0, 1200.0));
+    h.state_mut().layout.sim_w = 1000.0;
+    h.state_mut().layout.files = false;
+    h.state_mut().layout.bottom = false;
+    h.state_mut()
+        .run(&egui::Context::default(), Command::SimZoom(2));
+    h.run_steps(2);
+    assert_eq!(h.state().sim_zoom, 2);
+    h.get_by_label("2x");
 }

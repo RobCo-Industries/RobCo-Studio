@@ -386,6 +386,100 @@ impl<'a> Kit<'a> {
             .is_some_and(|r| rect.contains(r.rect.center()))
     }
 
+    /// The width a button takes.
+    pub fn button_width(&self, ui: &Ui, b: &Button<'_>) -> f32 {
+        let icon_w = if b.icon.is_some() || b.busy {
+            size::ICON + size::ICON_GAP
+        } else {
+            0.0
+        };
+        b.width.unwrap_or(
+            (size::LABEL_PAD * 2.0 + icon_w + self.caps_width(ui, b.text)).max(size::SMALL_H),
+        )
+    }
+
+    /// The zoom group: Smaller, the step's name, Larger, as one outlined
+    /// group 24 high. A part that cannot act is `dim`, disabled and says
+    /// why. Returns whether Smaller and Larger were pressed.
+    pub fn zoom_group(
+        &self,
+        ui: &mut Ui,
+        step: &str,
+        smaller: Option<&str>,
+        larger: Option<&str>,
+    ) -> (bool, bool) {
+        let p = self.p();
+        let w = size::SMALL_H * 2.0 + size::ZOOM_NAME_W;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, size::SMALL_H), Sense::hover());
+        let cr = self.theme.control_radius();
+        let mut out = [false, false];
+        let parts = [
+            (rect.left(), "Smaller", Icon::Remove, smaller),
+            (rect.right() - size::SMALL_H, "Larger", Icon::Add, larger),
+        ];
+        for (i, (x, name, icon, why)) in parts.into_iter().enumerate() {
+            let r = Rect::from_min_size(
+                egui::pos2(x, rect.top()),
+                egui::vec2(size::SMALL_H, size::SMALL_H),
+            );
+            let sense = if why.is_some() {
+                Sense::focusable_noninteractive()
+            } else {
+                Sense::click()
+            };
+            let resp = ui.interact(r, ui.scope_id().with(("zoom", name)), sense);
+            resp.widget_info(|| WidgetInfo::labeled(Role::Button, why.is_none(), name));
+            if let Some(why) = why {
+                ui.ctx().accesskit_node_builder(resp.id, |n| {
+                    n.set_disabled();
+                    n.set_description(why.to_owned());
+                });
+            }
+            let painter = ui.painter();
+            if why.is_none() && resp.is_pointer_button_down_on() {
+                painter.rect_filled(r, cr, p.select);
+            } else if why.is_none() && resp.hovered() {
+                painter.rect_filled(r, cr, p.raised);
+            }
+            self.art.icon(
+                painter,
+                r,
+                icon,
+                if why.is_some() { p.dim } else { p.bright },
+            );
+            if resp.has_focus() {
+                self.focus_ring(painter, r);
+            }
+            out[i] = resp.clicked();
+            let tip = why.unwrap_or(name);
+            if resp.has_focus() {
+                resp.show_tooltip_text(tip);
+            }
+            resp.on_hover_text(tip);
+        }
+        let painter = ui.painter();
+        let mid = Rect::from_min_max(
+            egui::pos2(rect.left() + size::SMALL_H, rect.top()),
+            egui::pos2(rect.right() - size::SMALL_H, rect.bottom()),
+        );
+        painter.vline(mid.left(), rect.y_range(), self.theme.frame(p.frame));
+        painter.vline(mid.right(), rect.y_range(), self.theme.frame(p.frame));
+        let tw = self.caps_width(ui, step);
+        self.caps(
+            painter,
+            mid.center().x - tw / 2.0,
+            mid.center().y,
+            step,
+            p.text,
+        );
+        painter.rect_stroke(rect, cr, self.theme.frame(p.frame), StrokeKind::Inside);
+        ui.put(
+            mid,
+            egui::Label::new(egui::RichText::new(step).color(Color32::TRANSPARENT)),
+        );
+        (out[0], out[1])
+    }
+
     /// A button. It always takes keyboard focus. An unavailable one never
     /// acts: it is marked so in the accessibility tree, and says why.
     pub fn button(&self, ui: &mut Ui, b: Button<'_>) -> Response {
@@ -1221,8 +1315,24 @@ impl<'a> Kit<'a> {
         resp
     }
 
-    /// Paint one segment of the status bar from `x`, right to left. Returns
-    /// the new right edge.
+    /// The width of a footer segment.
+    pub fn status_segment_width(&self, ui: &Ui, icon: Option<Icon>, text: &str) -> f32 {
+        let g = ui.painter().layout_no_wrap(
+            text.to_owned(),
+            self.theme.font(Type::Small),
+            self.p().text,
+        );
+        let icon_w = if icon.is_some() {
+            size::ICON + size::UNIT
+        } else {
+            0.0
+        };
+        size::FOOTER_SEG_PAD * 2.0 + icon_w + g.size().x
+    }
+
+    /// Paint one segment of the footer, right to left from `right`: 9 px of
+    /// padding and a 16 px line in `frame` at its left. Returns the new
+    /// right edge.
     pub fn status_segment(
         &self,
         ui: &mut Ui,
@@ -1232,23 +1342,20 @@ impl<'a> Kit<'a> {
         text: &str,
     ) -> f32 {
         let p = self.p();
+        let w = self.status_segment_width(ui, icon, text);
         let painter = ui.painter();
         let g = painter.layout_no_wrap(text.to_owned(), self.theme.font(Type::Small), p.text);
-        let pad = size::UNIT * 2.0;
+        let pad = size::FOOTER_SEG_PAD;
         let icon_w = if icon.is_some() {
             size::ICON + size::UNIT
         } else {
             0.0
         };
-        let w = pad * 2.0 + icon_w + g.size().x;
         let r = Rect::from_min_max(
             egui::pos2(right - w, rect.top()),
             egui::pos2(right, rect.bottom()),
         );
-        painter.line_segment(
-            [r.left_top(), r.left_bottom()],
-            self.theme.frame(p.frame_dim),
-        );
+        self.footer_divider(painter, r.left(), r.center().y);
         if let Some(i) = icon {
             self.art.icon(
                 painter,
@@ -1257,7 +1364,7 @@ impl<'a> Kit<'a> {
                     egui::vec2(size::ICON, r.height()),
                 ),
                 i,
-                p.dim,
+                p.bright,
             );
         }
         let y = r.center().y - g.size().y / 2.0;
@@ -1272,5 +1379,15 @@ impl<'a> Kit<'a> {
             ),
         );
         r.left()
+    }
+
+    /// A 16 px line in `frame`, centred on `y`.
+    pub fn footer_divider(&self, painter: &egui::Painter, x: f32, y: f32) {
+        let h = size::FOOTER_DIVIDER_H / 2.0;
+        painter.vline(
+            x,
+            egui::Rangef::new(y - h, y + h),
+            self.theme.frame(self.p().frame),
+        );
     }
 }

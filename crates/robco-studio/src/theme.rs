@@ -271,6 +271,8 @@ pub mod size {
     pub const DEVICE_BLEED: [f32; 2] = [12.0, 14.0];
     /// The top left of the screen opening in the device box, at zoom 1.
     pub const DEVICE_SCREEN_AT: [f32; 2] = [36.0, 30.0];
+    /// The screen opening of the device at zoom 1: the machine's pixels.
+    pub const DEVICE_SCREEN: [f32; 2] = [320.0, 240.0];
     /// The row of controls under the device.
     pub const SIM_ROW_W: f32 = 380.0;
     /// The tape drawing's box in the Tape pane, without its glow.
@@ -401,7 +403,7 @@ pub mod text {
     pub const CODE_LINE: f32 = 19.0;
     /// Small text: logs, hints, the status bar.
     pub const SMALL: f32 = 12.0;
-    /// Tiny text: column heads only.
+    /// Tiny text: column heads and the line under the device.
     pub const TINY: f32 = 11.0;
     /// The space added after each cell of a tracked label, in font pixels.
     pub const LABEL_TRACKING: f32 = 2.0;

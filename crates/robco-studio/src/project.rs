@@ -15,8 +15,10 @@ pub enum Manifest {
     Read {
         /// `project.name`.
         name: String,
-        /// The target, as the status bar shows it.
+        /// The target, as the toolbar shows it.
         target: String,
+        /// What it builds, as the Tape pane shows it: "Holotape, game".
+        kind: String,
     },
     /// It has one and the core refused it, with the core's reason.
     Refused(String),
@@ -84,6 +86,13 @@ impl Project {
                 Ok(m) => Manifest::Read {
                     name: m.project.name.clone(),
                     target: format!("Pip-OS ABI {}.{}", m.target.abi.major, m.target.abi.minor),
+                    kind: format!(
+                        "Holotape, {}",
+                        match m.project.subtype {
+                            studio_core::manifest::Subtype::Game => "game",
+                            studio_core::manifest::Subtype::Utility => "utility",
+                        }
+                    ),
                 },
                 Err(e) => Manifest::Refused(e.to_string()),
             },

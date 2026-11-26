@@ -878,16 +878,6 @@ impl Art {
         Rect::from_min_size(pos, size)
     }
 
-    /// The toolbar's wordmark size in points: the compact header's mark.
-    pub fn wordmark_size(&self) -> egui::Vec2 {
-        Self::mark_size(Mark::WordmarkCompact)
-    }
-
-    /// Paint the toolbar's wordmark with its top left at `pos`.
-    pub fn wordmark(&self, painter: &egui::Painter, pos: Pos2, color: Color32) {
-        self.mark(painter, Mark::WordmarkCompact, pos, color);
-    }
-
     /// Paint the scanlines over `rect`, in device pixels so they never beat.
     pub fn scanlines(&self, painter: &egui::Painter, rect: Rect) {
         if let Some(t) = &self.scanlines {

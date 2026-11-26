@@ -8,7 +8,7 @@ use crate::editor::{Answer, Editor};
 use crate::kit::{Button, ButtonKind, Kit, Level};
 use crate::menus::{self, Command};
 use crate::project::{Manifest, Project};
-use crate::theme::{Effects, Theme, Type, size};
+use crate::theme::{Effects, Theme, Type, effect, size};
 use eframe::egui::{
     self, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, UiBuilder, accesskit::Role,
 };
@@ -803,6 +803,8 @@ impl Studio {
         );
     }
 
+    /// The footer: the Industries mark, the division, the status line,
+    /// then the SDK, Sim, Link and Position segments.
     fn status_bar(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect) {
         let p = kit.p();
         let focus = self.focus_request == Some(Place::Status);
@@ -815,30 +817,71 @@ impl Studio {
             focus,
         );
         self.places.push((Place::Status, rect));
-        s.painter().line_segment(
-            [rect.left_top(), rect.right_top()],
-            kit.theme.frame(p.frame_dim),
+        s.painter().hline(
+            rect.x_range(),
+            rect.top() + stroke_w() / 2.0,
+            kit.theme.frame(p.frame),
         );
-        let mut right = rect.right();
+        let cy = rect.center().y + stroke_w() / 2.0;
+        let ms = Art::mark_size(Mark::Industries);
+        let mark = kit.art.mark(
+            s.painter(),
+            Mark::Industries,
+            egui::pos2(rect.left() + size::HEADER_MARK_GAP, cy - ms.y / 2.0),
+            p.bright,
+        );
+        let m = s.interact(mark, Id::unique("footer-mark"), Sense::hover());
+        m.widget_info(|| egui::WidgetInfo::labeled(Role::Image, true, "RobCo Industries"));
         let caret = (self.page == Page::Project
             && self.focused_place(ui.ctx()) == Some(Place::Editor))
         .then(|| self.editor.current().and_then(|d| d.caret))
         .flatten();
-        if let Some((l, c)) = caret {
-            right = kit.status_segment(&mut s, right, rect, None, &format!("Ln {l}, Col {c}"));
-        }
-        right = kit.status_segment(&mut s, right, rect, Some(Icon::Cable), "Link off");
-        right = kit.status_segment(&mut s, right, rect, Some(Icon::Wrist), "Sim off");
-        right = kit.status_segment(&mut s, right, rect, None, "SDK not checked");
-        if let Some(pr) = &self.project {
-            if let Manifest::Read { target, .. } = &pr.manifest {
-                right = kit.status_segment(&mut s, right, rect, None, target);
-            }
-            right = kit.status_segment(&mut s, right, rect, None, &pr.name());
-        }
+        let position = caret.map(|(l, c)| format!("Ln {l}, Col {c}"));
+        let segments = [
+            (None, "SDK not checked"),
+            (Some(Icon::Wrist), "Sim off"),
+            (Some(Icon::Cable), "Link off"),
+        ];
+        let seg_w: f32 = segments
+            .iter()
+            .map(|(i, t)| kit.status_segment_width(&s, *i, t))
+            .sum();
+        let pos_w = position
+            .as_ref()
+            .map_or(0.0, |t| kit.status_segment_width(&s, None, t));
+        let division = "Engineering division";
+        let div_w = kit.caps_width(&s, division) + size::FOOTER_SEG_PAD * 2.0 + stroke_w();
         let (level, text) = &self.status;
+        let msg_need = size::ICON
+            + size::UNIT * 2.0
+            + s.painter()
+                .layout_no_wrap(text.clone(), kit.theme.font(Type::Small), p.text)
+                .size()
+                .x;
+        let room = rect.right() - mark.right() - size::FOOTER_SEG_PAD * 2.0 - div_w - seg_w - pos_w;
+        let (show_div, show_pos) = footer_gives_way(msg_need, room, div_w, pos_w);
+        let mut right = rect.right();
+        if let (Some(t), true) = (&position, show_pos) {
+            right = kit.status_segment(&mut s, right, rect, None, t);
+        }
+        for (i, t) in segments.iter().rev() {
+            right = kit.status_segment(&mut s, right, rect, *i, t);
+        }
+        let mut x = mark.right() + size::FOOTER_SEG_PAD;
+        if show_div {
+            kit.footer_divider(s.painter(), x, cy);
+            x += stroke_w() + size::FOOTER_SEG_PAD;
+            let r = kit.caps(s.painter(), x, cy, division, p.dim);
+            s.put(
+                r,
+                egui::Label::new(egui::RichText::new(division).color(egui::Color32::TRANSPARENT)),
+            );
+            x = r.right() + size::FOOTER_SEG_PAD;
+            kit.footer_divider(s.painter(), x, cy);
+            x += stroke_w();
+        }
         let icon = Rect::from_min_size(
-            egui::pos2(rect.left() + size::UNIT * 2.0, rect.top()),
+            egui::pos2(x + size::FOOTER_SEG_PAD, rect.top()),
             egui::vec2(size::ICON, rect.height()),
         );
         kit.art
@@ -882,35 +925,9 @@ impl Studio {
         }
         self.editor_pane(kit, ui, editor);
         let fr = self.focus_request;
-        let run = Button::quiet("Run")
-            .kind(ButtonKind::Filled)
-            .icon(Icon::Run)
-            .unavailable(menus::NO_RUN);
-        kit.pane(ui, sim, Place::Simulator.name(), true, fr == Some(Place::Simulator), |ui, r| {
-            kit.empty_state(ui, r.content, Icon::Wrist, "No machine is running. Run builds the tape, boots it in the emulator and shows the screen here.", &[run]);
-        });
+        self.sim_pane(kit, ui, sim, fr == Some(Place::Simulator));
         self.places.push((Place::Simulator, sim));
-        let build = Button::quiet("Build")
-            .kind(ButtonKind::Filled)
-            .icon(Icon::Build)
-            .unavailable(menus::NO_BUILD)
-            .small();
-        kit.pane(
-            ui,
-            tape,
-            Place::Tape.name(),
-            true,
-            fr == Some(Place::Tape),
-            |ui, r| {
-                kit.empty_state(
-                    ui,
-                    r.content,
-                    Icon::Tape,
-                    "No tape yet. Build makes one.",
-                    &[build],
-                );
-            },
-        );
+        self.tape_pane(kit, ui, tape, fr == Some(Place::Tape));
         self.places.push((Place::Tape, tape));
         if show_bottom {
             self.bottom_pane(kit, ui, bottom);
@@ -968,6 +985,236 @@ impl Studio {
                 l.bottom_h = size::BOTTOM_H;
             }
         }
+    }
+
+    /// The simulator pane: the device, idle at 62 percent with the empty
+    /// state in its screen opening, the honest line, and Stop, Reset, Fit
+    /// and the zoom group.
+    fn sim_pane(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect, focus: bool) {
+        let p = kit.p();
+        let fit = sim_fit(rect);
+        self.sim_zoom = self.sim_zoom.clamp(1, fit);
+        let zoom = self.sim_zoom;
+        let mut new_zoom = zoom;
+        kit.pane(ui, rect, Place::Simulator.name(), true, focus, |ui, r| {
+            let below = Rect::from_min_max(
+                egui::pos2(r.outer.left(), r.row.bottom() + stroke_w()),
+                r.outer.max,
+            );
+            let d = Art::device_size(zoom);
+            let at = egui::pos2(rect.center().x - d.x / 2.0, below.top() + size::SIM_ROW_GAP);
+            let painter = ui.painter().with_clip_rect(below.intersect(ui.clip_rect()));
+            let device = kit.art.device(&painter, at, zoom, p.bright.gamma_multiply(effect::DEVICE_IDLE));
+            let z = f32::from(zoom);
+            let screen = Rect::from_min_size(
+                device.min + egui::Vec2::from(size::DEVICE_SCREEN_AT) * z,
+                egui::Vec2::from(size::DEVICE_SCREEN) * z,
+            );
+            painter.rect_filled(screen, CornerRadius::ZERO, p.ground);
+            let run = Button::quiet("Run")
+                .kind(ButtonKind::Filled)
+                .icon(Icon::Run)
+                .unavailable(menus::NO_RUN);
+            kit.empty_state(
+                ui,
+                screen,
+                Icon::Wrist,
+                "No machine is running. Run builds the tape, boots it in the emulator and shows the screen here.",
+                &[run],
+            );
+            let line = Rect::from_min_size(
+                egui::pos2(
+                    rect.left() + size::PAD_SIDE,
+                    device.bottom() + size::SIM_ROW_GAP,
+                ),
+                egui::vec2(
+                    (rect.width() - size::PAD_SIDE * 2.0).max(0.0),
+                    crate::theme::text::BODY_LINE,
+                ),
+            );
+            let mut l = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(line)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            l.spacing_mut().item_spacing.x = size::UNIT;
+            let (ir, _) = l.allocate_exact_size(egui::vec2(size::ICON, size::ICON), Sense::hover());
+            kit.art.icon(l.painter(), ir, Icon::Info, p.dim);
+            l.add(
+                egui::Label::new(
+                    egui::RichText::new(HONEST)
+                        .font(kit.theme.font(Type::Tiny))
+                        .color(p.dim),
+                )
+                .truncate(),
+            );
+            let row = Rect::from_min_size(
+                egui::pos2(
+                    rect.center().x - size::SIM_ROW_W / 2.0,
+                    line.bottom() + size::SIM_ROW_GAP,
+                ),
+                egui::vec2(size::SIM_ROW_W, size::SMALL_H),
+            );
+            let stop = Button::quiet("Stop").icon(Icon::Stop).small().unavailable(menus::LATER);
+            let reset = Button::quiet("Reset").icon(Icon::Reset).small().unavailable(menus::LATER);
+            let fit_b = Button::quiet("Fit").icon(Icon::Fit).small();
+            let widths = [
+                kit.button_width(ui, &stop),
+                kit.button_width(ui, &reset),
+                kit.button_width(ui, &fit_b),
+                size::SMALL_H * 2.0 + size::ZOOM_NAME_W,
+            ];
+            let gaps = (widths.len() - 1) as f32;
+            let gap = ((row.width() - widths.iter().sum::<f32>()) / gaps).max(0.0);
+            let mut b = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(row)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            b.spacing_mut().item_spacing.x = gap;
+            kit.button(&mut b, stop);
+            kit.button(&mut b, reset);
+            if kit.button(&mut b, fit_b).clicked() {
+                new_zoom = fit;
+            }
+            let smaller = (zoom <= 1).then_some(menus::LATER);
+            let next = zoom + 1;
+            let no_room = format!(
+                "{next}x does not fit this pane. Give the simulator the centre."
+            );
+            let larger = if zoom >= 3 {
+                Some(menus::LATER)
+            } else if next > fit {
+                Some(no_room.as_str())
+            } else {
+                None
+            };
+            let (less, more) = kit.zoom_group(&mut b, &format!("{zoom}x"), smaller, larger);
+            if less {
+                new_zoom = zoom - 1;
+            }
+            if more {
+                new_zoom = next;
+            }
+        });
+        self.sim_zoom = new_zoom;
+    }
+
+    /// The Tape pane: the tape drawing with its name on the label field,
+    /// and four facts. Export sits in the title row.
+    fn tape_pane(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect, focus: bool) {
+        let p = kit.p();
+        let read = self.project.as_ref().and_then(|pr| match &pr.manifest {
+            Manifest::Read { name, target, kind } => {
+                Some((name.clone(), target.clone(), kind.clone()))
+            }
+            _ => None,
+        });
+        kit.pane(ui, rect, Place::Tape.name(), true, focus, |ui, r| {
+            let mut t = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(Rect::from_min_max(
+                        r.row.min,
+                        egui::pos2(r.row.right() - size::UNIT, r.row.bottom()),
+                    ))
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            );
+            kit.button(
+                &mut t,
+                Button::quiet("Export")
+                    .icon(Icon::Export)
+                    .small()
+                    .unavailable(menus::LATER),
+            );
+            let Some((name, target, kind)) = read else {
+                let build = Button::quiet("Build")
+                    .kind(ButtonKind::Filled)
+                    .icon(Icon::Build)
+                    .unavailable(menus::NO_BUILD)
+                    .small();
+                kit.empty_state(
+                    ui,
+                    r.content,
+                    Icon::Tape,
+                    "No tape yet. Build makes one.",
+                    &[build],
+                );
+                return;
+            };
+            let art = egui::Vec2::from(size::TAPE_ART);
+            let at = egui::pos2(r.content.left(), r.content.center().y - art.y / 2.0);
+            let painter = ui.painter().with_clip_rect(r.outer);
+            let tape = kit.art.mark(
+                &painter,
+                Mark::Tape,
+                at,
+                p.bright.gamma_multiply(effect::TAPE_IDLE),
+            );
+            let label = Rect::from_min_size(
+                tape.min + egui::Vec2::from(size::TAPE_LABEL_AT),
+                egui::Vec2::from(size::TAPE_LABEL),
+            );
+            let file = format!("{name}.HTP");
+            let w = kit.caps_width(ui, &file);
+            kit.caps(
+                &painter,
+                label.center().x - w / 2.0,
+                label.center().y,
+                &file,
+                p.dim,
+            );
+            let facts = Rect::from_min_max(
+                egui::pos2(tape.right() + size::TAPE_FACTS_GAP, tape.top()),
+                egui::pos2(r.content.right(), tape.bottom()),
+            );
+            let mut f = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(facts)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            f.spacing_mut().item_spacing.y = 0.0;
+            f.spacing_mut().interact_size.y = size::ROW_FACT;
+            let rows = [
+                (Icon::Tape, "Kind:", kind.as_str(), p.text),
+                (Icon::Wrist, "Needs:", target.as_str(), p.text),
+                (Icon::Level, "Slot:", "No tape yet", p.text),
+                (Icon::Warn, "Seal:", "Not built", p.warn),
+            ];
+            for (icon, key, value, colour) in rows {
+                f.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = size::UNIT * 2.0;
+                    let (rr, _) = ui.allocate_exact_size(
+                        egui::vec2(size::ICON, size::ROW_FACT),
+                        Sense::hover(),
+                    );
+                    kit.art.icon(
+                        ui.painter(),
+                        rr,
+                        icon,
+                        if colour == p.warn { p.warn } else { p.bright },
+                    );
+                    let kw = kit.caps_width(ui, key);
+                    let (kr, _) =
+                        ui.allocate_exact_size(egui::vec2(kw, size::ROW_FACT), Sense::hover());
+                    kit.caps_styled(
+                        ui.painter(),
+                        egui::pos2(kr.left(), kr.center().y),
+                        key,
+                        p.bright,
+                        0.0,
+                        true,
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(value)
+                                .font(kit.theme.font(Type::Small))
+                                .color(colour),
+                        )
+                        .truncate(),
+                    );
+                });
+            }
+        });
     }
 
     fn files_pane(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect) {
@@ -1335,6 +1582,44 @@ impl eframe::App for Studio {
     }
 }
 
+/// Which footer parts give way to a long status line: first the division,
+/// then Position; after that the line ends in an ellipsis. `need` is the
+/// line's width, `room` what it gets with every part shown. The line claims
+/// at least 360 px. Returns whether the division and Position are shown.
+pub fn footer_gives_way(need: f32, room: f32, division_w: f32, position_w: f32) -> (bool, bool) {
+    let need = need.max(size::FOOTER_MESSAGE_MIN);
+    if need <= room {
+        (true, true)
+    } else if need <= room + division_w {
+        (false, true)
+    } else {
+        (false, position_w <= 0.0)
+    }
+}
+
+/// The largest zoom step of the device that the simulator pane `sim`
+/// holds with its title row, the honest line and the row of controls.
+/// 1 when even that does not fit.
+pub fn sim_fit(sim: Rect) -> u8 {
+    let below = size::PANE_HEAD_H
+        + size::SIM_ROW_GAP * 2.0
+        + size::SIM_ROW_GAP
+        + crate::theme::text::BODY_LINE
+        + size::SMALL_H
+        + size::PAD_BOTTOM;
+    let mut best = 1;
+    for z in crate::art::DEVICE_ZOOMS {
+        let d = Art::device_size(z);
+        if d.x <= sim.width() && d.y + below <= sim.height() {
+            best = z;
+        }
+    }
+    best
+}
+
+/// The honest line under the device, at the side.
+const HONEST: &str = "Rebuilt sound. No panel timing. This computer's speed.";
+
 /// Where the project page's panes go.
 #[derive(Debug, Clone, Copy)]
 pub struct Panes {
@@ -1486,6 +1771,40 @@ mod tests {
         press(&mut s, &ctx, Key::W, Modifiers::COMMAND);
         assert!(s.editor.current().is_none());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A long status line takes the division's place first, then Position,
+    /// and only then ends in an ellipsis.
+    #[test]
+    fn the_footer_gives_way_in_order() {
+        let (div, pos) = (200.0, 100.0);
+        let room = size::FOOTER_MESSAGE_MIN + 10.0;
+        assert_eq!(footer_gives_way(100.0, room, div, pos), (true, true));
+        assert_eq!(footer_gives_way(room + 50.0, room, div, pos), (false, true));
+        assert_eq!(
+            footer_gives_way(room + div + 50.0, room, div, pos),
+            (false, false)
+        );
+        // Without Position, nothing more goes: the line ends in an ellipsis.
+        assert_eq!(
+            footer_gives_way(room + div + 50.0, room, div, 0.0),
+            (false, true)
+        );
+        // The line claims 360 px even when it is short.
+        assert_eq!(
+            footer_gives_way(10.0, size::FOOTER_MESSAGE_MIN - 1.0, div, pos),
+            (false, true)
+        );
+    }
+
+    /// The simulator pane of the default layout holds 1x only; a larger
+    /// one holds more, and a tiny one still says 1.
+    #[test]
+    fn sim_fit_picks_the_largest_step_that_fits() {
+        let at = |w: f32, h: f32| Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+        assert_eq!(sim_fit(at(size::SIM_W, 428.0)), 1);
+        assert_eq!(sim_fit(at(900.0, 800.0)), 2);
+        assert_eq!(sim_fit(at(0.0, 0.0)), 1);
     }
 
     /// Given less than the smallest window, down to nothing, the layout
