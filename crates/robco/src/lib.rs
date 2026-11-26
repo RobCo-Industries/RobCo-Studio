@@ -3,7 +3,7 @@
 //! The `robco` command. `main.rs` only calls [`run`]; the program's tests
 //! call it too, with a transport that trusts a test certificate.
 //!
-//! It implements `robco sdk list` and `robco sdk install` of RobCo-Core
+//! It implements `robco build`, `robco sdk list` and `robco sdk install` of RobCo-Core
 //! `docs/spec/STUDIO_CLI.md`, and prints the version for `robco --version`
 //! and `robco version`. Every action is delegated to `studio-core`. It must
 //! never depend on the window program or any window or toolkit crate. It
@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod args;
+mod build;
 mod cache;
 mod index;
 mod install;
@@ -81,6 +82,7 @@ pub fn run(
     };
     let name = match command {
         Command::SdkInstall { .. } => "sdk install",
+        Command::Build { .. } => "build",
         _ => "sdk list",
     };
     let cache = match cache::folder(var) {
@@ -106,6 +108,22 @@ pub fn run(
                 host: studio_core::resolve::running_host(),
             },
         ),
+        Command::Build { index } => match std::env::current_dir() {
+            Ok(project) => build::run(
+                &mut out,
+                &cache,
+                net,
+                &build::Request {
+                    index: index.as_deref(),
+                    project: &project,
+                    host: studio_core::resolve::running_host(),
+                },
+            ),
+            Err(e) => Err(Failure::new(
+                "io: read",
+                format!("the current folder: {}", e.kind()),
+            )),
+        },
         Command::Version => Ok(()),
     };
     match result {
