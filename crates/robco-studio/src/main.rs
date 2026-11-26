@@ -20,6 +20,7 @@ fn main() -> std::process::ExitCode {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size(theme::size::WINDOW)
+            .with_min_inner_size(theme::size::WINDOW)
             .with_title("RobCo Studio"),
         ..Default::default()
     };

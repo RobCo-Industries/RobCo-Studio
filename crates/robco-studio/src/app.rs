@@ -689,45 +689,17 @@ impl Studio {
     }
 
     fn project_page(&mut self, kit: &Kit<'_>, ui: &mut Ui, page: Rect) {
-        let area = page.shrink2(egui::vec2(size::PAGE_MARGIN_ACROSS, size::PAGE_MARGIN_DOWN));
-        let l = &mut self.layout;
-        l.files_w = l.files_w.clamp(size::FILES_MIN, size::FILES_MAX);
-        let files_w = if l.files { l.files_w } else { 0.0 };
-        let gap_files = if l.files { size::GAP_ACROSS } else { 0.0 };
-        let max_sim = area.width() - files_w - gap_files - size::GAP_ACROSS - size::FILES_MIN;
-        l.sim_w = l.sim_w.clamp(size::SIM_W, max_sim.max(size::SIM_W));
-        l.bottom_h = l.bottom_h.clamp(
-            size::BOTTOM_MIN,
-            (area.height() / 2.0).max(size::BOTTOM_MIN),
-        );
-        let sim_left = area.right() - l.sim_w;
-        let left_right = sim_left - size::GAP_ACROSS;
-        let top_bottom = if l.bottom {
-            area.bottom() - l.bottom_h - size::GAP_DOWN
-        } else {
-            area.bottom()
-        };
-        let files = Rect::from_min_max(
-            area.left_top(),
-            egui::pos2(area.left() + files_w, top_bottom),
-        );
-        let editor = Rect::from_min_max(
-            egui::pos2(area.left() + files_w + gap_files, area.top()),
-            egui::pos2(left_right, top_bottom),
-        );
-        let sim = Rect::from_min_max(
-            egui::pos2(sim_left, area.top()),
-            egui::pos2(area.right(), area.bottom() - size::TAPE_H - size::GAP_DOWN),
-        );
-        let tape = Rect::from_min_max(
-            egui::pos2(sim_left, area.bottom() - size::TAPE_H),
-            area.right_bottom(),
-        );
-        let bottom = Rect::from_min_max(
-            egui::pos2(area.left(), area.bottom() - l.bottom_h),
-            egui::pos2(left_right, area.bottom()),
-        );
-        let (show_files, show_bottom) = (l.files, l.bottom);
+        let Panes {
+            area,
+            files,
+            editor,
+            sim,
+            tape,
+            bottom,
+            show_files,
+            show_bottom,
+        } = panes(&mut self.layout, page);
+        let left_right = editor.right();
 
         if show_files {
             self.files_pane(kit, ui, files);
@@ -1150,6 +1122,96 @@ impl eframe::App for Studio {
     }
 }
 
+/// Where the project page's panes go.
+#[derive(Debug, Clone, Copy)]
+pub struct Panes {
+    /// The page less its margins.
+    pub area: Rect,
+    /// The Files pane.
+    pub files: Rect,
+    /// The editor.
+    pub editor: Rect,
+    /// The simulator.
+    pub sim: Rect,
+    /// The tape, under the simulator.
+    pub tape: Rect,
+    /// The bottom pane.
+    pub bottom: Rect,
+    /// Files is drawn: it is on and there is room for it.
+    pub show_files: bool,
+    /// The bottom pane is drawn.
+    pub show_bottom: bool,
+}
+
+/// Lay out the project page in `page`. The window's minimum size fits
+/// every pane; given less anyway, Files is left out first, the simulator
+/// shrinks, and no rectangle gets a negative width or height.
+pub fn panes(l: &mut Layout, page: Rect) -> Panes {
+    let page = Rect::from_min_size(page.min, page.size().max(egui::Vec2::ZERO));
+    let shrunk = page.shrink2(egui::vec2(size::PAGE_MARGIN_ACROSS, size::PAGE_MARGIN_DOWN));
+    let area = Rect::from_min_size(
+        shrunk.min.min(page.max),
+        shrunk.size().max(egui::Vec2::ZERO),
+    );
+    // Keep a rectangle inside the area, with no negative side.
+    let fit = |r: Rect| {
+        let min = r.min.clamp(area.min, area.max);
+        let max = r.max.clamp(min, area.max.max(min));
+        Rect::from_min_max(min, max)
+    };
+    l.files_w = l.files_w.clamp(size::FILES_MIN, size::FILES_MAX);
+    let show_files = l.files
+        && area.width() >= l.files_w + size::GAP_ACROSS * 2.0 + size::FILES_MIN + size::SIM_W;
+    let files_w = if show_files { l.files_w } else { 0.0 };
+    let gap_files = if show_files { size::GAP_ACROSS } else { 0.0 };
+    let max_sim = area.width() - files_w - gap_files - size::GAP_ACROSS - size::FILES_MIN;
+    l.sim_w = l.sim_w.clamp(size::SIM_W, max_sim.max(size::SIM_W));
+    let sim_w = l.sim_w.min(area.width()).max(0.0);
+    l.bottom_h = l.bottom_h.clamp(
+        size::BOTTOM_MIN,
+        (area.height() / 2.0).max(size::BOTTOM_MIN),
+    );
+    let bottom_h = l.bottom_h.min(area.height() / 2.0).max(0.0);
+    let sim_left = area.right() - sim_w;
+    let left_right = (sim_left - size::GAP_ACROSS).max(area.left());
+    let top_bottom = if l.bottom {
+        area.bottom() - bottom_h - size::GAP_DOWN
+    } else {
+        area.bottom()
+    };
+    let files = fit(Rect::from_min_max(
+        area.left_top(),
+        egui::pos2(area.left() + files_w, top_bottom),
+    ));
+    let editor = fit(Rect::from_min_max(
+        egui::pos2(area.left() + files_w + gap_files, area.top()),
+        egui::pos2(left_right, top_bottom),
+    ));
+    let tape_top = (area.bottom() - size::TAPE_H).max(area.top());
+    let sim = fit(Rect::from_min_max(
+        egui::pos2(sim_left, area.top()),
+        egui::pos2(area.right(), tape_top - size::GAP_DOWN),
+    ));
+    let tape = fit(Rect::from_min_max(
+        egui::pos2(sim_left, tape_top),
+        area.right_bottom(),
+    ));
+    let bottom = fit(Rect::from_min_max(
+        egui::pos2(area.left(), area.bottom() - bottom_h),
+        egui::pos2(left_right, area.bottom()),
+    ));
+    Panes {
+        area,
+        files,
+        editor,
+        sim,
+        tape,
+        bottom,
+        show_files,
+        show_bottom: l.bottom,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,5 +1258,58 @@ mod tests {
         press(&mut s, &ctx, Key::W, Modifiers::COMMAND);
         assert!(s.editor.current().is_none());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Given less than the smallest window, down to nothing, the layout
+    /// keeps every pane inside the page with no negative side.
+    #[test]
+    fn panes_never_turn_inside_out() {
+        let sizes = [
+            (1280.0, 720.0),
+            (716.0, 720.0),
+            (700.0, 400.0),
+            (500.0, 300.0),
+            (200.0, 100.0),
+            (20.0, 10.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+        ];
+        for files in [true, false] {
+            for (w, h) in sizes {
+                let mut l = Layout {
+                    files,
+                    ..Layout::default()
+                };
+                let page = Rect::from_min_size(egui::pos2(76.0, 70.0), egui::vec2(w, h));
+                let p = panes(&mut l, page);
+                for (name, r) in [
+                    ("files", p.files),
+                    ("editor", p.editor),
+                    ("sim", p.sim),
+                    ("tape", p.tape),
+                    ("bottom", p.bottom),
+                ] {
+                    assert!(
+                        r.width() >= 0.0 && r.height() >= 0.0,
+                        "{name} at {w}x{h}: {r:?}"
+                    );
+                    assert!(
+                        page.contains_rect(r),
+                        "{name} at {w}x{h}: {r:?} outside {page:?}"
+                    );
+                }
+                if p.show_files {
+                    assert!(p.files.right() <= p.editor.left(), "{w}x{h}");
+                }
+                assert!(p.editor.right() <= p.sim.left(), "{w}x{h}");
+            }
+        }
+        // At the smallest window every pane is drawn, side by side.
+        let mut l = Layout::default();
+        let p = panes(
+            &mut l,
+            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0 - 76.0, 720.0 - 100.0)),
+        );
+        assert!(p.show_files && p.editor.width() > size::FILES_MIN);
     }
 }
