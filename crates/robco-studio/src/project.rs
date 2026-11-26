@@ -15,8 +15,8 @@ pub enum Manifest {
     Read {
         /// `project.name`.
         name: String,
-        /// The target, as the toolbar shows it.
-        target: String,
+        /// The target.
+        target: Target,
         /// What it builds, as the Tape pane shows it: "Holotape, game".
         kind: String,
     },
@@ -24,6 +24,25 @@ pub enum Manifest {
     Refused(String),
     /// It is there but could not be read, with the system's reason.
     Unreadable(String),
+}
+
+/// The machine a project builds for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The Pip-OS ABI, as "1.3".
+    pub abi: String,
+}
+
+impl Target {
+    /// Its name, as the toolbar's Target dropdown shows it.
+    pub fn name(&self) -> String {
+        format!("Pip-OS, ABI {}", self.abi)
+    }
+
+    /// What a tape needs, as the Tape pane states it.
+    pub fn needs(&self) -> String {
+        format!("Pip-OS ABI {}", self.abi)
+    }
 }
 
 /// One row of the tree.
@@ -85,7 +104,9 @@ impl Project {
             Ok(bytes) => match studio_core::manifest::parse(&bytes) {
                 Ok(m) => Manifest::Read {
                     name: m.project.name.clone(),
-                    target: format!("Pip-OS ABI {}.{}", m.target.abi.major, m.target.abi.minor),
+                    target: Target {
+                        abi: format!("{}.{}", m.target.abi.major, m.target.abi.minor),
+                    },
                     kind: format!(
                         "Holotape, {}",
                         match m.project.subtype {

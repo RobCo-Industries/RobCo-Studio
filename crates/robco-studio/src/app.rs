@@ -686,7 +686,7 @@ impl Studio {
             Some(pr) => (
                 pr.name(),
                 match &pr.manifest {
-                    Manifest::Read { target, .. } => target.clone(),
+                    Manifest::Read { target, .. } => target.name(),
                     _ => "None".to_owned(),
                 },
             ),
@@ -1133,7 +1133,7 @@ impl Studio {
         let p = kit.p();
         let read = self.project.as_ref().and_then(|pr| match &pr.manifest {
             Manifest::Read { name, target, kind } => {
-                Some((name.clone(), target.clone(), kind.clone()))
+                Some((name.clone(), target.needs(), kind.clone()))
             }
             _ => None,
         });

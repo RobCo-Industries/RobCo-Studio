@@ -827,3 +827,18 @@ fn the_jobs_act_and_say_they_are_not_here_yet() {
     h.run_steps(3);
     h.get_by_label("Run is not in this version yet.");
 }
+
+/// The Target dropdown names the target with a comma; the Tape pane's
+/// NEEDS row states the same ABI as a bare fact.
+#[test]
+fn the_target_is_named_with_a_comma() {
+    let d = sample("target").unwrap();
+    std::fs::write(
+        d.join("robco.toml"),
+        "format = 1\n\n[project]\nname = \"PIPES\"\ntitle = \"Pipes\"\nversion = \"1.0.0\"\nkind = \"holotape\"\nsubtype = \"game\"\n\n[target]\nplatform = \"pipos\"\nabi = \"1.3\"\n\n[build]\nbackend = \"robco\"\nsources = [\"src/*.c\"]\n",
+    )
+    .unwrap();
+    let h = harness(Some(&*d));
+    h.get_by_label("Target: Pip-OS, ABI 1.3");
+    h.get_by_label("Pip-OS ABI 1.3");
+}
