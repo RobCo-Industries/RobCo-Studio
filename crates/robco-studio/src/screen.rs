@@ -305,8 +305,6 @@ pub struct Settings {
     pub adapter: Adapter,
     /// Reduce motion is on, from the system.
     pub reduce_motion: bool,
-    /// The Adjust dialog is open.
-    pub adjusting: bool,
     clock: Clock,
     link: crate::pass::Shared,
 }
@@ -316,7 +314,6 @@ impl Default for Settings {
         Self {
             adapter: Adapter::Unknown,
             reduce_motion: false,
-            adjusting: false,
             clock: Clock::default(),
             link: crate::pass::Shared::default(),
         }

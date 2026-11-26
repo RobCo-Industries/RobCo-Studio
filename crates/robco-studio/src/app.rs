@@ -11,14 +11,16 @@ use crate::kit::{Button, ButtonKind, Kit, Level, MenuMark};
 use crate::menus::{self, Command, ThemeId};
 use crate::project::{Manifest, Project, Row};
 use crate::screen::{self, Adapter};
-use crate::theme::{Spec, Strengths, Theme, Type, crt, effect, size};
+use crate::theme::{Spec, Theme, Type, crt, effect, size};
 use eframe::egui::{
     self, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, UiBuilder, accesskit::Role,
 };
 use egui::text_edit::TextEditState;
 use std::path::{Path, PathBuf};
 
+mod theme_pane;
 mod themes;
+pub use theme_pane::{ThemeEditor, ThemeTab};
 pub use themes::ThemeFault;
 
 /// The window's pages, chosen in the toolbar.
@@ -206,6 +208,8 @@ pub struct Studio {
     pub pending: Vec<Command>,
     /// The screen pass, the adapter and reduce motion.
     pub screen: screen::Settings,
+    /// The theme editor: open or not, its tab and its fields.
+    pub theme_editor: ThemeEditor,
     art: Option<Art>,
     /// What draws this frame, taken in `prepare`.
     drawn: screen::Drawn,
@@ -395,6 +399,7 @@ impl Studio {
             sim_room: 1,
             pending: Vec::new(),
             screen: screen::Settings::default(),
+            theme_editor: ThemeEditor::default(),
             art: None,
             drawn: screen::Drawn {
                 theme: Theme::default(),
@@ -682,7 +687,7 @@ impl Studio {
     /// What is in front now. The one place that decides it: the dialogs,
     /// the scrim, the keys and the menus' availability all ask here. The
     /// window shows at most one dialog of its own, and a question beats
-    /// Adjust: Adjust waits, unchanged, behind it and comes back after the
+    /// the theme editor: the editor waits, unchanged, behind it and comes back after the
     /// last answer.
     pub fn front(&self) -> Front {
         if self.choosing() {
@@ -714,13 +719,14 @@ impl Studio {
         }
     }
 
-    /// The window's own dialog that is drawn: the question, else Adjust.
+    /// The window's own dialog that is drawn: the question, else the theme
+    /// editor.
     /// Under the chooser it is drawn too, held with the rest.
     fn dialog_shown(&self) -> Front {
         if self.editor.question.is_some() {
             Front::Question
-        } else if self.screen.adjusting {
-            Front::Adjust
+        } else if self.theme_editor.open {
+            Front::Theme
         } else {
             Front::Nothing
         }
@@ -856,7 +862,7 @@ impl Studio {
             Command::NextPane => self.move_focus(ctx, true),
             Command::PreviousPane => self.move_focus(ctx, false),
             Command::Theme(ThemeId::At(i)) => self.pick_theme(i),
-            Command::ThemeEdit => self.screen.adjusting = true,
+            Command::ThemeEdit => self.theme_editor.open = true,
             Command::HighLegibility => {
                 self.theme.high_legibility = !self.theme.high_legibility;
                 self.settings_due = true;
@@ -1048,18 +1054,28 @@ impl Studio {
         self.status_bar(&kit, ui, status);
         // One dialog at most, the one in front, under one scrim. It is
         // taken once, so an Escape that answers a question does not also
-        // close Adjust waiting behind it.
+        // close the theme editor waiting behind it.
         let front = self.front();
-        if front != Front::Nothing {
-            scrim(&kit, &ctx, full);
+        match front {
+            // No shade under the theme editor: the window behind is its
+            // preview. A click there says why it does nothing.
+            Front::Theme => {
+                if scrim(&ctx, full, kit.theme.scrim_theme(), true) {
+                    self.say(Level::Info, ADJUSTING.to_owned());
+                }
+            }
+            Front::Question | Front::Chooser => {
+                scrim(&ctx, full, kit.theme.scrim(), false);
+            }
+            Front::Nothing => {}
         }
         match self.dialog_shown() {
             Front::Question => self.dialog(&kit, &ctx, full),
-            Front::Adjust => self.adjust(&kit, &ctx),
+            Front::Theme => self.theme_pane(&kit, &ctx, front == Front::Theme),
             Front::Chooser | Front::Nothing => {}
         }
         if self.front() != front {
-            // Adjust comes back, or the focus goes back to the window, on
+            // The theme editor comes back, or the focus goes back to the window, on
             // the next frame: ask for it.
             ctx.request_repaint();
         }
@@ -2222,115 +2238,6 @@ impl Studio {
             }
         }
     }
-
-    /// The pane of View, Theme, Edit theme: a slider for each strength of
-    /// the theme in use, the frame rate, and Reset back to the saved
-    /// theme. A moved slider makes the theme a changed one.
-    fn adjust(&mut self, kit: &Kit<'_>, ctx: &egui::Context) {
-        let p = kit.p();
-        let name = self.theme_name();
-        let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
-        let mut reset = false;
-        let mut s = self.spec().strengths;
-        let mut rate = self.spec().rate;
-        let w = size::DIALOG_W;
-        let mut first = None;
-        let area = egui::Area::new(Id::unique("adjust"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .accessible_name(ADJUST_TITLE)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(p.pane)
-                    .stroke(kit.theme.frame(p.bright))
-                    .inner_margin(size::PAD_SIDE + size::UNIT)
-                    .show(ui, |ui| {
-                        let inner = w - (size::PAD_SIDE + size::UNIT) * 2.0;
-                        ui.set_width(inner);
-                        ui.horizontal(|ui| {
-                            let (r, _) = ui.allocate_exact_size(
-                                egui::vec2(size::ICON, size::CONTROL_H),
-                                Sense::hover(),
-                            );
-                            kit.art.icon(ui.painter(), r, Icon::Settings, p.bright);
-                            kit.text(ui, ADJUST_TITLE, Type::BodyBold, p.text);
-                            kit.text(ui, &name, Type::Body, p.dim);
-                        });
-                        ui.add_space(size::UNIT);
-                        ui.spacing_mut().slider_width = inner / 2.0;
-                        // A rail that shows on the pane, filled up to the handle.
-                        let v = ui.visuals_mut();
-                        v.slider_trailing_fill = true;
-                        v.selection.bg_fill = p.bright;
-                        v.widgets.inactive.bg_fill = p.frame_dim;
-                        for (n, name) in Strengths::NAMES.iter().enumerate() {
-                            if let Some(v) = s.get_mut(n) {
-                                let r = ui.add(
-                                    egui::Slider::new(v, 0.0..=1.0)
-                                        .step_by(crt::SLIDER_STEP)
-                                        .fixed_decimals(2)
-                                        .text(*name),
-                                );
-                                first.get_or_insert(r);
-                            }
-                        }
-
-                        ui.add_space(size::UNIT);
-                        ui.horizontal(|ui| {
-                            kit.text(ui, RATE_LABEL, Type::Body, p.text);
-                            let parts: Vec<String> =
-                                crt::RATES.iter().map(u32::to_string).collect();
-                            let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
-                            let at = crt::RATES.iter().position(|r| *r == rate).unwrap_or(1);
-                            if let Some(k) = kit.segmented(ui, RATE_LABEL, &parts, at)
-                                && let Some(r) = crt::RATES.get(k)
-                            {
-                                rate = *r;
-                            }
-                        });
-                        ui.add_space(size::UNIT);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if kit
-                                .button(ui, Button::quiet("Close").kind(ButtonKind::Filled))
-                                .clicked()
-                            {
-                                close = true;
-                            }
-                            if kit.button(ui, Button::quiet("Reset")).clicked() {
-                                reset = true;
-                            }
-                        });
-                    });
-            });
-        // Focus stays in the dialog: when it is elsewhere, the first
-        // slider takes it.
-        let inside = ctx
-            .memory(|m| m.focused())
-            .and_then(|f| ctx.read_response(f))
-            .is_some_and(|r| area.response.rect.contains(r.rect.center()));
-        if !inside && let Some(r) = first {
-            r.request_focus();
-        }
-        let before = (self.spec().strengths, self.spec().rate);
-        if reset {
-            if self.changed.is_some() {
-                self.pick_theme(self.current);
-            }
-        } else if (s, rate) != before {
-            self.edit_theme(|t| {
-                t.strengths = s;
-                t.rate = rate;
-            });
-        }
-        // The pass runs at the strengths that drew this frame: a moved
-        // slider applies from the next frame, so ask for it.
-        if (self.spec().strengths, self.spec().rate) != before {
-            ctx.request_repaint();
-        }
-        if close {
-            self.screen.adjusting = false;
-        }
-    }
 }
 
 /// Why zoom `step` cannot be chosen when the simulator pane has room for
@@ -2340,25 +2247,30 @@ pub fn zoom_unavailable(step: u8, fit: u8) -> Option<String> {
     (step > fit).then(|| format!("{step}x does not fit this pane. Give the simulator the centre."))
 }
 
-/// The scrim over the whole window, which takes every click under it.
-fn scrim(kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
+/// The scrim over the whole window in `fill`, which takes every click
+/// under it. With `tells` it reports a click, which it never takes as
+/// focus; otherwise it is inert. Returns whether it was clicked.
+fn scrim(ctx: &egui::Context, full: Rect, fill: egui::Color32, tells: bool) -> bool {
     egui::Area::new(Id::unique("scrim"))
         .order(egui::Order::Middle)
         .fixed_pos(full.min)
         .show(ctx, |ui| {
-            ui.painter()
-                .rect_filled(full, CornerRadius::ZERO, kit.theme.scrim());
-            // Disabled, after its fill: it still covers every layer
-            // behind from the pointer, and it takes no keyboard focus.
-            ui.disable();
-            ui.allocate_rect(full, Sense::click());
-        });
+            ui.painter().rect_filled(full, CornerRadius::ZERO, fill);
+            if tells {
+                ui.allocate_rect(full, Sense::CLICK).clicked()
+            } else {
+                // Disabled, after its fill: it still covers every layer
+                // behind from the pointer, and it takes no keyboard focus.
+                ui.disable();
+                ui.allocate_rect(full, Sense::click());
+                false
+            }
+        })
+        .inner
 }
 
-/// The title of the Adjust dialog.
-pub const ADJUST_TITLE: &str = "Adjust the screen";
-/// The frame rate choice of the Adjust dialog.
-const RATE_LABEL: &str = "Frames a second";
+/// The title of the theme editor.
+pub const THEME_TITLE: &str = "Theme";
 /// The note of a row that opens a submenu.
 const SUBMENU: &str = ">";
 
@@ -2377,10 +2289,11 @@ fn rank(l: Level) -> u8 {
 pub enum Front {
     /// The folder chooser is open or due. It beats everything.
     Chooser,
-    /// A question about unsaved edits. It beats Adjust.
+    /// A question about unsaved edits. It beats the theme editor.
     Question,
-    /// The Adjust dialog, modal: the window behind it is inert.
-    Adjust,
+    /// The theme editor, a pane at the right of the page. The window
+    /// behind it is its preview and takes no input.
+    Theme,
     /// No dialog: the window acts.
     Nothing,
 }
@@ -2397,12 +2310,13 @@ pub enum Verdict {
 /// What a command is to the dialogs in front.
 #[derive(Clone, Copy)]
 enum Part {
-    /// Quit: it may raise its question in front of Adjust.
+    /// Quit: it may raise its question in front of the theme editor.
     Quit,
-    /// Open folder: it brings the chooser, which holds Adjust as it is.
+    /// Open folder: it brings the chooser, which holds the editor as it is.
     OpenFolder,
-    /// A row of View, Theme: what the Adjust dialog is about.
-    Screen,
+    /// A row of View, Theme, and View, High legibility: what the theme
+    /// editor is about.
+    Theme,
     /// Any other command, which acts on the window behind a dialog.
     Window,
 }
@@ -2416,14 +2330,20 @@ enum Part {
 /// - The chooser: nothing acts.
 /// - A question: nothing acts, a second Quit included; only the
 ///   question's own answers do, and Escape cancels it.
-/// - Adjust: Quit, Open folder and the rows of View, Theme act.
+/// - The theme editor: Quit, Open folder, High legibility and the rows
+///   of View, Theme act.
 /// - Nothing: every command acts by its own rules.
 pub fn verdict(c: Command, front: Front) -> Verdict {
     use Command as C;
     let role = match c {
         C::Quit => Part::Quit,
         C::OpenFolder => Part::OpenFolder,
-        C::Theme(_) | C::ThemeEdit | C::ThemeAdd | C::ThemeFolder | C::ThemeHeld(_) => Part::Screen,
+        C::Theme(_)
+        | C::ThemeEdit
+        | C::ThemeAdd
+        | C::ThemeFolder
+        | C::ThemeHeld(_)
+        | C::HighLegibility => Part::Theme,
         C::NewProject
         | C::OpenRecent
         | C::Save
@@ -2452,7 +2372,6 @@ pub fn verdict(c: Command, front: Front) -> Verdict {
         | C::TextLarger
         | C::TextSmaller
         | C::TextReset
-        | C::HighLegibility
         | C::ProjectSettings
         | C::NewFile
         | C::Export
@@ -2486,16 +2405,16 @@ pub fn verdict(c: Command, front: Front) -> Verdict {
     match (front, role) {
         (Front::Chooser, _) => Verdict::Refused(CHOOSING),
         (Front::Question, _) => Verdict::Refused(ASKING),
-        (Front::Adjust, Part::Window) => Verdict::Refused(ADJUSTING),
-        (Front::Adjust, Part::Quit | Part::OpenFolder | Part::Screen) => Verdict::Acts,
+        (Front::Theme, Part::Window) => Verdict::Refused(ADJUSTING),
+        (Front::Theme, Part::Quit | Part::OpenFolder | Part::Theme) => Verdict::Acts,
         (Front::Nothing, _) => Verdict::Acts,
     }
 }
 
 /// Why a command waits while a question is open.
 pub const ASKING: &str = "Answer the open question first.";
-/// Why a command waits while Adjust is open.
-pub const ADJUSTING: &str = "Close Adjust first.";
+/// Why a command waits while the theme editor is open.
+pub const ADJUSTING: &str = "Close the theme editor first.";
 
 /// The status line while the folder chooser is open.
 pub const CHOOSING: &str = "A folder dialog is open.";
@@ -2844,7 +2763,7 @@ mod tests {
         format!(
             "{:?}",
             (
-                (s.theme, s.current, &s.changed, s.screen.adjusting),
+                (s.theme, s.current, &s.changed, s.theme_editor.open),
                 (s.page, s.layout, s.compact_header, s.sim_zoom),
                 s.project.as_ref().map(|p| p.root.clone()),
                 docs,
@@ -2854,7 +2773,7 @@ mod tests {
     }
 
     /// A window on one edited file in Green at Live, with `front` in front. A
-    /// question comes over an open Adjust, the case that once leaked.
+    /// question comes over an open theme editor, the case that once leaked.
     fn fronted(f: &Path, front: Front) -> Studio {
         let mut s = Studio::new(None);
         s.choose_screen(screen::Adapter::Hardware, None, Some(0));
@@ -2864,9 +2783,9 @@ mod tests {
         }
         match front {
             Front::Nothing => {}
-            Front::Adjust => s.screen.adjusting = true,
+            Front::Theme => s.theme_editor.open = true,
             Front::Question => {
-                s.screen.adjusting = true;
+                s.theme_editor.open = true;
                 assert!(!s.editor.request_quit());
             }
             Front::Chooser => s.choosing = Choosing::Due,
@@ -2918,7 +2837,7 @@ mod tests {
             for front in [
                 Front::Chooser,
                 Front::Question,
-                Front::Adjust,
+                Front::Theme,
                 Front::Nothing,
             ] {
                 let v = verdict(it.command, front);
@@ -2933,8 +2852,8 @@ mod tests {
                         assert_eq!(why.as_deref(), Some(r), "{:?} over {front:?}", it.command);
                     }
                     Verdict::Acts => {
-                        // Adjust over Adjust finds it open already.
-                        let open = front == Front::Adjust && it.command == Command::ThemeEdit;
+                        // The editor over the editor finds it open already.
+                        let open = front == Front::Theme && it.command == Command::ThemeEdit;
                         assert_eq!(
                             changed,
                             acts_alone && !open,
@@ -2960,15 +2879,25 @@ mod tests {
             Verdict::Refused(ASKING)
         );
         assert_eq!(
-            verdict(Command::Theme(ThemeId::At(FLAT)), Front::Adjust),
+            verdict(Command::Theme(ThemeId::At(FLAT)), Front::Theme),
             Verdict::Acts
         );
-        assert_eq!(verdict(Command::ThemeAdd, Front::Adjust), Verdict::Acts);
-        assert_eq!(verdict(Command::OpenFolder, Front::Adjust), Verdict::Acts);
+        assert_eq!(verdict(Command::ThemeAdd, Front::Theme), Verdict::Acts);
+        assert_eq!(verdict(Command::OpenFolder, Front::Theme), Verdict::Acts);
         assert_eq!(
-            verdict(Command::Save, Front::Adjust),
+            verdict(Command::Save, Front::Theme),
             Verdict::Refused(ADJUSTING)
         );
+        assert_eq!(
+            verdict(Command::HighLegibility, Front::Theme),
+            Verdict::Acts
+        );
+        assert_eq!(verdict(Command::Quit, Front::Theme), Verdict::Acts);
+        assert_eq!(
+            verdict(Command::HighLegibility, Front::Question),
+            Verdict::Refused(ASKING)
+        );
+        assert_eq!(ADJUSTING, "Close the theme editor first.");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -3567,8 +3496,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut s = Studio::new(None);
         press(&mut s, &ctx, Key::T, Modifiers::COMMAND | Modifiers::SHIFT);
-        assert_eq!(s.front(), Front::Adjust);
-        s.screen.adjusting = false;
+        assert_eq!(s.front(), Front::Theme);
+        s.theme_editor.open = false;
         s.run(&ctx, Command::ThemeAdd);
         assert_eq!(s.status.1, "Add a theme file is not in this version yet.");
         s.run(&ctx, Command::ThemeFolder);

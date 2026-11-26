@@ -1828,8 +1828,9 @@ fn adjust_moves_a_strength_and_reset_brings_it_back() {
     h.state_mut()
         .pending
         .push(robco_studio::menus::Command::ThemeEdit);
+    h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
     h.run_steps(2);
-    assert!(h.state().screen.adjusting);
+    assert!(h.state().theme_editor.open);
     let bloom = h
         .query_all_by_label("Bloom")
         .find(|n| n.accesskit_node().role() == Role::Slider)
@@ -1839,11 +1840,11 @@ fn adjust_moves_a_strength_and_reset_brings_it_back() {
     assert!((h.state().spec().strengths.bloom - 0.9).abs() < 1e-6);
     assert!(h.state().changed.is_some());
     assert_eq!(h.state().status.1, "Theme: Green, changed. Not saved.");
-    assert!(shown(&h, "Green, changed"));
+    assert!(shown(&h, "Theme: Green, changed"));
     // The theme that ships keeps its numbers.
     assert_eq!(h.state().themes[GREEN].strengths, crt::LIVE);
-    // The simulator's Reset is not in this release: the dialog's is.
-    h.query_all_by_label("Reset")
+    // Revert drops the change.
+    h.query_all_by_label("Revert")
         .find(|n| !n.accesskit_node().is_disabled())
         .unwrap()
         .click();
@@ -1858,7 +1859,7 @@ fn adjust_moves_a_strength_and_reset_brings_it_back() {
     assert!(h.state().changed.is_some());
     h.get_by_label("Close").click();
     h.run_steps(2);
-    assert!(!h.state().screen.adjusting);
+    assert!(!h.state().theme_editor.open);
 }
 
 /// The delay before the frame the window asks for, or None.
@@ -2048,6 +2049,7 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
     h.state_mut()
         .pending
         .push(robco_studio::menus::Command::ThemeEdit);
+    h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
     h.run_steps(2);
     let bloom = h
         .query_all_by_label("Bloom")
@@ -2059,7 +2061,7 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
     assert!((before.bloom - 0.9).abs() < 1e-6);
     press_open(&mut h);
     assert!(h.state().choosing());
-    assert!(h.state().screen.adjusting);
+    assert!(h.state().theme_editor.open);
     // A drag along the slider, from its left end to its right end.
     let r = h
         .query_all_by_label("Bloom")
@@ -2088,10 +2090,10 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
         .unwrap()
         .set_value_accesskit(0.1);
     h.run_steps(2);
-    let resets = h.query_all_by_label("Reset").count();
-    assert!(resets > 0);
-    for i in 0..resets {
-        h.query_all_by_label("Reset").nth(i).unwrap().click();
+    let reverts = h.query_all_by_label("Revert").count();
+    assert!(reverts > 0);
+    for i in 0..reverts {
+        h.query_all_by_label("Revert").nth(i).unwrap().click();
         h.run_steps(2);
     }
     h.query_all_by_label("Close")
@@ -2100,7 +2102,7 @@ fn an_open_chooser_holds_the_adjust_dialog_and_the_menus() {
         .click_accesskit();
     h.run_steps(2);
     assert_eq!(h.state().spec().strengths, before, "the dialog took input");
-    assert!(h.state().screen.adjusting, "Close acted");
+    assert!(h.state().theme_editor.open, "Close acted");
     // A click on View opens no menu.
     menu_item(&h, "View").unwrap().click();
     h.run_steps(3);
@@ -2124,6 +2126,7 @@ fn adjust_with_fake(folder: &Path) -> (Harness<'static, Studio>, Fake, egui::Rec
     h.state_mut()
         .pending
         .push(robco_studio::menus::Command::ThemeEdit);
+    h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
     h.run_steps(2);
     let r = bloom(&h).map_or(egui::Rect::NOTHING, |n| n.rect());
     (h, fake, r)
@@ -2376,8 +2379,9 @@ fn adjusting(tag: &str) -> Option<(Sample, Harness<'static, Studio>)> {
     h.state_mut()
         .pending
         .push(robco_studio::menus::Command::ThemeEdit);
+    h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
     h.run_steps(3);
-    (h.state().front() == Front::Adjust).then_some((d, h))
+    (h.state().front() == Front::Theme).then_some((d, h))
 }
 
 fn shown(h: &Harness<'static, Studio>, label: &str) -> bool {
@@ -2401,8 +2405,8 @@ fn adjust_is_modal_and_close_tab_waits() {
     h.run_steps(3);
     assert!(!shown(&h, ASK_CLOSE), "no question behind Adjust");
     assert_eq!(h.state().editor.docs.len(), 1, "the tab stays");
-    assert_eq!(h.state().front(), Front::Adjust);
-    assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
+    assert_eq!(h.state().front(), Front::Theme);
+    assert!(shown(&h, robco_studio::app::THEME_TITLE));
     // The native menu bar says why.
     let close = robco_studio::menus::menus()
         .into_iter()
@@ -2428,7 +2432,7 @@ fn a_question_beats_adjust_and_adjust_comes_back() {
         assert_eq!(h.state().front(), Front::Question);
         assert!(shown(&h, ASK_QUIT));
         assert!(
-            !shown(&h, robco_studio::app::ADJUST_TITLE),
+            !shown(&h, robco_studio::app::THEME_TITLE),
             "Adjust is put aside"
         );
         // No Adjust command while a question is open, in any menu.
@@ -2443,8 +2447,8 @@ fn a_question_beats_adjust_and_adjust_comes_back() {
         }
         h.run_steps(3);
         assert!(!shown(&h, ASK_QUIT));
-        assert_eq!(h.state().front(), Front::Adjust, "Escape left Adjust");
-        assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
+        assert_eq!(h.state().front(), Front::Theme, "Escape left Adjust");
+        assert!(shown(&h, robco_studio::app::THEME_TITLE));
         assert_eq!(h.state().spec().strengths, strengths);
         assert_eq!(h.state().editor.docs.len(), 1);
     }
@@ -2477,12 +2481,12 @@ fn a_native_theme_waits_behind_a_question_over_adjust() {
         assert_eq!(h.state().front(), Front::Question, "{l:?}");
         assert_eq!(h.state().theme.screen(), robco_studio::theme::Screen::Live);
         assert_eq!(h.state().spec().strengths, moved, "{l:?}");
-        assert!(h.state().screen.adjusting, "{l:?}");
+        assert!(h.state().theme_editor.open, "{l:?}");
     }
     h.get_by_label("Cancel").click();
     h.run_steps(3);
-    assert_eq!(h.state().front(), Front::Adjust);
-    assert!(shown(&h, robco_studio::app::ADJUST_TITLE));
+    assert_eq!(h.state().front(), Front::Theme);
+    assert!(shown(&h, robco_studio::app::THEME_TITLE));
     assert_eq!(h.state().spec().strengths, moved);
 }
 
@@ -2499,9 +2503,10 @@ fn a_question_refuses_the_adjust_command() {
     h.state_mut()
         .pending
         .push(robco_studio::menus::Command::ThemeEdit);
+    h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
     h.run_steps(3);
-    assert!(!h.state().screen.adjusting);
-    assert!(!shown(&h, robco_studio::app::ADJUST_TITLE));
+    assert!(!h.state().theme_editor.open);
+    assert!(!shown(&h, robco_studio::app::THEME_TITLE));
     assert!(shown(&h, ASK_CLOSE));
     assert_eq!(h.state().status.1, robco_studio::app::ASKING);
 }
@@ -2516,11 +2521,12 @@ fn the_chooser_beats_a_question_and_adjust() {
     h.state_mut().editor.docs[0].text.insert(0, 'x');
     press_open(&mut h);
     assert!(h.state().choosing());
-    h.state_mut().screen.adjusting = true;
+    h.state_mut().theme_editor.open = true;
+    h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
     assert!(!h.state_mut().editor.request_quit());
     h.run_steps(3);
     assert_eq!(h.state().front(), Front::Chooser);
-    assert!(!shown(&h, robco_studio::app::ADJUST_TITLE));
+    assert!(!shown(&h, robco_studio::app::THEME_TITLE));
     assert!(shown(&h, ASK_QUIT));
     // Escape goes to the chooser, held: the question stays.
     h.key_press(Key::Escape);
@@ -2584,7 +2590,10 @@ fn the_window_behind_a_dialog_takes_no_keys_and_gets_its_focus_back() {
         assert_eq!(h.ctx.memory(|m| m.focused()), Some(id), "{dialog:?}");
         let before = editor_state(&h).unwrap();
         match dialog {
-            Dialog::Adjust => h.state_mut().screen.adjusting = true,
+            Dialog::Adjust => {
+                h.state_mut().theme_editor.open = true;
+                h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
+            }
             Dialog::Question => h.state_mut().editor.question = Some(Question::CloseTab { doc }),
             Dialog::Chooser => press_open(&mut h),
         }
@@ -2649,8 +2658,11 @@ fn the_arrow_keys_move_a_slider_of_adjust() {
     let mut h = harness(None);
     h.state_mut()
         .choose_screen(Adapter::Hardware, Some(true), Some(GREEN));
-    h.state_mut().screen.adjusting = true;
+    h.state_mut().theme_editor.open = true;
+    h.state_mut().theme_editor.tab = robco_studio::app::ThemeTab::Screen;
     h.run_steps(3);
+    bloom(&h).unwrap().focus();
+    h.run_steps(2);
     let before = h.state().spec().strengths;
     h.key_press(Key::ArrowRight);
     h.run_steps(2);
@@ -2681,4 +2693,271 @@ fn high_legibility_is_a_checked_box_in_the_window_menu() {
     h.state_mut().theme.high_legibility = true;
     h.run_steps(2);
     assert_eq!(state(&mut h), Some(Toggled::True));
+}
+
+/// A window at Live with the theme editor open on `tab`, reduce motion
+/// as `reduce`.
+fn theme_editor(tab: robco_studio::app::ThemeTab, reduce: bool) -> Harness<'static, Studio> {
+    let mut h = themed(GREEN, reduce);
+    h.state_mut()
+        .pending
+        .push(robco_studio::menus::Command::ThemeEdit);
+    h.state_mut().theme_editor.tab = tab;
+    h.run_steps(3);
+    assert_eq!(h.state().front(), Front::Theme);
+    h
+}
+
+fn node_of<'a>(
+    h: &'a Harness<'static, Studio>,
+    label: &'a str,
+    role: Role,
+) -> Option<egui_kittest::Node<'a>> {
+    h.query_all_by_label(label)
+        .find(|n| n.accesskit_node().role() == role)
+}
+
+/// Each new part of the kit gives a screen reader its role, its name and
+/// its value: the colour sliders, the quick colours, the samples, the
+/// checkbox, a strength, and a held strength with its reason.
+#[test]
+fn the_theme_editor_parts_have_role_name_and_value() {
+    use egui::accesskit::Toggled;
+    use robco_studio::app::ThemeTab;
+    let mut h = theme_editor(ThemeTab::Colour, false);
+    // The pane is a dialog named Theme, with a tab list of two tabs.
+    node_of(&h, "Theme", Role::Dialog).unwrap();
+    node_of(&h, "Theme parts", Role::TabList).unwrap();
+    assert!(
+        node_of(&h, "Colour", Role::Tab)
+            .unwrap()
+            .accesskit_node()
+            .is_selected()
+            == Some(true)
+    );
+    // Green's base colour: hue, saturation and lightness, by their words.
+    let hue = node_of(&h, "Hue", Role::Slider).unwrap();
+    let v = hue.accesskit_node().value().unwrap().to_owned();
+    assert!(v.ends_with(" degrees, green"), "{v}");
+    let sat = node_of(&h, "Saturation", Role::Slider).unwrap();
+    assert!(sat.accesskit_node().value().unwrap().ends_with(" percent"));
+    node_of(&h, "Lightness", Role::Slider).unwrap();
+    node_of(&h, "Quick colours", Role::RadioGroup).unwrap();
+    let rose = node_of(&h, "Rose", Role::RadioButton).unwrap();
+    assert_eq!(rose.accesskit_node().value().as_deref(), Some("#ff91b0"));
+    let green = node_of(&h, "Green", Role::RadioButton).unwrap();
+    assert_eq!(green.accesskit_node().toggled(), Some(Toggled::True));
+    // The samples name their colours.
+    let p = h.state().theme.palette();
+    for (word, c) in [
+        ("Error colour", p.alarm),
+        ("Warning colour", p.warn),
+        ("String colour", p.lit),
+    ] {
+        let said = format!("{word} {}", robco_studio::palette::hex_text(c));
+        node_of(&h, &said, Role::Label).unwrap();
+    }
+    node_of(&h, "Base colour", Role::TextInput).unwrap();
+    // A quick colour picked by a click.
+    node_of(&h, "Rose", Role::RadioButton).unwrap().click();
+    h.run_steps(2);
+    assert_eq!(h.state().spec().base, robco_studio::palette::hex(0xff91b0));
+    assert_eq!(h.state().theme_editor.hex(), "#ff91b0");
+    assert_eq!(h.state().status.1, "Theme: Green, changed. Not saved.");
+    assert!(shown(&h, "Theme: Green, changed"));
+
+    // The Screen tab: a strength, the checkbox, and with high legibility
+    // on, every strength held with its reason and saved number.
+    node_of(&h, "Screen", Role::Tab).unwrap().click();
+    h.run_steps(2);
+    let bloom = node_of(&h, "Bloom", Role::Slider).unwrap();
+    assert_eq!(bloom.accesskit_node().value().as_deref(), Some("0.35"));
+    assert_eq!(
+        bloom.accesskit_node().numeric_value(),
+        Some(f64::from(0.35f32))
+    );
+    let moves = node_of(&h, "The screen moves", Role::CheckBox).unwrap();
+    assert_eq!(moves.accesskit_node().toggled(), Some(Toggled::True));
+    moves.click();
+    h.run_steps(2);
+    assert!(!h.state().spec().moves);
+    let noise = node_of(&h, "Noise", Role::Slider).unwrap();
+    assert!(noise.accesskit_node().is_disabled());
+    assert_eq!(
+        noise.accesskit_node().description().as_deref(),
+        Some("Held at 0 while the screen does not move. Saved: 0.10.")
+    );
+    h.state_mut().theme.high_legibility = true;
+    h.run_steps(2);
+    let bloom = node_of(&h, "Bloom", Role::Slider).unwrap();
+    assert!(bloom.accesskit_node().is_disabled());
+    assert_eq!(
+        bloom.accesskit_node().description().as_deref(),
+        Some("Held at 0 while high legibility is on. Saved: 0.35.")
+    );
+    assert!(shown(&h, robco_studio::theme::HELD_FLAT));
+}
+
+/// Arrow, Shift+arrow, Home and End on a strength; the hue wraps.
+#[test]
+fn the_keys_move_a_slider_of_the_theme_editor() {
+    use robco_studio::app::ThemeTab;
+    let mut h = theme_editor(ThemeTab::Screen, false);
+    node_of(&h, "Bloom", Role::Slider).unwrap().focus();
+    h.run_steps(2);
+    let bloom = |h: &Harness<'static, Studio>| f64::from(h.state().spec().strengths.bloom);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-4;
+    let start = bloom(&h);
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert!(near(bloom(&h), start + 0.01), "{}", bloom(&h));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowRight);
+    h.run_steps(2);
+    assert!(near(bloom(&h), start + 0.11), "{}", bloom(&h));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowLeft);
+    h.run_steps(2);
+    assert!(near(bloom(&h), start + 0.01), "{}", bloom(&h));
+    h.key_press(Key::PageDown);
+    h.run_steps(2);
+    assert!(near(bloom(&h), start - 0.09), "{}", bloom(&h));
+    h.key_press(Key::Home);
+    h.run_steps(2);
+    assert!(near(bloom(&h), 0.0));
+    h.key_press(Key::End);
+    h.run_steps(2);
+    assert!(near(bloom(&h), 1.0));
+    // The hue: Home is 0, and left of 0 is 359.
+    h.state_mut().theme_editor.tab = ThemeTab::Colour;
+    h.run_steps(2);
+    node_of(&h, "Hue", Role::Slider).unwrap().focus();
+    h.run_steps(2);
+    h.key_press(Key::Home);
+    h.run_steps(2);
+    let hue = |h: &Harness<'static, Studio>| {
+        node_of(h, "Hue", Role::Slider)
+            .unwrap()
+            .accesskit_node()
+            .numeric_value()
+            .unwrap()
+    };
+    assert_eq!(hue(&h), 0.0);
+    h.key_press(Key::ArrowLeft);
+    h.run_steps(2);
+    assert_eq!(hue(&h), 359.0);
+    h.key_press(Key::End);
+    h.run_steps(2);
+    assert_eq!(hue(&h), 359.0);
+}
+
+/// Type `text` into the base colour field over what it holds.
+fn type_colour(h: &mut Harness<'static, Studio>, text: &str) {
+    if let Some(n) = node_of(h, "Base colour", Role::TextInput) {
+        n.focus();
+    }
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run_steps(1);
+    h.event(Event::Text(text.to_owned()));
+    h.run_steps(2);
+}
+
+/// The base colour field: three digits act on Enter, six at once, a
+/// raised colour says so, and text that is not a colour keeps the last.
+#[test]
+fn the_base_colour_field_takes_hex_digits() {
+    use robco_studio::app::ThemeTab;
+    use robco_studio::palette::hex;
+    let mut h = theme_editor(ThemeTab::Colour, false);
+    let base = |h: &Harness<'static, Studio>| h.state().spec().base;
+    let green = base(&h);
+    type_colour(&mut h, "#f00");
+    assert_eq!(base(&h), green, "three digits wait for Enter");
+    h.key_press(Key::Enter);
+    h.run_steps(2);
+    assert_eq!(base(&h), hex(0xff0000));
+    type_colour(&mut h, "5AFF7F");
+    assert_eq!(base(&h), hex(0x5aff7f), "six digits act at once");
+    assert_eq!(h.state().theme_editor.hex(), "5AFF7F");
+    type_colour(&mut h, "#ff7a1a");
+    assert_eq!(base(&h), hex(0xff7a1a));
+    assert!(shown(&h, "Raised to #ff995f to stay readable."));
+    type_colour(&mut h, "zz");
+    assert_eq!(base(&h), hex(0xff7a1a), "the last colour stays");
+    assert!(shown(&h, "A colour is 3 or 6 hex digits, such as 5aff7f."));
+    assert!(!shown(&h, "Raised to #ff995f to stay readable."));
+}
+
+/// A held slider does not move, by key, by a screen reader or by the
+/// pointer, and its saved number stays in the theme.
+#[test]
+fn a_held_slider_does_not_move_and_keeps_its_number() {
+    use robco_studio::app::ThemeTab;
+    let mut h = theme_editor(ThemeTab::Screen, true);
+    let saved = h.state().spec().strengths;
+    let noise = node_of(&h, "Noise", Role::Slider).unwrap();
+    assert!(noise.accesskit_node().is_disabled());
+    assert_eq!(
+        noise.accesskit_node().description().as_deref(),
+        Some("Held at 0 while reduce motion is on. Saved: 0.10.")
+    );
+    let r = noise.rect();
+    noise.set_value_accesskit(0.9);
+    h.run_steps(2);
+    h.event(Event::PointerMoved(r.right_center()));
+    h.event(Event::PointerButton {
+        pos: r.right_center(),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.event(Event::PointerButton {
+        pos: r.right_center(),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    assert_eq!(h.state().spec().strengths, saved);
+    assert!(h.state().changed.is_none());
+    // The switch is held too.
+    let moves = node_of(&h, "The screen moves", Role::CheckBox).unwrap();
+    assert!(moves.accesskit_node().is_disabled());
+    moves.click();
+    h.run_steps(2);
+    assert!(h.state().spec().moves);
+    // A strength that is not held still moves.
+    node_of(&h, "Bloom", Role::Slider)
+        .unwrap()
+        .set_value_accesskit(0.9);
+    h.run_steps(2);
+    assert!((h.state().spec().strengths.bloom - 0.9).abs() < 1e-6);
+    assert_eq!(h.state().spec().strengths.noise, saved.noise);
+}
+
+/// The window behind the editor takes no click, and a click there says
+/// why. Escape closes the editor.
+#[test]
+fn a_click_behind_the_theme_editor_says_why() {
+    use robco_studio::app::ThemeTab;
+    let mut h = theme_editor(ThemeTab::Colour, false);
+    let page = h.state().page;
+    let card = h.get_by_label("Card").rect();
+    for pressed in [true, false] {
+        h.event(Event::PointerMoved(card.center()));
+        h.event(Event::PointerButton {
+            pos: card.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(1);
+    assert_eq!(h.state().page, page);
+    assert_eq!(h.state().status.1, robco_studio::app::ADJUSTING);
+    assert_eq!(h.state().front(), Front::Theme);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().front(), Front::Nothing);
 }

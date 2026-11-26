@@ -497,9 +497,9 @@ fn render_the_screen_levels() {
     h.hover_at(egui::pos2(640.0, 400.0));
     h.run_steps(2);
     // A dialog over the scrim.
-    h.state_mut().screen.adjusting = true;
+    h.state_mut().theme_editor.open = true;
     shot(&mut h, &dir, "screen-live-dialog.png").unwrap();
-    h.state_mut().screen.adjusting = false;
+    h.state_mut().theme_editor.open = false;
     h.run_steps(2);
     // View with high legibility on: its mark, Green's in Theme, and the
     // note that high legibility holds the theme.
@@ -867,4 +867,108 @@ fn a_frame_is_shaded_by_the_theme_that_drew_it() {
         let n = differ(next.as_raw(), plain(to, &status).as_raw());
         assert_eq!(n, 0, "{from:?} to {to:?}: the next frame is not {to:?}'s");
     }
+}
+
+/// The theme editor on a window at Live with a base colour the rule
+/// raises: the Colour tab, the Screen tab, and the Screen tab with reduce
+/// motion holding four sliders and the switch, as `theme-*.png`. Into
+/// `STUDIO_SHOTS`.
+#[test]
+#[ignore = "writes PNG files; needs a wgpu adapter"]
+fn render_the_theme_editor() {
+    use robco_studio::app::ThemeTab;
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = sample("theme-editor").unwrap();
+    for (look, tab, name) in [
+        (Look::Live, ThemeTab::Colour, "theme-colour.png"),
+        (Look::Live, ThemeTab::Screen, "theme-screen.png"),
+        (Look::Still, ThemeTab::Screen, "theme-screen-held.png"),
+    ] {
+        let mut h = screen_harness(Some(&d), 1.0, look);
+        open_main(&mut h);
+        h.state_mut()
+            .edit_theme(|t| t.base = robco_studio::palette::hex(0xff7a1a));
+        h.state_mut().theme_editor.open = true;
+        h.state_mut().theme_editor.tab = tab;
+        h.event(egui::Event::PointerGone);
+        shot(&mut h, &dir, name).unwrap();
+    }
+}
+
+/// The window behind the theme editor is its preview: with the editor
+/// open, every pixel outside the pane and its halo is the same as with
+/// the editor closed. Flat, so no pass moves a pixel.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn the_theme_editor_leaves_the_window_behind_as_it_was() {
+    use robco_studio::theme::size;
+    let d = sample("theme-behind").unwrap();
+    let mut h = screen_harness(Some(&d), 1.0, Look::Off);
+    h.state_mut().status.1 = "Ready.".to_owned();
+    h.event(egui::Event::PointerGone);
+    h.run_steps(4);
+    let closed = h.render().unwrap();
+    h.state_mut().theme_editor.open = true;
+    h.run_steps(4);
+    let open = h.render().unwrap();
+    let pane = h.state().theme_pane_rect().expand(size::STEP_16);
+    assert!(pane.width() > size::SIM_W);
+    let mut differ = 0;
+    for (x, y, a) in closed.enumerate_pixels() {
+        if pane.contains(egui::pos2(x as f32, y as f32)) {
+            continue;
+        }
+        if open.get_pixel(x, y) != a {
+            differ += 1;
+        }
+    }
+    assert_eq!(differ, 0, "pixels outside the pane changed");
+}
+
+/// Under Arcade's curvature a drag on a slider at the pane's right edge
+/// tracks the pointer: the pass maps the pointer and the bounds both.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_slider_at_the_pane_edge_tracks_under_arcade() {
+    use egui::accesskit::Role;
+    use robco_studio::app::ThemeTab;
+    let d = sample("theme-arcade").unwrap();
+    let mut h = screen_harness(Some(&d), 1.0, Look::Arcade);
+    h.state_mut().theme_editor.open = true;
+    h.state_mut().theme_editor.tab = ThemeTab::Screen;
+    h.run_steps(3);
+    let r = h
+        .query_all_by_label("Bloom")
+        .find(|n| n.accesskit_node().role() == Role::Slider)
+        .unwrap()
+        .rect();
+    let press = |h: &mut Harness<'static, Studio>, at: egui::Pos2, down: bool| {
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: down,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(1);
+    };
+    let bloom = |h: &Harness<'static, Studio>| h.state().spec().strengths.bloom;
+    press(&mut h, r.right_center() - egui::vec2(1.0, 0.0), true);
+    assert!(
+        bloom(&h) > 0.95,
+        "the press at the right end: {}",
+        bloom(&h)
+    );
+    h.event(egui::Event::PointerMoved(r.center()));
+    h.run_steps(1);
+    assert!((bloom(&h) - 0.5).abs() < 0.05, "the drag: {}", bloom(&h));
+    press(&mut h, r.left_center(), false);
+    assert!(
+        bloom(&h) < 0.05,
+        "the release at the left end: {}",
+        bloom(&h)
+    );
 }
