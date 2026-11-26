@@ -892,7 +892,10 @@ impl Studio {
         };
         let rect = Rect::from_center_size(
             full.center(),
-            egui::vec2(size::DIALOG_W, size::DIALOG_H + size::ROW_FACT + extra),
+            egui::vec2(
+                size::DIALOG_W,
+                size::DIALOG_H + size::ROW_FACT * 2.0 + extra,
+            ),
         );
         let line = if danger { p.alarm } else { p.bright };
         let mut answer = None;

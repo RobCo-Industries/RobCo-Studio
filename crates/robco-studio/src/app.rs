@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 mod theme_pane;
 mod themes;
-pub use theme_pane::{ThemeEditor, ThemeTab};
+pub use theme_pane::{Naming, ThemeEditor, ThemeQuestion, ThemeTab};
 pub use themes::ThemeFault;
 
 /// The window's pages, chosen in the toolbar.

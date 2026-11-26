@@ -385,7 +385,7 @@ impl Look {
 /// A window in `look`, its pass plugged in before the first frame on the
 /// same device as the harness's renderer, as eframe would give it.
 fn screen_harness(folder: Option<&Path>, ppp: f32, look: Look) -> Harness<'static, Studio> {
-    screen_harness_gpu(folder, ppp, look).0
+    screen_harness_gpu(folder, ppp, look, None).0
 }
 
 /// [`screen_harness`] and the render state its pass was made on.
@@ -393,6 +393,7 @@ fn screen_harness_gpu(
     folder: Option<&Path>,
     ppp: f32,
     look: Look,
+    settings: Option<&Path>,
 ) -> (Harness<'static, Studio>, eframe::egui_wgpu::RenderState) {
     use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
     use robco_studio::screen::Adapter;
@@ -404,6 +405,9 @@ fn screen_harness_gpu(
         Adapter::of(rs.adapter.get_info().device_type)
     };
     let mut studio = Studio::new(folder);
+    if let Some(dir) = settings {
+        studio = studio.with_settings(dir.to_path_buf());
+    }
     let link = studio.screen.link();
     let gpu = rs.clone();
     studio.choose_screen(adapter, Some(reduce), Some(theme));
@@ -683,7 +687,7 @@ fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
 fn a_second_plug_keeps_the_pass() {
     use robco_studio::theme::Screen;
     let d = sample("replug").unwrap();
-    let (mut h, rs) = screen_harness_gpu(Some(&d), 1.0, Look::Live);
+    let (mut h, rs) = screen_harness_gpu(Some(&d), 1.0, Look::Live, None);
     if h.state().theme.screen != Screen::Live {
         return; // A software adapter: no pass.
     }
@@ -970,5 +974,156 @@ fn a_slider_at_the_pane_edge_tracks_under_arcade() {
         bloom(&h) < 0.05,
         "the release at the left end: {}",
         bloom(&h)
+    );
+}
+
+/// The states of a theme, into `STUDIO_SHOTS`: the editor with the Save
+/// as name row open, the Delete question, View, Theme with a person's
+/// theme and a changed one, and the window in each of the eight quick
+/// colours, as `theme-*.png` and `quick-*.png`. The settings folder is a
+/// temporary one.
+#[test]
+#[ignore = "writes PNG files; needs a wgpu adapter"]
+fn render_the_theme_states() {
+    use egui::accesskit::Role;
+    let Some(dir) = std::env::var_os("STUDIO_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = sample("theme-states").unwrap();
+    let settings = Sample(std::env::temp_dir().join(format!(
+        "robco-studio-shots-settings-{}",
+        std::process::id()
+    )));
+    let themes = settings.join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    std::fs::write(
+        themes.join("ember.toml"),
+        "version = 1\nname = \"Ember\"\nbase = \"#ff7a1a\"\n[screen]\nbloom = 0.45\nscanlines = 0.3\n",
+    )
+    .unwrap();
+    std::fs::write(themes.join("notes.toml"), "version = 1\n").unwrap();
+    let (mut h, _) = screen_harness_gpu(Some(&d), 1.0, Look::Live, Some(&settings));
+    open_main(&mut h);
+    h.state_mut().edit_theme(|t| t.strengths.noise = 0.2);
+    h.state_mut().theme_editor.open = true;
+    h.run_steps(2);
+    h.state_mut().start_naming(false);
+    h.event(egui::Event::PointerGone);
+    shot(&mut h, &dir, "theme-save-as.png").unwrap();
+    h.state_mut().theme_editor.naming = None;
+    let ember = h.state().theme_index("Ember").unwrap();
+    h.state_mut().pick_theme(ember);
+    h.state_mut().theme_editor.question = Some(robco_studio::app::ThemeQuestion::Delete);
+    shot(&mut h, &dir, "theme-delete.png").unwrap();
+    h.state_mut().theme_editor.question = None;
+    h.state_mut().theme_editor.open = false;
+    h.state_mut().edit_theme(|t| t.strengths.noise = 0.2);
+    h.run_steps(2);
+    h.query_all_by_label("View")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    let sub = h
+        .query_all_by_label("Theme")
+        .find(|n| n.accesskit_node().role() == Role::MenuItem)
+        .unwrap()
+        .rect();
+    h.hover_at(sub.center());
+    h.run_steps(3);
+    shot(&mut h, &dir, "theme-menu-own.png").unwrap();
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.event(egui::Event::PointerGone);
+    for (name, c) in robco_studio::palette::QUICK {
+        h.state_mut().edit_theme(|t| t.base = c);
+        let file = format!("quick-{}.png", name.to_lowercase());
+        shot(&mut h, &dir, &file).unwrap();
+    }
+}
+
+/// How bright the glow is just outside a `bright` glyph at Bloom 1 on
+/// Green, as a share of `bright`. It prints the number and checks nothing
+/// against a limit. It reads the Files pane's title, FILES. Glyph pixels
+/// are those within 8 of `bright` on every channel in a frame with the
+/// pass at zero. The halo is each pixel 1 to 3 pixels from a glyph pixel
+/// that is `pane` in that frame. The share is
+/// the halo pixel's largest channel at Bloom 1 over `bright`'s, and the
+/// same less the frame at zero.
+#[test]
+#[ignore = "needs a wgpu adapter; prints a measurement"]
+fn measure_the_bloom_halo() {
+    use robco_studio::theme::Strengths;
+    let d = sample("bloom").unwrap();
+    let mut h = screen_harness(Some(&d), 1.0, Look::Still);
+    h.event(egui::Event::PointerGone);
+    let bright = h.state().theme.palette().bright;
+    let frame = |h: &mut Harness<'static, Studio>, s: Strengths| {
+        h.state_mut().edit_theme(|t| {
+            t.moves = false;
+            t.strengths = s;
+        });
+        h.run_steps(6);
+        h.render().unwrap()
+    };
+    let zero = frame(
+        &mut h,
+        Strengths {
+            persistence: 0.01,
+            ..Strengths::NONE
+        },
+    );
+    let one = frame(
+        &mut h,
+        Strengths {
+            bloom: 1.0,
+            ..Strengths::NONE
+        },
+    );
+    let near = |a: &image::Rgba<u8>, c: egui::Color32, by: i32| {
+        (0..3).all(|k| (i32::from(a[k]) - i32::from([c.r(), c.g(), c.b()][k])).abs() <= by)
+    };
+    // The Files pane's title row: FILES, a caps label in `bright` on
+    // `pane`, away from any filled control.
+    let files = h
+        .state()
+        .place_rect(robco_studio::app::Place::Files)
+        .unwrap();
+    let ground = h.state().theme.palette().pane;
+    let (x0, y0) = (files.left() as u32, files.top() as u32);
+    let (w, ht) = (files.right() as u32, (files.top() + 26.0) as u32);
+    let top = |c: &[u8]| f32::from(c[0].max(c[1]).max(c[2]));
+    let b = f32::from(bright.r().max(bright.g()).max(bright.b()));
+    let (mut most, mut most_less, mut glyphs) = (0.0f32, 0.0f32, 0);
+    for y in y0..ht {
+        for x in x0..w {
+            if !near(zero.get_pixel(x, y), bright, 8) {
+                continue;
+            }
+            glyphs += 1;
+            for dy in -3i32..=3 {
+                for dx in -3i32..=3 {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= ht as i32 {
+                        continue;
+                    }
+                    let (nx, ny) = (nx as u32, ny as u32);
+                    if !near(zero.get_pixel(nx, ny), ground, 4) {
+                        continue;
+                    }
+                    let lit = top(&one.get_pixel(nx, ny).0);
+                    let base = top(&zero.get_pixel(nx, ny).0);
+                    most = most.max(lit / b);
+                    most_less = most_less.max((lit - base) / b);
+                }
+            }
+        }
+    }
+    assert!(glyphs > 0, "no bright glyph found");
+    eprintln!(
+        "bloom halo: {glyphs} glyph pixels, brightest halo pixel {most:.3} of bright, {most_less:.3} above the ground"
     );
 }
