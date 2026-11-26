@@ -1,42 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 64" width="470" height="64" role="img" aria-labelledby="wm-t" style="color:#5cff8f">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 361 63" width="361" height="63" role="img" aria-labelledby="wm-t" style="color:#5aff7f">
 <!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
   <title id="wm-t">RobCo Studio</title>
-  <!-- Original lettering for RobCo Studio. Built from lines and arcs only, as if one beam traced it.
-       No font is used. Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25.
-       Layers: "halo" is the second translucent stroke that stands in for glow. Drop it for the plain version. -->
-  <rect class="asset-ground" width="470" height="64" fill="#07110b"/>
+  <!-- Original lettering for RobCo Studio. Every letter is a centre line of straight runs and quarter arcs that takes
+       one heavy stroke with flat ends. The bowls are rounded rectangles. The whole word leans 13 degrees.
+       No font is used and no letter is traced from another mark. The top right corner of every bowl is cut at 45 degrees, the clipped corner of the tape and the card.
+       "RobCo" is 10.6 units heavy and 45 high. "Studio" is 8.6 heavy and 41 high.
+       Groups: "halo" is the baked glow, a wider stroke under a blur. "shade" is the same letters moved down and
+       right at 42 percent, which gives the word its depth. "letters" is the word itself.
+       Drop "halo" with effects off. The letters stand on y 54. The file keeps 9 units of room around them for the glow.
+       Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25. -->
+  <rect class="asset-ground" width="361" height="63" fill="#091d10"/>
   <defs>
-    <g id="wm-mark" fill="none" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M6 8H38L52 22V56H6Z"/>
-      <path d="M17 24l10 8-10 8M31 42h11"/>
-    </g>
-    <g id="wm-robco" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(79 0) skewX(-10)">
-      <path d="M0 50V10H12A10.5 10.5 0 0 1 12 31H0M11 31L25 50"/>
-      <circle cx="49" cy="37" r="13"/>
-      <path d="M72 10V50"/><circle cx="85" cy="37" r="13"/>
-      <path d="M142.1 15.9A20 20 0 1 0 142.1 44.1"/>
-      <circle cx="165" cy="37" r="13"/>
-    </g>
-    <g id="wm-studio" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(79 0) skewX(-10)">
-      <path d="M223.7 15A10 10 0 1 0 215 30A10 10 0 1 1 206.3 45"/>
-      <path d="M241 13V42A8 8 0 0 0 249 50H251M234 24H250"/>
-      <path d="M260 24V39A11 11 0 0 0 282 39M282 24V50"/>
-      <circle cx="305" cy="37" r="13"/><path d="M318 10V50"/>
-      <path d="M330 24V50M330 13V13.01"/>
-      <circle cx="353" cy="37" r="13"/>
-    </g>
+    <filter id="wm-blur" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="2.6"/></filter>
+    <clipPath id="wm-robco-band"><rect x="-30" y="-45" width="228.92" height="45"/></clipPath>
+    <g id="wm-robco" fill="none" stroke-linecap="butt" stroke-linejoin="miter" transform="translate(12 54) skewX(-13)"><g clip-path="url(#wm-robco-band)"><path transform="translate(0 0)" d="M5.3 -45V0"/><path transform="translate(0 0)" d="M5.3 -39.7H19.3L26.3 -32.7V-25.95A7.4 7.4 0 0 1 18.9 -18.55H5.3"/><path transform="translate(0 0)" d="M14.12 -19.55L28.42 10.6"/><path transform="translate(38.72 0)" d="M10.3 -28.2H18.3L25.3 -21.2V-10.3A5 5 0 0 1 20.3 -5.3H10.3A5 5 0 0 1 5.3 -10.3V-23.2A5 5 0 0 1 10.3 -28.2Z"/><path transform="translate(73.52 0)" d="M5.3 -45V0"/><path transform="translate(73.52 0)" d="M10.3 -28.2H18.3L25.3 -21.2V-10.3A5 5 0 0 1 20.3 -5.3H10.3A5 5 0 0 1 5.3 -10.3V-23.2A5 5 0 0 1 10.3 -28.2Z"/><path transform="translate(108.32 0)" d="M25.8 -39.7H17.45A12.15 12.15 0 0 0 5.3 -27.55V-17.45A12.15 12.15 0 0 0 17.45 -5.3H25.8"/><path transform="translate(138.32 0)" d="M10.3 -28.2H18.3L25.3 -21.2V-10.3A5 5 0 0 1 20.3 -5.3H10.3A5 5 0 0 1 5.3 -10.3V-23.2A5 5 0 0 1 10.3 -28.2Z"/></g></g>
+    <clipPath id="wm-studio-band"><rect x="-30" y="-41" width="200.81" height="41"/></clipPath>
+    <g id="wm-studio" fill="none" stroke-linecap="butt" stroke-linejoin="miter" transform="translate(194.92 54) skewX(-13)"><g clip-path="url(#wm-studio-band)"><path transform="translate(0 0)" d="M19.08 -36.7H12.4A8.1 8.1 0 0 0 12.4 -20.5H12.7A8.1 8.1 0 0 1 12.7 -4.3H1.72"/><path transform="translate(28.8 0)" d="M7.31 -36.9V-8.44A4.14 4.14 0 0 0 11.45 -4.3H15.31"/><path transform="translate(28.8 0)" d="M0 -26.2H15.31"/><path transform="translate(47.81 0)" d="M4.3 -30.5V-8.9A4.6 4.6 0 0 0 8.9 -4.3H15.2A4.6 4.6 0 0 0 19.8 -8.9"/><path transform="translate(47.81 0)" d="M19.8 -30.5V0"/><path transform="translate(75.61 0)" d="M8.9 -26.2H14.7L20.3 -20.6V-8.9A4.6 4.6 0 0 1 15.7 -4.3H8.9A4.6 4.6 0 0 1 4.3 -8.9V-21.6A4.6 4.6 0 0 1 8.9 -26.2Z"/><path transform="translate(75.61 0)" d="M20.3 -41V0"/><path transform="translate(103.91 0)" d="M4.3 -30.5V0"/><path transform="translate(103.91 0)" d="M4.3 -41V-33.09"/><path transform="translate(116.21 0)" d="M8.9 -26.2H14.7L20.3 -20.6V-8.9A4.6 4.6 0 0 1 15.7 -4.3H8.9A4.6 4.6 0 0 1 4.3 -8.9V-21.6A4.6 4.6 0 0 1 8.9 -26.2Z"/></g></g>
   </defs>
-  <g class="halo" stroke="currentColor" opacity=".16">
-    <use href="#wm-mark" stroke-width="9"/>
-    <use href="#wm-robco" stroke-width="14"/>
-    <use href="#wm-studio" stroke-width="9"/>
-  </g>
-  <g stroke="currentColor">
-    <use href="#wm-mark" stroke-width="3"/>
-    <use href="#wm-robco" stroke-width="6.5"/>
-    <use href="#wm-studio" stroke-width="3.25"/>
-  </g>
-  <rect x="377" y="24" width="12" height="26" fill="currentColor" transform="translate(79 0) skewX(-10)"/>
+  <g class="halo" stroke="currentColor" opacity=".32" filter="url(#wm-blur)"><use href="#wm-robco" stroke-width="14"/><use href="#wm-studio" stroke-width="12"/></g>
+  <g class="shade" stroke="currentColor" opacity=".42" transform="translate(3 3)"><use href="#wm-robco" stroke-width="10.6"/><use href="#wm-studio" stroke-width="8.6"/></g>
+  <g class="letters" stroke="currentColor"><use href="#wm-robco" stroke-width="10.6"/><use href="#wm-studio" stroke-width="8.6"/></g>
 </svg>
