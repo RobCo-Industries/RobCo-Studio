@@ -572,6 +572,10 @@ fn build(
         PlanError::Manifest(e) => manifest_failure(&e),
     })?;
 
+    // A source the host does not let the tool read is `io: read`, not a
+    // compile error. Headers are the compiler's business.
+    open_sources(root, &bp.sources)?;
+
     // 2. The two programs.
     for c in &bp.commands {
         if !Path::new(&c.program).is_file() {
@@ -643,6 +647,16 @@ fn build(
     // 7. Write the tape. The ELF is where the link wrote it.
     write_tape(root, &m.project.name, &sealed)?;
     Ok(sealed)
+}
+
+/// Opens each source of the list for reading, and gives `io: read` with
+/// its path for the first the host refuses.
+fn open_sources(root: &Path, sources: &[String]) -> Result<(), Failure> {
+    for src in sources {
+        let path = root.join(src);
+        fs::File::open(&path).map_err(|e| read_failure(&path, &e))?;
+    }
+    Ok(())
 }
 
 fn link_failure(path: &Path) -> Failure {
@@ -896,6 +910,26 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_source_that_cannot_be_read_is_io_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("unreadable-source");
+        let main = d.0.join("src/main.c");
+        fs::set_permissions(&main, fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads any file: the test then has nothing to check.
+        let readable = fs::File::open(&main).is_ok();
+        let got = open_sources(&d.0, &["src/main.c".to_owned()]);
+        fs::set_permissions(&main, fs::Permissions::from_mode(0o644)).unwrap();
+        if readable {
+            return;
+        }
+        let e = got.err().unwrap();
+        assert_eq!(e.code, "io: read");
+        assert!(e.detail.contains("src/main.c"), "{}", e.detail);
+        assert!(open_sources(&d.0, &["src/main.c".to_owned()]).is_ok());
     }
 
     #[cfg(unix)]
