@@ -162,6 +162,10 @@ Rules, each with a test:
 - A control that cannot act is marked disabled in the accessibility tree and says why.
 - F6 moves through toolbar, rail, the page's panes left to right and top to bottom, then the status bar.
 
+Known limits:
+
+- Save writes a temporary file and renames it over the file. The old file stays whole if a save fails, and the permission bits are kept. The saved file is a new file, so it does not keep extended attributes, access control lists, an owner or group that differ from the person saving, or hard links to the old file.
+
 `tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI.
 
 A settings file does not exist yet. It would hold the scheme, high legibility, the effects level, the pane sizes and which panes are shown, the text size, and the recent projects.
