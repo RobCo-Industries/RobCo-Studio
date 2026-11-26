@@ -770,8 +770,8 @@ pub struct Art {
     /// The display scale they were made for.
     pub pixels_per_point: f32,
     /// They were made with the still glow: the baked halo groups and the
-    /// scanline texture.
-    pub halos: bool,
+    /// scanline texture. Set once, when the art is made.
+    halos: bool,
     /// The Spleen atlas.
     pub label: LabelFont,
     marks: BTreeMap<Mark, Placed>,
@@ -822,6 +822,23 @@ impl Art {
             icons,
             scanlines,
         }
+    }
+
+    /// The art was made with the still glow: the drawings hold their baked
+    /// halo groups and the scanline texture exists.
+    pub fn halos(&self) -> bool {
+        self.halos
+    }
+
+    /// The scanline texture was made.
+    pub fn has_scanlines(&self) -> bool {
+        self.scanlines.is_some()
+    }
+
+    /// The art was made for this display scale and for the glow state the
+    /// theme's level needs now. When false, make it again.
+    pub fn fits(&self, pixels_per_point: f32, theme: &theme::Theme) -> bool {
+        self.pixels_per_point == pixels_per_point && self.halos == theme.still_glow()
     }
 
     /// Paint an icon in a 16 px square at `rect`'s centre.

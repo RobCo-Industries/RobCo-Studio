@@ -285,7 +285,7 @@ fn paint_sheet(ui: &mut egui::Ui, arts: &mut Option<[Art; 2]>) {
             );
         }
         y += 3.0 * 26.0 + 10.0;
-        let halo = art.halos.then_some(effect::LABEL_HALO_SOFT);
+        let halo = art.halos().then_some(effect::LABEL_HALO_SOFT);
         art.label.paint(
             &painter,
             egui::pos2(x, y),

@@ -173,7 +173,7 @@ pub struct Studio {
     pub pending: Vec<Command>,
     /// The screen pass and its settings beyond the level.
     pub screen: screen::Settings,
-    art: Option<(Art, f32, bool)>,
+    art: Option<Art>,
     styled: Option<Theme>,
     fonts: bool,
     focus_request: Option<Place>,
@@ -697,9 +697,11 @@ impl Studio {
             self.styled = Some(self.theme);
         }
         let ppp = ctx.pixels_per_point();
-        let glow = self.theme.still_glow();
-        if !matches!(&self.art, Some((_, p, g)) if *p == ppp && *g == glow) {
-            self.art = Some((Art::new(ctx, &self.theme), ppp, glow));
+        // The art holds the display scale and glow state it was made
+        // with, so a level changed in the middle of a frame is seen here,
+        // at the start of the next one, whatever changed it.
+        if !self.art.as_ref().is_some_and(|a| a.fits(ppp, &self.theme)) {
+            self.art = Some(Art::new(ctx, &self.theme));
         }
         let title = match &self.project {
             Some(p) => format!("{} - RobCo Studio", p.name()),
@@ -736,7 +738,7 @@ impl Studio {
         if choosing {
             ui.disable();
         }
-        let Some((art, _, _)) = self.art.take() else {
+        let Some(art) = self.art.take() else {
             return;
         };
         let theme = self.theme;
@@ -771,7 +773,7 @@ impl Studio {
         self.dialog(&kit, &ctx, full);
         self.adjust(&kit, &ctx, full);
         self.finish_switch();
-        if self.theme.still_glow() {
+        if art.halos() {
             art.scanlines(
                 &ctx.layer_painter(egui::LayerId::new(
                     egui::Order::Debug,
@@ -790,7 +792,7 @@ impl Studio {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.focus_request = None;
-        self.art = Some((art, ctx.pixels_per_point(), self.theme.still_glow()));
+        self.art = Some(art);
         self.screen.end_frame(&ctx, self.theme.screen());
     }
 
@@ -2281,6 +2283,29 @@ mod tests {
         let w = crate::art::LabelFont::width(&longest, 1.0, 1.0, 0.0);
         let room = size::TAPE_LABEL[0] - 2.0 * size::TAPE_LABEL_MARGIN;
         assert!(w <= room, "{longest} is {w} points, the label has {room}");
+    }
+
+    /// A level changed by a menu command in the middle of a frame, after
+    /// the art was checked, still ends with art made for the new level:
+    /// Off to Soft gains the baked halos, Soft to Off loses them.
+    #[test]
+    fn the_art_follows_a_level_changed_mid_frame() {
+        let mut h = egui_kittest::Harness::builder()
+            .build_ui_state(|ui, s: &mut Studio| s.ui(ui), Studio::new(None));
+        for (from, to) in [(Screen::Off, Screen::Soft), (Screen::Soft, Screen::Off)] {
+            h.state_mut().set_screen(from);
+            h.run_steps(2);
+            let made = |h: &egui_kittest::Harness<'_, Studio>| {
+                h.state().art.as_ref().map(|a| (a.halos(), a.has_scanlines()))
+            };
+            let soft = from == Screen::Soft;
+            assert_eq!(made(&h), Some((soft, soft)));
+            h.state_mut().pending.push(Command::Screen(to));
+            h.run_steps(3);
+            assert_eq!(h.state().theme.screen(), to);
+            let soft = to == Screen::Soft;
+            assert_eq!(made(&h), Some((soft, soft)), "{from:?} to {to:?}");
+        }
     }
 
     fn press(s: &mut Studio, ctx: &egui::Context, key: Key, modifiers: Modifiers) {
