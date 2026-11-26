@@ -324,7 +324,7 @@ fn plan_sources(root: &Path, patterns: &[String]) -> Result<(Vec<String>, Vec<St
         };
         let mut matched = Vec::new();
         if let Some(dir) = dir.filter(|d| d.is_dir()) {
-            list_dir(&dir, rel, std::slice::from_ref(pattern), &mut matched)?;
+            list_dir(root, &dir, rel, std::slice::from_ref(pattern), &mut matched)?;
         }
         matched.sort();
         for src in &matched {
@@ -351,8 +351,11 @@ fn plan_sources(root: &Path, patterns: &[String]) -> Result<(Vec<String>, Vec<St
 /// regular file included, that a source pattern matches. A dangling link
 /// is no file. Names are matched first, by the manifest's own matcher, and
 /// only a matched entry is looked at, so an entry no pattern matches never
-/// fails the build.
+/// fails the build. A matched entry goes through [`resolve`] before its
+/// type is read, so one rule decides for links out, loops, dangling links
+/// and host refusals.
 fn list_dir(
+    root: &Path,
     dir: &Path,
     rel: &str,
     patterns: &[String],
@@ -376,7 +379,9 @@ fn list_dir(
         {
             continue;
         }
-        let path = entry.path();
+        let Some(path) = resolve(root, "build.sources", &project_path)? else {
+            continue;
+        };
         let file = match fs::metadata(&path) {
             Ok(md) => md.is_file(),
             Err(e) if e.kind() == ErrorKind::NotFound => false,

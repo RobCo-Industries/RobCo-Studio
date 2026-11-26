@@ -877,5 +877,16 @@ fn a_stale_object_is_gone_before_the_compile_runs() {
     let o = f.robco(&["build", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     assert!(!seen.exists(), "a compile saw the stale object");
-    assert_eq!(fs::read(f.proj().join("build/obj/src/main.c.o")).unwrap(), b"");
+    assert_eq!(
+        fs::read(f.proj().join("build/obj/src/main.c.o")).unwrap(),
+        b""
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_matched_source_that_is_a_link_loop_is_manifest_path() {
+    let f = Fixture::new("src-loop");
+    link(&f, "loop.c", "proj/src/loop.c");
+    fails_with(&f, "manifest: path");
 }
