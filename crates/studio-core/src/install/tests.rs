@@ -4,8 +4,8 @@
 //! its own folder. No test touches the network.
 
 use std::fs;
-use std::io::{Cursor, Write};
-use std::path::PathBuf;
+use std::io::{self, Cursor, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 
@@ -758,4 +758,137 @@ fn install_refuses_a_wrong_tool_hash() {
         Pin::Lock,
     );
     assert_eq!(r.unwrap_err().error_code(), "lock: hash");
+}
+
+/// A folder of the user's beside the cache, with a `bin/` in it.
+fn side_folder(d: &Dir) -> PathBuf {
+    let side = d.0.join("side");
+    fs::create_dir_all(side.join("bin")).unwrap();
+    fs::write(side.join("bin/own"), b"mine").unwrap();
+    side
+}
+
+/// The side folder is where it was, as it was.
+fn side_untouched(side: &Path) {
+    let mut names: Vec<_> = fs::read_dir(side)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["bin"]);
+    let bin: Vec<_> = fs::read_dir(side.join("bin")).unwrap().collect();
+    assert_eq!(bin.len(), 1);
+    assert_eq!(fs::read(side.join("bin/own")).unwrap(), b"mine");
+}
+
+#[test]
+fn install_refuses_a_tool_root_outside_the_extraction_folder() {
+    let d = Dir::new("tool-root-out");
+    let side = side_folder(&d);
+    // The extraction folder is `<cache>/tmp/<one>/x`: four `..` reach `d`.
+    let bytes = tool_zip(&[("bin/x", b"x")]);
+    let msg = tool_refused(
+        &d,
+        install_tool(&d, &bytes, "../../../../side"),
+        "tool: archive",
+    );
+    assert!(msg.contains("path rules"), "{msg}");
+    side_untouched(&side);
+}
+
+#[test]
+fn install_refuses_a_tool_root_outside_the_path_rules() {
+    // Each one stays inside once resolved; the form alone refuses it.
+    let bytes = tool_zip(&[("pkg/bin/x", b"x")]);
+    for root in ["pkg/../pkg", "./pkg", "pkg/", "pkg\\.", "/pkg"] {
+        let d = Dir::new("tool-root-form");
+        let msg = tool_refused(&d, install_tool(&d, &bytes, root), "tool: archive");
+        assert!(msg.contains("path rules"), "{root}: {msg}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn install_refuses_a_tool_root_that_resolves_outside() {
+    let d = Dir::new("tool-root-link");
+    let side = side_folder(&d);
+    // `l` leads from the extraction folder to `d`; `l/side` is the user's.
+    let bytes = tool_tgz(&[T::Dir("bin/"), T::Link("l", "../../../..")]);
+    let msg = tool_refused(&d, install_tool(&d, &bytes, "l/side"), "tool: archive");
+    assert!(msg.contains("outside"), "{msg}");
+    side_untouched(&side);
+}
+
+#[cfg(unix)]
+#[test]
+fn install_refuses_a_link_out_of_the_installed_folder() {
+    let d = Dir::new("tool-link-sib");
+    let bytes = tool_tgz(&[
+        T::Dir("pkg/bin/"),
+        T::Dir("shared/"),
+        T::File("shared/gcc", b"g"),
+        T::Link("pkg/bin/gcc", "../../shared/gcc"),
+    ]);
+    let msg = tool_refused(&d, install_tool(&d, &bytes, "pkg"), "tool: archive");
+    assert!(msg.contains("installed folder"), "{msg}");
+    // A link that stays inside `pkg` is good.
+    let bytes = tool_tgz(&[
+        T::Dir("pkg/bin/"),
+        T::File("pkg/lib", b"g"),
+        T::Link("pkg/bin/gcc", "../lib"),
+    ]);
+    assert_eq!(install_tool(&d, &bytes, "pkg"), Ok(State::Installed));
+    assert_eq!(fs::read(tool_path_of(&d).join("bin/gcc")).unwrap(), b"g");
+}
+
+struct Failing;
+
+impl io::Read for Failing {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::other("broken stream"))
+    }
+}
+
+impl io::Write for Failing {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::Error::from(io::ErrorKind::StorageFull))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_tool_entry_tells_a_read_failure_from_a_write_failure() {
+    let path = Path::new("bin/x");
+    let mut sink = Vec::new();
+    let e = copy_entry("bin/x", path, &mut Failing, &mut sink).unwrap_err();
+    assert_eq!(e.error_code(), "tool: archive");
+    let e = copy_entry("bin/x", path, &mut &b"data"[..], &mut Failing).unwrap_err();
+    assert_eq!(e.error_code(), "io: write");
+}
+
+#[test]
+fn install_refuses_names_that_are_not_cache_folder_names() {
+    let d = Dir::new("tool-names");
+    let bytes = tool_zip(&[("bin/x", b"x")]);
+    d.put("gcc.archive", &bytes);
+    let a = archive_of("gcc.archive", &bytes, "");
+    let cases = [
+        ("gcc", "..", "linux-x64"),
+        ("gcc", ".", "linux-x64"),
+        ("gcc", "1/../../..", "linux-x64"),
+        ("../gcc", "1", "linux-x64"),
+        ("gcc", "1", ".."),
+    ];
+    for (name, version, host) in cases {
+        let r = tool(&d.cache(), name, version, host, &a, &d.local(), Pin::Index);
+        assert_eq!(r.unwrap_err().error_code(), "tool: archive", "{version}");
+        assert!(d.temp_is_empty());
+    }
+    assert_eq!(fs::read_dir(d.cache()).unwrap().count(), 0);
+    let mut e = entry_for("pkg.zip", b"x");
+    e.name = "../x".to_owned();
+    let r = package(&d.cache(), &e, &d.local(), Pin::Index);
+    assert_eq!(r.unwrap_err().error_code(), "package: archive");
 }

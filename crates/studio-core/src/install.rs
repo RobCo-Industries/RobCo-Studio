@@ -38,8 +38,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
 
 use crate::codes::ErrorCode;
-use crate::resolve::index::{Archive, IndexPackage, is_archive_path};
+use crate::resolve::index::{Archive, IndexPackage, is_archive_path, is_root};
 use crate::resolve::sdk_json;
+use crate::resolve::{is_host_name, is_package_name, is_tool_version};
 
 /// The file of "What the cache records", right under an installed folder.
 pub const RECORD: &str = ".robco-archive";
@@ -302,6 +303,14 @@ pub fn package(
     pin: Pin,
 ) -> Result<State, Error> {
     let version = entry.version.to_string();
+    // The cache folder names come from the entry: each must be one plain
+    // folder name. A version prints as digits, letters, `-`, `+` and `.`.
+    if !is_package_name(&entry.name) || !is_folder_name(&version) {
+        return Err(Error::PackageArchive(format!(
+            "package {} {version}: not a cache folder name",
+            entry.name
+        )));
+    }
     let item = Item {
         kind: Kind::Package,
         label: format!("package {} {version}", entry.name),
@@ -331,6 +340,13 @@ pub fn tool(
     transport: &dyn Transport,
     pin: Pin,
 ) -> Result<State, Error> {
+    // A tool version may hold `/`, and `.` or `..` is a version too: each
+    // name must be one plain folder name before it names a cache folder.
+    if !is_host_name(name) || !is_host_name(host) || !is_folder_name(version) {
+        return Err(Error::ToolArchive(format!(
+            "tool {name} {version} {host}: not a cache folder name"
+        )));
+    }
     let item = Item {
         kind: Kind::Tool,
         label: format!("tool {name} {version} {host}"),
@@ -540,6 +556,12 @@ struct PackageFile {
     name: String,
 }
 
+/// One plain folder name: a tool version by its form, without `/`, and not
+/// `.` or `..`.
+fn is_folder_name(s: &str) -> bool {
+    is_tool_version(s) && !s.contains('/') && s != "." && s != ".."
+}
+
 /// Checks a package archive by "The archive", reads `sdk.json` and checks
 /// it, then extracts every listed file into `out` and checks its size and
 /// hash. Nothing is extracted before every entry and `sdk.json` passed.
@@ -693,10 +715,10 @@ fn extract_package(archive: &Path, out: &Path, entry: &IndexPackage) -> Result<(
     Ok(())
 }
 
-/// Joins a checked `/` path to a folder.
+/// Joins a checked `/` path to a folder. An empty path is the folder.
 fn join(base: &Path, rel: &str) -> PathBuf {
     let mut p = base.to_path_buf();
-    for c in rel.split('/') {
+    for c in rel.split('/').filter(|c| !c.is_empty()) {
         p.push(c);
     }
     p
@@ -726,18 +748,9 @@ fn extract_tool(archive: &Path, out: &Path, root: &str) -> Result<PathBuf, Error
             "neither a zip archive nor a gzip tar archive".to_owned()
         ));
     }
-    check_links(out, out)?;
-
-    let folder = if root.is_empty() {
-        out.to_path_buf()
-    } else {
-        join(out, root)
-    };
-    let is_dir = |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
-    if !is_dir(&folder) {
-        return Err(bad(format!("root {root:?} names no folder of the archive")));
-    }
-    if !is_dir(&folder.join("bin")) {
+    let folder = root_folder(out, root)?;
+    check_links(&folder)?;
+    if !fs::symlink_metadata(folder.join("bin")).is_ok_and(|m| m.is_dir()) {
         return Err(bad(format!("root {root:?} holds no bin/")));
     }
     let entries = fs::read_dir(&folder).map_err(|e| read_err(&folder, &e))?;
@@ -748,6 +761,29 @@ fn extract_tool(archive: &Path, out: &Path, root: &str) -> Result<PathBuf, Error
         }
     }
     Ok(folder)
+}
+
+/// The folder that `root` names inside `out`, resolved by the system.
+///
+/// The spec does not state the form of `root` yet. Until it does, a `root`
+/// is empty or a path by the rules of "The archive", the rule the index
+/// reader applies too. It is checked again here, on the value about to be
+/// used, and the folder it names must then resolve to a folder inside
+/// `out`. Any doubt is a refusal.
+fn root_folder(out: &Path, root: &str) -> Result<PathBuf, Error> {
+    let bad = |d: String| Error::ToolArchive(d);
+    if !is_root(root) {
+        return Err(bad(format!("root {root:?} breaks the path rules")));
+    }
+    let named = join(out, root);
+    if !fs::symlink_metadata(&named).is_ok_and(|m| m.is_dir()) {
+        return Err(bad(format!("root {root:?} names no folder of the archive")));
+    }
+    let real_out = fs::canonicalize(out).map_err(|e| read_err(out, &e))?;
+    let inside = fs::canonicalize(&named)
+        .ok()
+        .filter(|r| r.starts_with(&real_out));
+    inside.ok_or_else(|| bad(format!("root {root:?} leads outside the extraction folder")))
 }
 
 /// The path of a tool archive entry under `out`. Refuses an absolute name,
@@ -842,8 +878,7 @@ fn put(out: &Path, name: &str, entry: Entry, data: &mut dyn Read) -> Result<(), 
                 .create_new(true)
                 .open(&path)
                 .map_err(|e| taken(&e))?;
-            io::copy(data, &mut f)
-                .map_err(|e| Error::ToolArchive(format!("{name}: the data cannot be read: {e}")))?;
+            copy_entry(name, &path, data, &mut f)?;
             set_mode(&path, mode)
         }
         Entry::Link(target) => {
@@ -858,6 +893,30 @@ fn put(out: &Path, name: &str, entry: Entry, data: &mut dyn Read) -> Result<(), 
             }
             symlink(&target, &path).map_err(|e| taken(&e))
         }
+    }
+}
+
+/// Copies the data of one entry. A failure to read is the archive's,
+/// `tool: archive`; a failure to write is the destination's, `io: write`.
+fn copy_entry(
+    name: &str,
+    path: &Path,
+    data: &mut dyn Read,
+    to: &mut dyn Write,
+) -> Result<(), Error> {
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = match data.read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => {
+                return Err(Error::ToolArchive(format!(
+                    "{name}: the data cannot be read: {e}"
+                )));
+            }
+        };
+        to.write_all(&buf[..n]).map_err(|e| write_err(path, &e))?;
     }
 }
 
@@ -897,12 +956,13 @@ fn symlink(_target: &str, _path: &Path) -> io::Result<()> {
     Err(io::Error::from(ErrorKind::Unsupported))
 }
 
-/// Checks, once everything is extracted, that each link leads to something
-/// inside `out`. The system resolves the link, so a chain of links counts.
-/// A link that leads nowhere could not be told, and is refused.
-fn check_links(out: &Path, dir: &Path) -> Result<(), Error> {
-    let real_out = fs::canonicalize(out).map_err(|e| read_err(out, &e))?;
-    let mut stack = vec![dir.to_path_buf()];
+/// Checks, once everything is extracted, that each link inside `folder`,
+/// the real path of the folder that is installed, leads to something that
+/// exists inside it. The system resolves the link, so a chain of links
+/// counts. A link that leads nowhere, or out of `folder`, is refused: only
+/// `folder` is kept.
+fn check_links(folder: &Path) -> Result<(), Error> {
+    let mut stack = vec![folder.to_path_buf()];
     while let Some(d) = stack.pop() {
         let entries = fs::read_dir(&d).map_err(|e| read_err(&d, &e))?;
         for e in entries {
@@ -910,11 +970,11 @@ fn check_links(out: &Path, dir: &Path) -> Result<(), Error> {
             let p = e.path();
             let m = fs::symlink_metadata(&p).map_err(|e| read_err(&p, &e))?;
             if m.file_type().is_symlink() {
-                let inside = fs::canonicalize(&p).is_ok_and(|r| r.starts_with(&real_out));
+                let inside = fs::canonicalize(&p).is_ok_and(|r| r.starts_with(folder));
                 if !inside {
-                    let rel = p.strip_prefix(out).unwrap_or(&p);
+                    let rel = p.strip_prefix(folder).unwrap_or(&p);
                     return Err(Error::ToolArchive(format!(
-                        "{}: the link leads outside the extraction folder, or to nothing",
+                        "{}: the link leads outside the installed folder, or to nothing",
                         rel.display()
                     )));
                 }
