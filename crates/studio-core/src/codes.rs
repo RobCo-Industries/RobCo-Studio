@@ -4,9 +4,9 @@
 //!
 //! Implements RobCo-Core `docs/spec/STUDIO_CLI.md`, "Exit codes" and
 //! "Error codes", as read at RobCo-Core commit `e004c73`. Every error of
-//! [`crate::manifest`], [`crate::resolve`] and [`crate::boot`] gives its
-//! code through [`ErrorCode`], and [`exit_code`] maps a code to the number
-//! the command ends with.
+//! [`crate::manifest`], [`crate::resolve`], [`crate::install`] and
+//! [`crate::boot`] gives its code through [`ErrorCode`], and [`exit_code`]
+//! maps a code to the number the command ends with.
 
 /// Each error code of the spec's table, as the spec spells it, with its
 /// exit code.
@@ -111,6 +111,7 @@ pub trait ErrorCode {
 mod tests {
     use super::*;
     use crate::boot::BootError;
+    use crate::install::Error as InstallError;
     use crate::manifest::ManifestError;
     use crate::resolve::Error;
 
@@ -305,6 +306,39 @@ mod tests {
         all
     }
 
+    fn install_errors() -> Vec<InstallError> {
+        let all = vec![
+            InstallError::PackageArchive(s()),
+            InstallError::PackageHash(s()),
+            InstallError::Manifest(Error::PackageManifest(s())),
+            InstallError::Manifest(Error::PackageFormat(s())),
+            InstallError::ToolArchive(s()),
+            InstallError::ToolHash(s()),
+            InstallError::LockHash(s()),
+            InstallError::IoRead {
+                path: s(),
+                reason: s(),
+            },
+            InstallError::IoWrite {
+                path: s(),
+                reason: s(),
+            },
+        ];
+        for e in &all {
+            match e {
+                InstallError::PackageArchive(_)
+                | InstallError::PackageHash(_)
+                | InstallError::Manifest(_)
+                | InstallError::ToolArchive(_)
+                | InstallError::ToolHash(_)
+                | InstallError::LockHash(_)
+                | InstallError::IoRead { .. }
+                | InstallError::IoWrite { .. } => {}
+            }
+        }
+        all
+    }
+
     fn check(e: &dyn ErrorCode, shown: String, spec: &[(String, u8)]) {
         let code = e.error_code();
         let row = spec.iter().find(|(c, _)| c == code);
@@ -327,6 +361,10 @@ mod tests {
         }
         for e in boot_errors() {
             check(&e, e.to_string(), &spec);
+        }
+        for e in install_errors() {
+            check(&e, e.to_string(), &spec);
+            assert!(e.to_string().starts_with(e.error_code()), "{e}");
         }
     }
 }

@@ -575,6 +575,16 @@ fn resolve_index_entries() {
         ),
         ("\"root\": \"\"}", "\"root\": 0}", "tools[1].archives"),
         (
+            "\"root\": \"\"}",
+            "\"root\": \"../side\"}",
+            "tools[1].archives.linux-x64.root",
+        ),
+        (
+            "\"root\": \"\"}",
+            "\"root\": \"/abs\"}",
+            "tools[1].archives.linux-x64.root",
+        ),
+        (
             "{\"name\": \"gcc\", \"version\": \"15.2.1-1.1\"},",
             "",
             "packages[0].tools",
@@ -1433,6 +1443,87 @@ fn resolve_versions_have_no_leading_zero() {
         assert!(!is_tool_version(bad), "{bad}");
     }
     assert!(is_host_name("linux-x64") && is_host_name("x64") && !is_host_name("9x"));
+}
+
+/// Each component of an archive path must be one plain name on every
+/// system: Windows reads `C:payload` as a path on drive `C:`.
+#[test]
+fn resolve_archive_path_components_are_plain_names() {
+    for bad in [
+        "dir/C:payload",
+        "C:payload",
+        "a/b:c",
+        "nul/x",
+        "x/COM1.txt",
+        "a./b",
+        "a /b",
+        "a/b<c",
+        "a/b|c",
+        "a/b*",
+    ] {
+        assert!(!index::is_archive_path(bad), "{bad:?}");
+        assert!(!index::is_url(bad, IndexSource::Local), "{bad:?}");
+        assert!(!index::is_root(bad), "{bad:?}");
+    }
+    assert!(index::is_archive_path(
+        "holotape-c/tests/golden/start/ready.png"
+    ));
+    // The layout of `pipos`, the templates and the roots of the spec.
+    for good in [
+        "sdk.json",
+        "LICENSES/MIT.txt",
+        "boot.json",
+        "boot/PIPOS.CFG",
+        "boot/PIPOS.IMG",
+        "boot/RUNNER.ROM",
+        "boot/config.txt",
+        "boot/fwstub.bin",
+        "boot/pipos.elf",
+        "docs/API.md",
+        "flags.json",
+        "include/pipos/pip.h",
+        "include/pipos/abi.h",
+        "include/pipos/crc32.h",
+        "include/pipos/crt0.h",
+        "include/pipos/heap.h",
+        "include/pipos/ini.h",
+        "include/pipos/printf.h",
+        "include/pipos/selftest.h",
+        "include/pipos/string.h",
+        "include/pipos/syscall.h",
+        "lib/crt0.S",
+        "lib/holotape.ld",
+        "lib/libpip.a",
+        "lib/rom.ld",
+        "templates.json",
+        "holotape-c/icon.pbm",
+        "holotape-c/robco.toml",
+        "holotape-c/src/main.c",
+        "holotape-c/tests/start.toml",
+        "xpack-arm-none-eabi-gcc-15.2.1-1.1",
+        "pipos-1.3.0.zip",
+        "gcc-windows-x64.zip",
+        "qemu-linux-x64.tar.gz",
+    ] {
+        assert!(index::is_archive_path(good), "{good:?}");
+    }
+    for name in [
+        "pipos",
+        "templates",
+        "gcc",
+        "qemu",
+        "1.3.0",
+        "0.1.0",
+        "15.2.1-1.1",
+        "10.1.2",
+        "linux-x64",
+        "linux-arm64",
+        "macos-x64",
+        "macos-arm64",
+        "windows-x64",
+    ] {
+        assert!(index::is_portable_name(name), "{name:?}");
+    }
 }
 
 #[test]

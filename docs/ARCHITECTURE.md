@@ -18,12 +18,14 @@ flowchart TB
     DISK["studio-disk<br/>raw disks"]
 ```
 
-Inside `studio-core`, the build plan, the lock and the code table stand apart. Every error of `manifest`, `resolve` and `boot` names a code of `codes`.
+Inside `studio-core`, the build plan, the lock and the code table stand apart. Every error of `manifest`, `resolve`, `install` and `boot` names a code of `codes`.
 
 ```mermaid
 flowchart LR
     MAN["manifest<br/>robco.toml"] --> CODES
     RES["resolve<br/>index, sdk.json, robco.lock"] --> CODES
+    INS["install<br/>download, check, extract"] --> RES
+    INS --> CODES
     BOOT["boot<br/>boot.json"] --> CODES
     PLAN["plan<br/>flags.json"]
     CODES["codes<br/>error and exit codes"]
@@ -39,7 +41,7 @@ A library that will list disks and read and write raw blocks on each system, ref
 
 ### studio-core
 
-The headless product. It will hold projects, SDK install, builds, asset packing, card images, simulator sessions, the serial monitor and debug sessions. Today it holds the version, which comes from `workspace.package.version` in the root `Cargo.toml`, the reader of `robco.toml`, and the build plan, which reads `flags.json` and lists the commands of a build and the folders they write into, without running them. It also holds `resolve` and `codes`, below. It never depends on a window or toolkit crate. `unsafe` is forbidden.
+The headless product. It will hold projects, SDK install, builds, asset packing, card images, simulator sessions, the serial monitor and debug sessions. Today it holds the version, which comes from `workspace.package.version` in the root `Cargo.toml`, the reader of `robco.toml`, and the build plan, which reads `flags.json` and lists the commands of a build and the folders they write into, without running them. It also holds `resolve`, `install` and `codes`, below. It never depends on a window or toolkit crate. `unsafe` is forbidden.
 
 #### resolve
 
@@ -49,9 +51,36 @@ It never downloads, installs or starts a process. Only the lock code touches fil
 
 A caller must write the lock with `lock::write` only for a `Resolution::New`, and only after every install passed. A command that fails before then writes no lock, so a first build keeps no lock and `robco update` keeps the old one. The write goes through a temporary file renamed over the old lock, so a failure never leaves half a lock.
 
+#### install
+
+`install` puts packages and tools into the cache, by "The archive", "What the cache records", "Tool archives" and "Hashes" of [SDK_PACKAGE.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/SDK_PACKAGE.md). A command calls `install::package` and `install::tool` between resolving and `lock::write`, and writes the lock only when every call passed.
+
+The caller passes a `Transport` that fetches the bytes of a `url`. `LocalFiles` reads a local index's relative paths and fetches nothing from `https://`. No `https` transport exists yet.
+
+```mermaid
+flowchart LR
+    C{"Record in the cache?"} -- "Yes" --> E{"Equal to the hash?"}
+    E -- "Yes" --> P["Present"]
+    E -- "No" --> H["package: hash, tool: hash or lock: hash"]
+    C -- "No" --> D["Stream to tmp, hash and count"]
+    D --> M{"Size and hash match?"}
+    M -- "No" --> H
+    M -- "Yes" --> X["Check entries, sdk.json, extract, check each file"]
+    X --> R["Write .robco-archive, rename into the cache"]
+```
+
+How it keeps the cache whole:
+
+- A download streams into a temporary file under `<cache>/tmp/` while it is hashed and counted. It is renamed to the archive only on a match. A download that stops short or cannot be fetched is a mismatch. Nothing is retried from another place.
+- A package archive is checked whole before anything is extracted: names, case, entry kinds, compression, `sdk.json` and its index entry, and unlisted files. Each extracted file is then checked against its size and hash.
+- A tool archive is extracted with no write through a link. Each link must resolve inside the extraction folder. A link that resolves to nothing is refused.
+- `.robco-archive` is written last in the temporary folder, and one rename moves the folder into the cache. A cache folder without a valid record is moved aside and removed by the next install.
+- When two installs of one item race, the second rename fails, and that install compares the first one's record.
+- A failure removes the temporary folder. A folder in the cache is never written after its rename.
+
 #### codes
 
-`codes` holds the table of error codes and the exit code of each, from the "Exit codes" and "Error codes" sections of [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). Every error of `manifest`, `resolve` and `boot` gives its code through the `ErrorCode` trait, and `exit_code` maps a code to the number the command ends with. It reads no file and prints nothing.
+`codes` holds the table of error codes and the exit code of each, from the "Exit codes" and "Error codes" sections of [STUDIO_CLI.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/STUDIO_CLI.md). Every error of `manifest`, `resolve`, `install` and `boot` gives its code through the `ErrorCode` trait, and `exit_code` maps a code to the number the command ends with. It reads no file and prints nothing.
 
 ### robco
 
