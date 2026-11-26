@@ -162,7 +162,7 @@ The window is cut into strips, top to bottom:
 
 ```mermaid
 flowchart TB
-    H["Header: wordmark, atom, caps line, skyline. 60 high, 36 compact"]
+    H["Header: atom, wordmark, caps line, skyline. 60 high, 36 compact"]
     M["Menu row: caps menu names. Absent on macOS, where the system bar has the menus"]
     T["Toolbar: pages control, TARGET dropdown, Build, Run, Debug, Write card"]
     P["Page, from margin to margin"]

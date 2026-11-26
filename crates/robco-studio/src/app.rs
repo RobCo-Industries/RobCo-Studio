@@ -233,17 +233,17 @@ pub fn header_layout(rect: Rect, tall: bool, text_w: f32) -> HeaderLayout {
     } else {
         (Mark::WordmarkCompact, Mark::AtomCompact)
     };
-    let ws = Art::mark_size(wm);
-    let wordmark = Rect::from_min_size(
-        egui::pos2(rect.left() + size::HEADER_PAD, cy - ws.y / 2.0),
-        ws,
-    );
     let a = Art::mark_size(atom);
     let atom = Rect::from_min_size(
-        egui::pos2(wordmark.right() + size::HEADER_MARK_GAP, cy - a.y / 2.0),
+        egui::pos2(rect.left() + size::HEADER_PAD, cy - a.y / 2.0),
         a,
     );
-    let divider_x = atom.right() + size::HEADER_GAP;
+    let ws = Art::mark_size(wm);
+    let wordmark = Rect::from_min_size(
+        egui::pos2(atom.right() + size::HEADER_MARK_GAP, cy - ws.y / 2.0),
+        ws,
+    );
+    let divider_x = wordmark.right() + size::HEADER_GAP;
     let tx = divider_x + stroke_w() + size::HEADER_GAP;
     let text_h = if tall {
         crate::theme::text::LABEL_CELL_H * 2.0 + size::HEADER_LINE_GAP
@@ -716,7 +716,7 @@ impl Studio {
         self.art = Some((art, ctx.pixels_per_point(), self.theme.effects()));
     }
 
-    /// The header band: wordmark, atom, divider, the caps line and the
+    /// The header band: atom, wordmark, divider, the caps line and the
     /// skyline over a rule. One image for a screen reader, and no focus.
     fn header(&mut self, kit: &Kit<'_>, ui: &mut Ui, rect: Rect, tall: bool) {
         let p = kit.p();
@@ -2236,6 +2236,7 @@ mod tests {
         assert!(p.show_files && p.editor.width() > size::FILES_MIN);
     }
 
+    /// The atom comes first and the wordmark after it, in both forms.
     /// At the smallest window the header's parts do not overlap, the caps
     /// lines keep clear space on both sides, the atom stays off the rule,
     /// and the skyline gives way exactly where the skyline room runs out.
@@ -2255,14 +2256,19 @@ mod tests {
             two,
         );
         let rule = size::HEADER_H - stroke_w() / 2.0;
-        assert!(tall.wordmark.right() < tall.atom.left());
+        assert_eq!(tall.atom.left(), size::HEADER_PAD);
+        assert_eq!(
+            tall.wordmark.left() - tall.atom.right(),
+            size::HEADER_MARK_GAP
+        );
+        assert!(!tall.atom.intersects(tall.wordmark));
         assert!(
             tall.atom.top() > 0.0 && tall.atom.bottom() < rule - 1.0,
             "{:?}",
             tall.atom
         );
         assert!(tall.text.left() - tall.divider_x >= size::HEADER_GAP);
-        assert!(tall.divider_x - tall.atom.right() >= size::HEADER_GAP);
+        assert_eq!(tall.divider_x - tall.wordmark.right(), size::HEADER_GAP);
         let sky = tall
             .skyline
             .expect("the skyline shows at the smallest window");
@@ -2294,7 +2300,10 @@ mod tests {
             one,
         );
         assert!(c.skyline.is_none());
-        assert!(c.wordmark.right() < c.atom.left());
+        assert_eq!(c.atom.left(), size::HEADER_PAD);
+        assert_eq!(c.wordmark.left() - c.atom.right(), size::HEADER_MARK_GAP);
+        assert!(!c.atom.intersects(c.wordmark));
+        assert_eq!(c.divider_x - c.wordmark.right(), size::HEADER_GAP);
         assert!(c.text.right() + size::HEADER_PAD <= w);
         assert!(c.atom.top() > 0.0 && c.atom.bottom() < size::HEADER_COMPACT_H - 1.0);
     }
