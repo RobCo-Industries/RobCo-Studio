@@ -151,6 +151,7 @@ The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and noth
 | `art` | The drawings and the icons, rasterised from their SVG files with `resvg`, the Spleen 8x16 label atlas built from its BDF file, its blurred halo atlas, and the application icon. |
 | `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. |
 | `native_menu` | macOS only: the system menu bar, through `muda`. |
+| `chooser` | The folder chooser behind File, Open folder: a small trait, the system dialog through `rfd`, and a fake in the tests. |
 | `project` | The open folder, its `robco.toml` read by `studio-core`, and the rows of the Files tree. |
 | `document` | One open file: bytes to text and back, LF in the editor, CRLF kept on save. |
 | `editor` | Tabs, the text widget per document, the gutter, colours for C, find and replace, and the one question about unsaved edits. |
@@ -174,7 +175,7 @@ flowchart TB
 - The simulator pane shows the device at 62 percent with the empty state in its screen opening while no machine runs, then the honest line and Stop, Reset, Fit and the zoom group. The Simulator menu's scale items set the same step. A step that does not fit the pane is not available.
 - The pages control is the toolbar's first control: PROJECT, CARD, DEVICE and SDK in one outline. A screen reader gets a tab list named "Pages" with one tab per page, the current one selected. It is one stop in the Tab order, and the left and right arrows move between pages. The page shortcuts and the View menu move its selection.
 - The toolbar holds no project control. A divider stands after the pages control and another before the four actions, which share one width. At 1280 points the whole toolbar fits with room to spare.
-- The open project is the current document. The window title gives its name, then the application's, as in "PIPES - RobCo Studio", and only "RobCo Studio" with no project. File, Open folder opens another one. The Files tree has the project as its root row, open at first; closing it hides the tree. A folder without a valid `robco.toml` goes by its folder's name.
+- The open project is the current document. The window title gives its name, then the application's, as in "PIPES - RobCo Studio", and only "RobCo Studio" with no project. File, Open folder, Cmd or Ctrl+O, opens another one through the system's folder dialog. The dialog starts in the parent of the open project, or the home folder with no project. A chosen folder goes through the same path as one given on the command line, with the same messages. Documents with edits are asked about first, one by one, with the question quitting asks; Cancel keeps the project and its edits. Cancel in the dialog changes nothing. While the dialog is open the window runs no command. The Files tree has the project as its root row, open at first; closing it hides the tree. A folder without a valid `robco.toml` goes by its folder's name.
 - The bottom pane puts the log's filters in its tab row while the Log tab is on.
 - A long status line in the footer hides the division first, then Position, then ends in an ellipsis. Settings and Help hold the right end and never give way.
 
@@ -194,6 +195,8 @@ Known limits:
 - Save refuses a read-only file.
 - Tabs that do not fit scroll sideways and a menu at their end lists them all. A tab out of view is reached by the wheel, the menu or a click in Files; the keyboard cannot scroll the strip.
 - Each frame lays out and searches the whole text. A file near 16 MiB, or one very long line, makes the window slow.
+- On macOS and Windows the folder dialog runs on the main thread at the top of a frame and blocks it; the last frame stays on screen. On Linux it runs on a thread through the desktop portal, with `zenity` as the fallback. When neither answers within 300 ms with nothing, the status bar says no dialog opened. A portal that accepts the call and never answers keeps the window from taking commands until it is closed. The real dialog was only compiled on macOS; it was not opened on any system. The tests use a fake.
+- The Open folder buttons of the editor pane do not act; their tooltip points to File, Open folder. There is no Open recent: Studio has no settings file yet.
 - Studio opens regular files only, links followed. A folder, a named pipe, a device or a socket is refused, and a named pipe is not waited on. A file or a `robco.toml` larger than 16 MiB is refused before it is read. The crate's docs name no limit, so 16 MiB is a default, not a measured need.
 
 `tests/window.rs` drives the window headless with `egui_kittest`. `tests/render.rs` writes PNG pictures of the window when run by hand; they are not compared in CI. Its `render_the_art_sheet` writes `sheet-green.png`: every drawing, every icon and the label styles on the green ground, with effects on at the left and off at the right.

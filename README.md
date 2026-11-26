@@ -15,7 +15,7 @@ To build and test, see [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in
 
 ## The window
 
-`robco-studio` opens a 1280 by 720 window on no project. `robco-studio PATH` opens the folder PATH as the project. To try it from a checkout:
+`robco-studio` opens a 1280 by 720 window on no project. `robco-studio PATH` opens the folder PATH as the project, and File, Open folder, Cmd or Ctrl+O, opens another through the system's folder dialog. To try it from a checkout:
 
 ```sh
 cargo run -p robco-studio -- path/to/a/folder
@@ -35,7 +35,7 @@ What does not work yet, and says so:
 
 - Build, Run, Debug and Write card do nothing. They are drawn with a dashed frame, and their tooltip says why: nothing was built, no tape ran, nothing was written. Nothing in the window pretends a job ran.
 - The simulator, the tape pane and the bottom pane show their empty states. The Card, Device and SDK pages say they come in a later release.
-- There is no folder dialog, no settings file, no recent projects list, and no "Go to line". Studio does not notice a file changed by another program.
+- There is no settings file, no recent projects list, and no "Go to line". Studio does not notice a file changed by another program.
 
 The window writes no file except one you save in the editor. It opens no network connection and starts no process.
 
