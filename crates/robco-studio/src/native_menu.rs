@@ -2,10 +2,10 @@
 
 //! The macOS menu bar, built from the same model as the row in the window.
 //! About, Settings and Quit move into the application menu, where macOS
-//! expects them. Items of a group go into a submenu, and radio items become
-//! check items that follow the window's choice.
+//! expects them. Items of a group go into a submenu, and every item with a
+//! state is a check item whose mark follows the model.
 
-use crate::menus::{self, Command, Item, Mods};
+use crate::menus::{self, Command, Mods, NativeItem, NativeKind};
 use muda::accelerator::{Accelerator, Code, Modifiers};
 
 /// Commands that live in the application menu on macOS.
@@ -15,30 +15,8 @@ const APP_MENU: [Command; 3] = [Command::About, Command::Settings, Command::Quit
 pub struct NativeMenu {
     _menu: muda::Menu,
     chosen: std::sync::mpsc::Receiver<String>,
-    /// Every item, with the state it was last given.
-    items: Vec<(Item, Native, bool, bool)>,
-}
-
-/// A native item: plain, or a check item for a radio item of the model.
-enum Native {
-    Plain(muda::MenuItem),
-    Check(muda::CheckMenuItem),
-}
-
-impl Native {
-    fn set_enabled(&self, on: bool) {
-        match self {
-            Native::Plain(i) => i.set_enabled(on),
-            Native::Check(i) => i.set_enabled(on),
-        }
-    }
-
-    fn as_item(&self) -> &dyn muda::IsMenuItem {
-        match self {
-            Native::Plain(i) => i,
-            Native::Check(i) => i,
-        }
-    }
+    /// Every item, in the order of [`menus::native_items`].
+    items: Vec<Built>,
 }
 
 fn code(key: &str) -> Option<Code> {
@@ -84,11 +62,7 @@ fn code(key: &str) -> Option<Code> {
     Some(c)
 }
 
-fn accelerator(it: &Item) -> Option<Accelerator> {
-    // An item that cannot act carries no key, so the key still reaches the window.
-    if it.unavailable.is_some() {
-        return None;
-    }
+fn accelerator(it: &NativeItem) -> Option<Accelerator> {
     let s = it.shortcut?;
     let mods = match s.mods {
         Mods::None => None,
@@ -102,18 +76,74 @@ fn accelerator(it: &Item) -> Option<Accelerator> {
     Some(Accelerator::new(mods, code(s.key)?))
 }
 
-fn item(id: String, it: &Item, checked: Option<bool>) -> Native {
-    let on = it.unavailable.is_none();
-    match checked {
-        Some(c) => Native::Check(muda::CheckMenuItem::with_id(
-            id,
-            it.text,
-            on,
-            c,
-            accelerator(it),
-        )),
-        None => Native::Plain(muda::MenuItem::with_id(id, it.text, on, accelerator(it))),
+/// A built item of the bar.
+enum Built {
+    Plain(muda::MenuItem),
+    Check(muda::CheckMenuItem),
+}
+
+impl Built {
+    fn new(it: &NativeItem) -> Built {
+        let id = it.id.clone();
+        match it.kind {
+            NativeKind::Plain => Built::Plain(muda::MenuItem::with_id(
+                id,
+                it.title,
+                it.enabled,
+                accelerator(it),
+            )),
+            NativeKind::Check => Built::Check(muda::CheckMenuItem::with_id(
+                id,
+                it.title,
+                it.enabled,
+                it.checked,
+                accelerator(it),
+            )),
+        }
     }
+
+    fn entry(&self) -> &dyn muda::IsMenuItem {
+        match self {
+            Built::Plain(m) => m,
+            Built::Check(m) => m,
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        match self {
+            Built::Plain(m) => m.is_enabled(),
+            Built::Check(m) => m.is_enabled(),
+        }
+    }
+
+    fn is_checked(&self) -> bool {
+        match self {
+            Built::Plain(_) => false,
+            Built::Check(m) => m.is_checked(),
+        }
+    }
+
+    /// Give the item the state of `it`. The mark is read back from the
+    /// item, not from a copy: a click flips it before the program hears
+    /// of it, and a refused command must not leave it flipped.
+    fn sync(&self, it: &NativeItem) {
+        if self.is_enabled() != it.enabled {
+            match self {
+                Built::Plain(m) => m.set_enabled(it.enabled),
+                Built::Check(m) => m.set_enabled(it.enabled),
+            }
+        }
+        if self.is_checked() != it.checked
+            && let Built::Check(m) = self
+        {
+            m.set_checked(it.checked);
+        }
+    }
+}
+
+/// Build the items of `list`, unattached to any menu.
+fn build(list: &[NativeItem]) -> Vec<Built> {
+    list.iter().map(Built::new).collect()
 }
 
 impl NativeMenu {
@@ -124,24 +154,21 @@ impl NativeMenu {
         studio: &crate::Studio,
     ) -> Result<NativeMenu, String> {
         let model = menus::menus();
+        let list = menus::native_items(studio);
+        let items = build(&list);
         let bar = muda::Menu::new();
-        let mut items = Vec::new();
         let app = muda::Submenu::new("RobCo Studio", true);
-        for (m, menu) in model.iter().enumerate() {
-            for (i, it) in menu.items.iter().enumerate() {
-                if APP_MENU.contains(&it.command) {
-                    let mi = item(menus::item_id(m, i), it, None);
-                    app.append(mi.as_item()).map_err(|e| e.to_string())?;
-                    items.push((*it, mi, it.unavailable.is_none(), false));
-                }
+        for (it, b) in list.iter().zip(&items) {
+            if APP_MENU.contains(&it.command) {
+                app.append(b.entry()).map_err(|e| e.to_string())?;
             }
         }
         bar.append(&app).map_err(|e| e.to_string())?;
         for (m, menu) in model.iter().enumerate() {
             let sub = muda::Submenu::new(menu.title, true);
             let mut group: Option<(&str, muda::Submenu)> = None;
-            for (i, it) in menu.items.iter().enumerate() {
-                if APP_MENU.contains(&it.command) {
+            for (it, b) in list.iter().zip(&items) {
+                if it.menu != m || APP_MENU.contains(&it.command) {
                     continue;
                 }
                 // Close the open group when this item is not part of it.
@@ -163,10 +190,7 @@ impl NativeMenu {
                     into.append(&muda::PredefinedMenuItem::separator())
                         .map_err(|e| e.to_string())?;
                 }
-                let checked = studio.checked(it);
-                let mi = item(menus::item_id(m, i), it, checked);
-                into.append(mi.as_item()).map_err(|e| e.to_string())?;
-                items.push((*it, mi, it.unavailable.is_none(), checked == Some(true)));
+                into.append(b.entry()).map_err(|e| e.to_string())?;
             }
             if let Some((_, g)) = group.take() {
                 sub.append(&g).map_err(|e| e.to_string())?;
@@ -187,25 +211,12 @@ impl NativeMenu {
         })
     }
 
-    /// Give each item the state the window's own menu gives it now, by
-    /// [`crate::Studio::unavailable`] and [`crate::Studio::checked`]. Call
-    /// after each frame.
+    /// Give each item the state and mark the model gives it now, by
+    /// [`menus::native_items`]. Call after each frame, whatever changed
+    /// the state.
     pub fn sync(&mut self, studio: &crate::Studio) {
-        for (it, mi, on, checked) in &mut self.items {
-            let now = studio.unavailable(it).is_none();
-            if now != *on {
-                mi.set_enabled(now);
-                *on = now;
-            }
-            // muda flips a check item when it is clicked: set it each
-            // time, so it shows the window's choice.
-            if let Native::Check(c) = mi {
-                let want = studio.checked(it) == Some(true);
-                if want != *checked || c.is_checked() != want {
-                    c.set_checked(want);
-                    *checked = want;
-                }
-            }
+        for (it, b) in menus::native_items(studio).iter().zip(&self.items) {
+            b.sync(it);
         }
     }
 
@@ -234,5 +245,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The `muda` items built from the list carry its kind, enabled state
+    /// and mark, and keep the model's mark after a click flipped it.
+    /// `muda` makes items without a run loop as long as they are not
+    /// attached to a menu.
+    #[test]
+    fn built_items_follow_the_list() {
+        let mut s = crate::Studio::new(None);
+        let list = menus::native_items(&s);
+        let items = build(&list);
+        for (it, b) in list.iter().zip(&items) {
+            assert_eq!(
+                matches!(b, Built::Check(_)),
+                it.kind == NativeKind::Check,
+                "{}",
+                it.title
+            );
+            assert_eq!(b.is_enabled(), it.enabled, "{}", it.title);
+            assert_eq!(b.is_checked(), it.checked, "{}", it.title);
+        }
+        let hl = list
+            .iter()
+            .position(|i| i.command == Command::HighLegibility)
+            .unwrap();
+        assert!(!items[hl].is_checked());
+        s.theme.high_legibility = true;
+        let list = menus::native_items(&s);
+        for (it, b) in list.iter().zip(&items) {
+            b.sync(it);
+        }
+        assert!(items[hl].is_checked());
+        // A click flips the mark by itself; a sync puts the model's back.
+        if let Built::Check(m) = &items[hl] {
+            m.set_checked(false);
+        }
+        items[hl].sync(&list[hl]);
+        assert!(items[hl].is_checked());
+        let z3 = list
+            .iter()
+            .position(|i| i.command == Command::SimZoom(3))
+            .unwrap();
+        assert!(!items[z3].is_enabled());
+        assert!(!items[z3].is_checked());
     }
 }
