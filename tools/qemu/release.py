@@ -3,11 +3,16 @@
 """Gather the files of a QEMU release and write the list of their sizes and
 SHA-256. Standard library only, no network.
 
-  release.py scan <package-dir> --forbid TEXT [--forbid TEXT ...]
+  release.py scan <package-dir> [--forbid TEXT] [--forbid-env NAME] [--forbid-host]
       Fails when a file of the package holds one of the texts: the paths,
-      user and host names of the machine that built it. Each path is also
-      searched with the other slash and, for an MSYS2 path such as /c/x,
-      as C:/x and C:\\x. Each hit is followed by up to five lines
+      user and host names of the machine that built it. --forbid-env reads
+      a text from the environment, where no shell can rewrite it, and
+      --forbid-host adds this machine's host name. Each path is searched
+      with either slash; a path with a drive letter in each of its
+      spellings, C:\\x, C:/x, /c/x and /cygdrive/c/x, with the drive in
+      either case and without regard to case. Paths also compare without
+      case on macOS. Each spelling and the host name are searched in UTF-8
+      and in UTF-16 little endian. Each hit is followed by up to five lines
       "  at byte N: <text>", the printable string around it.
 
   release.py gather --in DIR --out DIR --repo DIR [--tag TAG] [--base-url URL]
@@ -48,8 +53,10 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import pathlib
 import re
+import socket
 import sys
 import tarfile
 import zipfile
@@ -90,14 +97,56 @@ def sha256(path):
     return h.hexdigest()
 
 
+# A Windows path in any of its spellings: C:\\x, C:/x, /c/x, /cygdrive/c/x.
+DRIVE = re.compile(r"^(?:([A-Za-z]):(?=[\\/]|$)|/cygdrive/([A-Za-z])(?=/|$)|/([A-Za-z])(?=/|$))(.*)$", re.S)
+# Whether this system's file names compare without case: Windows and the
+# default macOS file system do, Linux does not.
+CASELESS = sys.platform in ("win32", "cygwin", "darwin")
+
+
 def variants(text):
-    """The spellings of a path that a file may hold."""
-    out = {text, text.replace("/", "\\"), text.replace("\\", "/")}
-    m = re.match(r"^/([a-zA-Z])(/.*)$", text)
-    if m:
-        win = f"{m.group(1).upper()}:{m.group(2)}"
-        out |= {win, win.replace("/", "\\")}
-    return sorted(out)
+    """The spellings of a path that a file may hold, as (spelling, caseless)
+    pairs. A path with a drive letter is spelt C:\\x, C:/x, C:\\\\x as a C or
+    JSON string holds it, and /c/x, which /cygdrive/c/x contains. It
+    compares without case, so the drive letter may be in either case. Any
+    other path is spelt with either slash."""
+    m = DRIVE.match(text)
+    if not m:
+        return [(t, False) for t in [text] + sorted({text.replace("/", "\\"), text.replace("\\", "/")} - {text})]
+    d = next(g for g in m.groups()[:3] if g)
+    rest = m.group(4).replace("\\", "/")
+    win = f"{d}:{rest}"
+    out = {win, win.replace("/", "\\"), win.replace("/", "\\\\"), f"/{d}{rest}"}
+    out.discard(text)
+    return [(t, True) for t in [text] + sorted(out)]
+
+
+def needles(forbid, caseless=CASELESS, hosts=()):
+    """The byte strings to search for: (group, label, bytes, caseless) for each
+    spelling of each forbidden path, in UTF-8 and in UTF-16 little endian,
+    and each host name as it is, in both. A caseless needle is lower case
+    and is searched in the lower-cased file. Refuses a text shorter than
+    4 characters: it would match everywhere and mean nothing."""
+    out, seen = [], set()
+
+    def add(group, label, text, nocase):
+        for enc, tag in (("utf-8", ""), ("utf-16-le", " in UTF-16")):
+            b = text.encode(enc)
+            if nocase:
+                b = b.lower()
+            if (b, nocase) not in seen:
+                seen.add((b, nocase))
+                out.append((group, label + tag, b, nocase))
+
+    for t in list(forbid) + list(hosts):
+        if len(t) < 4:
+            raise Refused(f"forbidden text {t!r} is shorter than 4 characters")
+    for i, t in enumerate(forbid):
+        for v, drive in variants(t):
+            add(i, v, v, drive or caseless)
+    for i, h in enumerate(hosts, len(forbid)):
+        add(i, h, h, False)
+    return out
 
 
 def files_of(root):
@@ -116,41 +165,48 @@ def files_of(root):
     return out
 
 
-def context(path, text, limit=5, width=100):
-    """Where text sits in a file: up to limit (offset, string) pairs, the
-    string being the run of printable bytes around each occurrence, as
-    strings -t d shows it, cut to width bytes on each side."""
+def context(path, needle, nocase=False, limit=5, width=100):
+    """Where needle, a byte string, sits in a file: up to limit (offset,
+    string) pairs, the string being the run of printable characters around
+    each occurrence, as strings -t d shows it, cut to width characters on
+    each side. A needle with zero bytes is read as UTF-16."""
     data = pathlib.Path(path).read_bytes()
-    hay, needle = data, text.encode()
-    if b":" in needle:
-        hay, needle = data.lower(), needle.lower()
+    if isinstance(needle, str):
+        needle = needle.encode()
+    hay = data.lower() if nocase else data
+    step = 2 if b"\x00" in needle else 1
+
+    def printable(at):
+        if at < 0 or at + step > len(data) or not 0x20 <= data[at] < 0x7F:
+            return False
+        return step == 1 or data[at + 1] == 0
+
     out, at = [], hay.find(needle)
     while at >= 0 and len(out) < limit:
         lo, hi = at, at + len(needle)
-        while lo > 0 and at - lo < width and 0x20 <= data[lo - 1] < 0x7f:
-            lo -= 1
-        while hi < len(data) and hi - at - len(needle) < width and 0x20 <= data[hi] < 0x7f:
-            hi += 1
-        out.append((at, data[lo:hi].decode("ascii", "replace")))
+        while (at - lo) // step < width and printable(lo - step):
+            lo -= step
+        while (hi - at - len(needle)) // step < width and printable(hi):
+            hi += step
+        enc = "utf-16-le" if step == 2 else "ascii"
+        out.append((at, data[lo:hi].decode(enc, "replace")))
         at = hay.find(needle, at + 1)
     return out
 
 
-def scan(package, forbid):
-    """The (file, text) pairs where a forbidden text appears."""
-    needles = []
-    for t in forbid:
-        if len(t) < 4:
-            raise Refused(f"forbidden text {t!r} is shorter than 4 characters")
-        needles += [v.encode() for v in variants(t)]
+def scan(package, forbid, caseless=CASELESS, hosts=()):
+    """The (file, label, needle, caseless) hits: in each file, the first
+    spelling found of each forbidden text."""
+    ns = needles(forbid, caseless, hosts)
     hits = []
     for rel, p in files_of(package):
         data = p.read_bytes()
-        low = data.lower()
-        for n in needles:
-            # Windows paths compare without case.
-            if n in data or (b":" in n and n.lower() in low):
-                hits.append((rel, n.decode()))
+        low = data.lower() if any(n[3] for n in ns) else data
+        found = set()
+        for group, label, n, nocase in ns:
+            if group not in found and n in (low if nocase else data):
+                found.add(group)
+                hits.append((rel, label, n, nocase))
     return hits
 
 
@@ -497,7 +553,9 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("scan")
     s.add_argument("package")
-    s.add_argument("--forbid", action="append", required=True)
+    s.add_argument("--forbid", action="append", default=[])
+    s.add_argument("--forbid-env", action="append", default=[], metavar="NAME")
+    s.add_argument("--forbid-host", action="store_true")
     g = sub.add_parser("gather")
     g.add_argument("--in", dest="src", required=True)
     g.add_argument("--out", required=True)
@@ -511,10 +569,18 @@ def main(argv=None):
         if a.cmd == "verify":
             print(f"The release of QEMU {verify(a.folder)} matches its list.")
         elif a.cmd == "scan":
-            hits = scan(a.package, [t for t in a.forbid if t])
-            for rel, text in hits:
-                print(f"FAIL: {rel} holds {text}")
-                for at, around in context(pathlib.Path(a.package) / rel, text):
+            forbid = list(a.forbid)
+            for name in a.forbid_env:
+                if not os.environ.get(name):
+                    raise Refused(f"the environment variable {name} is not set")
+                forbid.append(os.environ[name])
+            hosts = [socket.gethostname()] if a.forbid_host else []
+            if not forbid and not hosts:
+                raise Refused("nothing to search for")
+            hits = scan(a.package, forbid, hosts=hosts)
+            for rel, label, n, nocase in hits:
+                print(f"FAIL: {rel} holds {label}")
+                for at, around in context(pathlib.Path(a.package) / rel, n, nocase):
                     print(f"  at byte {at}: {around}")
             if hits:
                 return 1

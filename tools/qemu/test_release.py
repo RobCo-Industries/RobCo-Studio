@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -331,6 +332,10 @@ class Release(unittest.TestCase):
         self.assertIn("holds no qemu-10.1.2-windows-x64/NOTICE", str(e.exception))
 
 
+def where(hits):
+    return [(h[0], h[1]) for h in hits]
+
+
 class Scan(unittest.TestCase):
     def setUp(self):
         self.pkg = pathlib.Path(tempfile.mkdtemp())
@@ -338,43 +343,98 @@ class Scan(unittest.TestCase):
         (self.pkg / "bin").mkdir()
         (self.pkg / "bin/qemu").write_bytes(b"\x00../hw/arm/raspi.c\x00")
 
+    def put(self, data):
+        (self.pkg / "bin/qemu").write_bytes(data)
+
     def test_clean(self):
         self.assertEqual(release.scan(self.pkg, ["/home/builder", "host-123"]), [])
 
     def test_path_found(self):
-        (self.pkg / "bin/qemu").write_bytes(b"\x00/home/builder/qemu/hw.c\x00")
-        self.assertEqual(release.scan(self.pkg, ["/home/builder"]), [("bin/qemu", "/home/builder")])
+        self.put(b"\x00/home/builder/qemu/hw.c\x00")
+        self.assertEqual(where(release.scan(self.pkg, ["/home/builder"], caseless=False)),
+                         [("bin/qemu", "/home/builder")])
 
-    def test_msys_path_found_as_windows_path(self):
-        (self.pkg / "bin/qemu").write_bytes(b"\x00c:\\users\\builder\\x.c\x00")
-        hits = release.scan(self.pkg, ["/c/Users/builder"])
-        self.assertEqual([h[0] for h in hits], ["bin/qemu"])
+    def test_unix_path_case_follows_the_system(self):
+        self.put(b"\x00/HOME/Builder/x.c\x00")
+        self.assertEqual(release.scan(self.pkg, ["/home/builder"], caseless=False), [])
+        self.assertEqual(len(release.scan(self.pkg, ["/home/builder"], caseless=True)), 1)
 
-    def test_host_name_found(self):
+    def test_each_spelling_of_a_windows_path_is_found(self):
+        # Whichever spelling the caller passes, each spelling in a file is found.
+        given = ["C:\\Users\\builder", "C:/Users/builder", "/c/Users/builder", "/cygdrive/c/Users/builder"]
+        planted = [b"C:\\Users\\builder\\x", b"C:/Users/builder/x", b"/c/Users/builder/x",
+                   b"/cygdrive/c/Users/builder/x", b'"C:\\\\Users\\\\builder\\\\x"']
+        for g in given:
+            for p in planted:
+                with self.subTest(given=g, planted=p):
+                    self.put(b"\x00" + p + b"\x00")
+                    self.assertEqual([h[0] for h in release.scan(self.pkg, [g], caseless=False)],
+                                     ["bin/qemu"])
+
+    def test_drive_letter_and_name_compare_without_case(self):
+        self.put(b"\x00c:\\USERS\\builder\\x.c\x00")
+        self.assertEqual([h[0] for h in release.scan(self.pkg, ["C:\\Users\\Builder"], caseless=False)],
+                         ["bin/qemu"])
+
+    def test_utf16_found_with_its_context(self):
+        self.put(b"\x01\x02" + "at C:\\Users\\builder\\a.c".encode("utf-16-le") + b"\xff\xff")
+        hits = release.scan(self.pkg, ["/c/Users/builder"], caseless=False)
+        self.assertEqual(len(hits), 1)
+        rel, label, n, nocase = hits[0]
+        self.assertTrue(label.endswith(" in UTF-16"))
+        self.assertEqual(release.context(self.pkg / rel, n, nocase), [(8, "at C:\\Users\\builder\\a.c")])
+
+    def test_host_name_found_in_both_encodings(self):
         (self.pkg / "NOTICE").write_text("built on host-123\n")
-        self.assertEqual(release.scan(self.pkg, ["host-123"]), [("NOTICE", "host-123")])
+        self.assertEqual(where(release.scan(self.pkg, [], hosts=["host-123"])), [("NOTICE", "host-123")])
+        (self.pkg / "NOTICE").write_bytes("host-123".encode("utf-16-le"))
+        self.assertEqual(where(release.scan(self.pkg, [], hosts=["host-123"])),
+                         [("NOTICE", "host-123 in UTF-16")])
 
     def test_short_text_refused(self):
+        for bad in (["/a"], ["C:\\"]):
+            with self.subTest(bad=bad), self.assertRaises(release.Refused):
+                release.scan(self.pkg, bad)
         with self.assertRaises(release.Refused):
-            release.scan(self.pkg, ["/a"])
+            release.scan(self.pkg, [], hosts=["ab"])
 
     def test_context_shows_the_string_around_each_hit(self):
-        (self.pkg / "bin/qemu").write_bytes(b"\x01\x02/home/builder/qemu-10.1.2/build/x.h\x00\xff"
-                                            b"abc\x00assert /home/builder/y.c\x00")
-        self.assertEqual(release.context(self.pkg / "bin/qemu", "/home/builder"),
+        self.put(b"\x01\x02/home/builder/qemu-10.1.2/build/x.h\x00\xff"
+                 b"abc\x00assert /home/builder/y.c\x00")
+        self.assertEqual(release.context(self.pkg / "bin/qemu", b"/home/builder"),
                          [(2, "/home/builder/qemu-10.1.2/build/x.h"), (50, "assert /home/builder/y.c")])
 
     def test_main_prints_the_context(self):
-        (self.pkg / "bin/qemu").write_bytes(b"\x00x /home/builder/a.c\x00")
+        self.put(b"\x00x /home/builder/a.c\x00")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(release.main(["scan", str(self.pkg), "--forbid", "/home/builder"]), 1)
         self.assertIn("FAIL: bin/qemu holds /home/builder\n  at byte 3: x /home/builder/a.c\n", out.getvalue())
 
+    def test_main_reads_the_environment(self):
+        self.put(b"\x00x /c/Users/builder/a.c\x00")
+        with unittest.mock.patch.dict(release.os.environ, {"SCAN_TEST_HOME": "C:\\Users\\builder"}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(release.main(["scan", str(self.pkg), "--forbid-env", "SCAN_TEST_HOME"]), 1)
+        self.assertIn("FAIL: bin/qemu holds ", out.getvalue())
+        self.assertIn("  at byte 3: x /c/Users/builder/a.c\n", out.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(release.main(["scan", str(self.pkg), "--forbid-env", "SCAN_TEST_UNSET_X"]), 1)
+
+    def test_main_searches_the_host_name(self):
+        (self.pkg / "NOTICE").write_text("built on host-123\n")
+        with unittest.mock.patch.object(release.socket, "gethostname", return_value="host-123"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(release.main(["scan", str(self.pkg), "--forbid-host"]), 1)
+        self.assertIn("FAIL: NOTICE holds host-123\n", out.getvalue())
+
     def test_main_exit_code(self):
         (self.pkg / "NOTICE").write_text("/home/builder\n")
-        self.assertEqual(release.main(["scan", str(self.pkg), "--forbid", "/home/builder"]), 1)
-        self.assertEqual(release.main(["scan", str(self.pkg), "--forbid", "/home/other"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(release.main(["scan", str(self.pkg), "--forbid", "/home/builder"]), 1)
+            self.assertEqual(release.main(["scan", str(self.pkg), "--forbid", "/home/other"]), 0)
 
 
 if __name__ == "__main__":
