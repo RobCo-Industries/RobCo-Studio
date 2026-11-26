@@ -38,7 +38,7 @@ What does not work yet, and says so:
 - The simulator, the tape pane and the bottom pane show their empty states. The Card, Device and SDK pages say they come in a later release.
 - There is no settings file, no recent projects list, and no "Go to line". Studio does not notice a file changed by another program.
 
-The window writes no file except one you save in the editor. It opens no network connection and starts no process.
+The window writes a file you save in the editor, and its own settings and your themes in its settings folder. It opens no network connection and starts no process.
 
 ## Licence
 
