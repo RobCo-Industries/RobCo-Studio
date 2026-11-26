@@ -290,7 +290,6 @@ pub struct Settings {
     pub adjusting: bool,
     clock: Clock,
     link: crate::pass::Shared,
-    plugged: bool,
 }
 
 impl Default for Settings {
@@ -302,25 +301,23 @@ impl Default for Settings {
             adjusting: false,
             clock: Clock::default(),
             link: crate::pass::Shared::default(),
-            plugged: false,
         }
     }
 }
 
 impl Settings {
-    /// Plug the screen into `ctx`: the pointer is mapped through the curve
-    /// from then on, and with eframe's render state the pass draws. Only
-    /// the first call counts. With a render state, call it before the
+    /// Plug the screen into `ctx` through [`crate::pass::plug`]: the
+    /// pointer is mapped through the curve from then on, and with eframe's
+    /// render state the pass draws. Only the first plug of a context
+    /// counts, whoever makes it. With a render state, call it before the
     /// first frame.
-    pub fn plug(&mut self, ctx: &egui::Context, gpu: Option<&eframe::egui_wgpu::RenderState>) {
-        if !self.plugged {
-            crate::pass::plug(ctx, self.link.clone(), gpu);
-            self.plugged = true;
-        }
+    pub fn plug(&self, ctx: &egui::Context, gpu: Option<&eframe::egui_wgpu::RenderState>) {
+        crate::pass::plug(ctx, self.link.clone(), gpu);
     }
 
     /// The window's side of the link to the screen's plugin, for a caller
-    /// that plugs the screen in itself with [`crate::pass::plug`].
+    /// that plugs the screen in itself with [`crate::pass::plug`], as a
+    /// test harness does before its first frame.
     pub fn link(&self) -> crate::pass::Shared {
         self.link.clone()
     }

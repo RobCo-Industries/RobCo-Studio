@@ -167,7 +167,15 @@ impl egui::Plugin for Plugin {
 /// eframe's render state, the pass is made on its device and the plugin
 /// draws through it. Add it before the first frame, so the pass's renderer
 /// sees every texture from the start.
+///
+/// This is the only way in, and only the first call for a context counts:
+/// a later one, from the program or a test, changes nothing. egui keeps one
+/// plugin of a type, but a second pass would still replace the first in
+/// eframe's resources and lose its textures, so the context is asked first.
 pub fn plug(ctx: &egui::Context, link: Shared, gpu: Option<&RenderState>) {
+    if ctx.plugin_opt::<Plugin>().is_some() {
+        return;
+    }
     let pending = gpu.map(|rs| {
         let pass = Pass::new(&rs.device, rs.target_format);
         rs.renderer.write().callback_resources.insert(pass);
@@ -638,6 +646,57 @@ mod tests {
         assert_eq!(free, [id(1), id(2)]);
         assert!(step.set.is_empty());
         assert!(q.take().free.is_empty());
+    }
+
+    /// Plugged twice, the second time with another link: a click on a
+    /// button where the curve draws it still lands, and the button's
+    /// rectangle in the tree is mapped once.
+    #[test]
+    fn a_second_plug_changes_nothing() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+        let run = |twice: bool| {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let link = Shared::default();
+            lock(&link).curvature = 0.4;
+            plug(&ctx, link.clone(), None);
+            if twice {
+                plug(&ctx, link.clone(), None);
+                plug(&ctx, Shared::default(), None);
+            }
+            let rect = std::cell::Cell::new(egui::Rect::NOTHING);
+            let clicked = std::cell::Cell::new(0);
+            let frame = |events: Vec<egui::Event>| {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    ui.add_space(20.0);
+                    let r = ui.button("Corner");
+                    rect.set(r.rect);
+                    clicked.set(clicked.get() + usize::from(r.clicked()));
+                });
+                out.textures_delta.clear();
+                out.platform_output.accesskit_update
+            };
+            let tree = frame(Vec::new());
+            let at = crate::screen::drawn_at(rect.get().center(), screen, 0.4);
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(vec![egui::Event::PointerMoved(at)]);
+            frame(vec![press(true)]);
+            frame(vec![press(false)]);
+            (tree, clicked.get())
+        };
+        let (once, clicks) = run(false);
+        assert_eq!(clicks, 1);
+        assert_eq!(run(true), (once, 1));
     }
 
     /// The uniform block puts each strength where the shader reads it.

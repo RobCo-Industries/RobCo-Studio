@@ -340,6 +340,15 @@ fn screen_harness(
     ppp: f32,
     level: robco_studio::theme::Screen,
 ) -> Harness<'static, Studio> {
+    screen_harness_gpu(folder, ppp, level).0
+}
+
+/// [`screen_harness`] and the render state its pass was made on.
+fn screen_harness_gpu(
+    folder: Option<&Path>,
+    ppp: f32,
+    level: robco_studio::theme::Screen,
+) -> (Harness<'static, Studio>, eframe::egui_wgpu::RenderState) {
     use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
     use robco_studio::screen::Adapter;
     let rs = create_render_state(default_wgpu_setup(), Default::default());
@@ -352,10 +361,10 @@ fn screen_harness(
         .with_size(egui::vec2(1280.0, 720.0))
         .with_pixels_per_point(ppp)
         .with_context_setup(move |ctx| robco_studio::pass::plug(ctx, link, Some(&gpu)))
-        .renderer(WgpuTestRenderer::from_render_state(rs))
+        .renderer(WgpuTestRenderer::from_render_state(rs.clone()))
         .build_ui_state(full_window, studio);
     h.run_steps(3);
-    h
+    (h, rs)
 }
 
 /// The Project page at each screen level, three Live frames half a second
@@ -565,4 +574,33 @@ fn a_texture_dropped_in_its_frame_is_drawn_through_the_pass() {
     let c = spot.center();
     let p = img.get_pixel(c.x as u32, c.y as u32).0;
     assert!(p[0] > 200 && p[1] < 40 && p[2] < 40, "{p:?}");
+}
+
+/// A second plug, after the pass has drawn, changes nothing: the window's
+/// own plug and the harness's, the same context twice, keep one pass and
+/// its textures, so the picture stays.
+#[test]
+#[ignore = "needs a wgpu adapter"]
+fn a_second_plug_keeps_the_pass() {
+    use robco_studio::theme::{Screen, Strengths};
+    let d = sample("replug").unwrap();
+    let (mut h, rs) = screen_harness_gpu(Some(&d), 1.0, Screen::Still);
+    if h.state().theme.screen != Screen::Still {
+        return; // A software adapter: no pass.
+    }
+    h.state_mut().screen.strengths = Strengths::NONE;
+    open_main(&mut h);
+    h.run_steps(4);
+    let before = h.render().unwrap();
+    let ctx = h.ctx.clone();
+    h.state().screen.plug(&ctx, Some(&rs));
+    robco_studio::pass::plug(&ctx, h.state().screen.link(), Some(&rs));
+    h.run_steps(4);
+    let after = h.render().unwrap();
+    let differ = before
+        .pixels()
+        .zip(after.pixels())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(differ, 0, "{differ} pixels differ after a second plug");
 }
