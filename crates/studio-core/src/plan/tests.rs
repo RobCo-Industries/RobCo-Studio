@@ -906,6 +906,50 @@ fn plan_flags_of_pipos_pass() {
     assert_passes("ldflags", &ldflags);
 }
 
+/// Every name of the feature list passes, and nothing else does.
+#[test]
+fn plan_flag_features_are_a_closed_list() {
+    let good: Vec<String> = super::FEATURES.iter().map(|n| format!("-f{n}")).collect();
+    let good: Vec<&str> = good.iter().map(String::as_str).collect();
+    assert_passes("cflags", &good);
+    let bad = [
+        "-fopt-info=secrets",
+        "-fopt-info",
+        "-frandom-seed=x",
+        "-fcompare-debug",
+        "-fplugin=x",
+        "-fdump-tree-all",
+        "-fstack-usage",
+        "-fsyntax-only",
+        "-fsanitize=address",
+        "-flto",
+        "-fvisibility=protected",
+        "-fno-plugin",
+        "-ffreestanding=1",
+        "-fPIC=x",
+        "-f",
+        "-ffree standing",
+    ];
+    for f in bad {
+        assert!(shape_ok("cflags", f).is_err(), "{f:?} passed");
+    }
+}
+
+/// A linker word outside the list is refused, even one that looks
+/// harmless, since ld may read the next part as its value.
+#[test]
+fn plan_flag_linker_words_are_a_closed_list() {
+    for f in [
+        "-Wl,--output,--x",
+        "-Wl,--script,--x",
+        "-Wl,--cref",
+        "-Wl,--print-map",
+        "-Wl,--gc-sections,--trace",
+    ] {
+        assert!(shape_ok("ldflags", f).is_err(), "{f:?} passed");
+    }
+}
+
 #[test]
 fn plan_flags_refused_outside_the_shapes() {
     let bad = [

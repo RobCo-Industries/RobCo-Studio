@@ -285,31 +285,72 @@ const FLAG_SHAPES: &[(&str, Scope, Shape)] = &[
     ("library", Scope::SystemLibs, shape_library),
 ];
 
-/// Feature names that read or write files, are path maps, which Studio
-/// adds itself, or stop the compiler from writing its output.
-///
-/// `syntax-only`: GCC 15 "Options to Request or Suppress Warnings",
-/// <https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Warning-Options.html>,
-/// "Check the code for syntax errors, but don't do anything beyond that."
-/// The build also checks that each command wrote its output, so a flag
-/// this list misses still fails the build.
-const FEATURE_REFUSED: &[&str] = &[
-    "syntax-only",
-    "plugin",
-    "dump",
-    "profile",
-    "auto-profile",
-    "test-coverage",
-    "stack-usage",
-    "callgraph",
-    "save-",
-    "branch-probabilities",
-    "file-prefix-map",
-    "debug-prefix-map",
-    "macro-prefix-map",
-    "canon-prefix-map",
-    "diagnostics-",
+/// The `-f` features a package may ask for: what follows `-f` must be
+/// exactly one entry. The project chose this closed list, stricter than
+/// SDK_PACKAGE.md: GCC has hundreds of `-f` options and several read or
+/// write files, such as `-fopt-info=<file>`, so a list of refused names
+/// would always miss one. A new name is added by a change to this table
+/// and to the spec.
+const FEATURES: &[&str] = &[
+    "freestanding",
+    "function-sections",
+    "data-sections",
+    "builtin",
+    "no-builtin",
+    "common",
+    "no-common",
+    "omit-frame-pointer",
+    "no-omit-frame-pointer",
+    "short-enums",
+    "no-short-enums",
+    "strict-aliasing",
+    "no-strict-aliasing",
+    "wrapv",
+    "signed-char",
+    "unsigned-char",
+    "exceptions",
+    "no-exceptions",
+    "unwind-tables",
+    "no-unwind-tables",
+    "asynchronous-unwind-tables",
+    "no-asynchronous-unwind-tables",
+    "stack-protector",
+    "stack-protector-strong",
+    "stack-protector-all",
+    "no-stack-protector",
+    "pic",
+    "PIC",
+    "no-pic",
+    "pie",
+    "PIE",
+    "no-pie",
+    "merge-constants",
+    "no-merge-constants",
+    "inline",
+    "no-inline",
+    "inline-functions",
+    "no-inline-functions",
+    "toplevel-reorder",
+    "no-toplevel-reorder",
+    "delete-null-pointer-checks",
+    "no-delete-null-pointer-checks",
+    "zero-initialized-in-bss",
+    "no-zero-initialized-in-bss",
+    "ident",
+    "no-ident",
+    "visibility=hidden",
+    "visibility=default",
+    // Pip-OS ships it in PIP_CODEFLAGS, sdk/pipos-app.mk.
+    "no-tree-loop-distribute-patterns",
 ];
+
+/// The words a package may pass to the linker with `-Wl,`. A closed list:
+/// GNU ld takes the value of an option such as `--output` or `--script`
+/// as the next argument, so an open `--word` shape lets `-Wl,--output,--x`
+/// write a file named `--x`. GNU ld manual, "Command-line Options",
+/// <https://sourceware.org/binutils/docs/ld/Options.html>. Seeded with
+/// what Pip-OS ships; a new word is added here and in the spec.
+const LINKER_WORDS: &[&str] = &["--gc-sections", "--no-warn-rwx-segments"];
 
 fn lower_digit(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit()
@@ -327,32 +368,9 @@ fn shape_machine(f: &str) -> bool {
         .is_some_and(|s| word(s, lower_digit, |c| lower_digit(c) || "=+._-".contains(c)))
 }
 
-/// `-f`, a name `[a-z][a-z0-9-]*`, optionally `=` and `[a-z0-9-]+`. A name
-/// of [`FEATURE_REFUSED`] is refused.
+/// `-f` then exactly one entry of [`FEATURES`].
 fn shape_feature(f: &str) -> bool {
-    let Some(s) = f.strip_prefix("-f") else {
-        return false;
-    };
-    let name_ok = |n: &str| {
-        word(
-            n,
-            |c| c.is_ascii_lowercase(),
-            |c| lower_digit(c) || c == '-',
-        )
-    };
-    let (name, ok) = match s.split_once('=') {
-        None => (s, name_ok(s)),
-        Some((n, v)) => (
-            n,
-            name_ok(n)
-                && word(
-                    v,
-                    |c| lower_digit(c) || c == '-',
-                    |c| lower_digit(c) || c == '-',
-                ),
-        ),
-    };
-    ok && !FEATURE_REFUSED.iter().any(|p| name.starts_with(p))
+    f.strip_prefix("-f").is_some_and(|s| FEATURES.contains(&s))
 }
 
 /// `-std=` then `[a-z0-9+:]+`.
@@ -430,19 +448,10 @@ fn shape_undefine(f: &str) -> bool {
     f.strip_prefix("-U").is_some_and(c_name)
 }
 
-/// `-Wl,` then parts joined by commas, each `--[a-z][a-z0-9-]*`.
+/// `-Wl,` then parts joined by commas, each an entry of [`LINKER_WORDS`].
 fn shape_linker(f: &str) -> bool {
-    f.strip_prefix("-Wl,").is_some_and(|s| {
-        s.split(',').all(|p| {
-            p.strip_prefix("--").is_some_and(|n| {
-                word(
-                    n,
-                    |c| c.is_ascii_lowercase(),
-                    |c| lower_digit(c) || c == '-',
-                )
-            })
-        })
-    })
+    f.strip_prefix("-Wl,")
+        .is_some_and(|s| s.split(',').all(|p| LINKER_WORDS.contains(&p)))
 }
 
 /// `-l` then a library name, `[a-z0-9][a-z0-9_+-]*`, such as `-lgcc`.
