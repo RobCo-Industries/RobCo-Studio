@@ -5,6 +5,12 @@
 //! crate. Every wrong form gives `usage`. The spec says nothing of `--`;
 //! here it ends the options, as in most tools, so a positional argument
 //! may start with `-`.
+//!
+//! Here the tool is stricter than the spec. The spec says `--json` counts
+//! wherever it stands, but it was written before `--` existed. Here `--json`
+//! counts only before the first `--`; after it, `--json` is a plain argument.
+//! [`options_end`] finds that boundary, and both [`parse`] and [`wants_json`]
+//! use it, so they cannot differ.
 
 use studio_core::resolve::{Abi, InstallPick, Version};
 
@@ -52,15 +58,28 @@ pub struct Usage {
     pub detail: String,
 }
 
-/// Whether the tool writes JSON lines: one argument is exactly `--json`,
-/// wherever it stands.
+/// Where the options end: the index of the first `--`, or the length of
+/// the list when there is none. Every argument from there on is positional.
+pub fn options_end(args: &[String]) -> usize {
+    args.iter().position(|a| a == "--").unwrap_or(args.len())
+}
+
+/// Whether the tool writes JSON lines: one argument before the first `--`
+/// is exactly `--json`.
 pub fn wants_json(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--json")
+    args[..options_end(args)].iter().any(|a| a == "--json")
 }
 
 /// Reads the arguments after the program name.
 pub fn parse(args: &[String]) -> Result<Command, Usage> {
-    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let end = options_end(args);
+    let words: Vec<&str> = args[..end].iter().map(String::as_str).collect();
+    let after: Vec<&str> = args
+        .get(end + 1..)
+        .unwrap_or_default()
+        .iter()
+        .map(String::as_str)
+        .collect();
     let (command, rest) = match words.as_slice() {
         ["--version"] | ["-V"] | ["version"] => return Ok(Command::Version),
         ["sdk", "list", rest @ ..] => ("sdk list", rest),
@@ -86,11 +105,7 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
     let mut positional = Vec::new();
     let mut it = rest.iter();
     while let Some(&a) = it.next() {
-        if a == "--" {
-            // `--` ends the options: every later argument is positional,
-            // whatever it starts with. So a name such as `-P` can be given.
-            positional.extend(it.by_ref().copied());
-        } else if a == "--json" {
+        if a == "--json" {
             if json {
                 return Err(usage(command, "--json is given twice"));
             }
@@ -122,6 +137,9 @@ pub fn parse(args: &[String]) -> Result<Command, Usage> {
             positional.push(a);
         }
     }
+    // `--` ends the options: every later argument is positional, whatever
+    // it starts with. So a name such as `-P` can be given.
+    positional.extend(after.iter().copied());
 
     match command {
         "sdk list" => match positional.as_slice() {
@@ -361,5 +379,43 @@ mod tests {
         let a = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         assert!(wants_json(&a(&["bogus", "--json"])));
         assert!(!wants_json(&a(&["sdk", "list", "--json=1"])));
+        assert!(wants_json(&a(&["new", "--json", "x", "--", "y"])));
+        assert!(!wants_json(&a(&["new", "holotape-c", "--", "--json"])));
+    }
+
+    #[test]
+    fn parse_and_wants_json_share_the_boundary() {
+        let cases: &[&[&str]] = &[
+            &["new", "a", "b"],
+            &["new", "--json", "a", "b"],
+            &["new", "a", "--", "--json"],
+            &["new", "--json", "--", "a", "--json"],
+            &["new", "--", "a", "--json"],
+            &["sdk", "list", "--", "--json"],
+            &["sdk", "list", "--json", "--"],
+            &["build", "--", "--json"],
+        ];
+        for args in cases {
+            let v: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
+            let end = options_end(&v);
+            // The parser sees `--json` as an option exactly when wants_json
+            // says yes: drop every `--json` before the boundary and the
+            // command does not change; drop one after it and it does, or
+            // fails, as a positional argument went away.
+            let json_before = v[..end].iter().any(|a| a == "--json");
+            assert_eq!(wants_json(&v), json_before, "{args:?}");
+            let stripped: Vec<String> = v
+                .iter()
+                .enumerate()
+                .filter(|(i, a)| !(*i < end && *a == "--json"))
+                .map(|(_, a)| a.clone())
+                .collect();
+            assert_eq!(parse(&v), parse(&stripped), "{args:?}");
+            if let Some(i) = v.iter().skip(end).position(|a| a == "--json") {
+                let mut cut = v.clone();
+                cut.remove(end + i);
+                assert_ne!(parse(&v), parse(&cut), "{args:?}");
+            }
+        }
     }
 }

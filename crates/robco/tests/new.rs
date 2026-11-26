@@ -972,3 +972,22 @@ fn new_a_cache_folder_the_host_will_not_read_is_io_read() {
     assert!(detail.contains("packages"), "{detail}");
     assert!(f.in_work().is_empty());
 }
+
+#[test]
+fn new_json_after_double_dash_is_a_plain_argument() {
+    let f = Fixture::new("dashjson");
+    f.good();
+    // After `--`, `--json` is the name: the plain error form.
+    let o = f.robco(&["new", "holotape-c", "--", "--json"]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(o.stdout.is_empty());
+    let e = String::from_utf8(o.stderr).unwrap();
+    assert_eq!(e.lines().count(), 1, "{e}");
+    assert!(e.starts_with("new: name: "), "{e}");
+    // Before `--`, `--json` asks for JSON lines.
+    let o = f.robco(&["new", "--json", "holotape-c", "--", "-x"]);
+    let (code, _, exit) = failure(&o);
+    assert_eq!((code.as_str(), exit), ("new: name", 3));
+    assert!(o.stderr.is_empty());
+    assert!(f.in_work().is_empty());
+}
