@@ -445,7 +445,6 @@ jobs:
           echo "$XPACK_SHA256  $RUNNER_TEMP/gcc/$f" | sha256sum -c -
           tar -C "$RUNNER_TEMP/gcc" -xzf "$RUNNER_TEMP/gcc/$f"
           {
-            echo "CROSS=$RUNNER_TEMP/gcc/$name/bin/arm-none-eabi-"
             echo "AGREE_GCC_ARCHIVE=$RUNNER_TEMP/gcc/$f"
             echo "AGREE_GCC_ROOT=$name"
             echo "PIPOS_ZIP=$(ls "$RUNNER_TEMP"/pkg/pipos-*.zip)"
@@ -469,18 +468,19 @@ jobs:
         run: |
           AGREE_GCC_RELEASE="$XPACK_RELEASE" OUT="$RUNNER_TEMP/agreement/xpack" tools/agreement.sh
       # The container's own arm-none-eabi-gcc in place of xPack for the
-      # Make build: the run must fail with a check, exit 2, and its two
-      # tapes must differ.
+      # Make build: the run must fail at check 3, exit 2, because the gcc
+      # program differs from the archive's, and its two tapes must differ.
       - name: The container's compiler fails the check
         working-directory: studio
         run: |
           out="$RUNNER_TEMP/agreement/container-gcc"
-          rel="$(arm-none-eabi-gcc -dumpversion)-container"
           set +e
-          CROSS=arm-none-eabi- AGREE_GCC_RELEASE="$rel" OUT="$out" tools/agreement.sh
+          CROSS=arm-none-eabi- OUT="$out" tools/agreement.sh 2>"$RUNNER_TEMP/container-gcc.err"
           code=$?
           set -e
+          cat "$RUNNER_TEMP/container-gcc.err"
           test "$code" -eq 2
+          grep -q '^agreement: FAILED: 3. gcc: the gcc program Make ran has SHA-256 ' "$RUNNER_TEMP/container-gcc.err"
           test "$(sed -n 1p "$out/hashes.txt" | cut -d' ' -f1)" != "$(sed -n 2p "$out/hashes.txt" | cut -d' ' -f1)"
       - uses: actions/upload-artifact@v4
         if: always()
