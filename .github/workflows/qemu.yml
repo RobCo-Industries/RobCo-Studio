@@ -196,22 +196,51 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The forbidden values reach the scan through the environment and
+      # Python's own host name, so Git Bash cannot rewrite them as it does
+      # a path passed as an argument to a native program.
       - name: No path or name of the build machine in the package
         run: |
           py=python
-          work=$(sed -n 's/^work: //p' out/build/build.txt)
-          test -n "$work"
-          forbid=(--forbid "$work" --forbid "$HOME" --forbid "$GITHUB_WORKSPACE" --forbid "$RUNNER_TEMP" --forbid "$(hostname)")
+          SCAN_WORK=$(sed -n 's/^work: //p' out/build/build.txt)
+          test -n "$SCAN_WORK"
+          export SCAN_WORK
+          forbid=(--forbid-env SCAN_WORK --forbid-env HOME --forbid-env GITHUB_WORKSPACE --forbid-env RUNNER_TEMP --forbid-host)
           rm -rf scanned && cp -r out/qemu scanned
-          echo "$HOME" >> scanned/NOTICE
+          # The home folder, planted in each spelling, each in its own file,
+          # one in UTF-16. Python reads it from the environment; the shell
+          # writes its own spelling too.
+          echo "$HOME" > scanned/planted-shell
+          names=$($py - scanned <<'EOF'
+          import os, re, sys
+          home, d = os.environ["HOME"], sys.argv[1]
+          plant = {"as-is": home, "slash": home.replace("\\", "/"), "backslash": home.replace("/", "\\")}
+          m = re.match(r"^(?:([A-Za-z]):[\\/]|/([A-Za-z])/)(.*)$", home)
+          if m:
+              drive, rest = (m.group(1) or m.group(2)), m.group(3).replace("\\", "/")
+              plant |= {"upper-drive": f"{drive.upper()}:\\{rest}".replace("/", "\\"),
+                        "lower-drive": f"{drive.lower()}:/{rest}",
+                        "msys": f"/{drive.lower()}/{rest}", "cygdrive": f"/cygdrive/{drive.lower()}/{rest}"}
+          for name, text in plant.items():
+              with open(os.path.join(d, f"planted-{name}"), "wb") as f:
+                  f.write(b"x " + text.encode() + b"\n")
+          with open(os.path.join(d, "planted-utf16"), "wb") as f:
+              f.write(("x " + home + "\n").encode("utf-16-le"))
+          print(" ".join(["shell", "utf16"] + sorted(plant)))
+          EOF
+          )
+          echo "Planted: $names"
+          case $RUNNER_OS in Windows) case " $names " in *" cygdrive "*) ;; *) echo "no drive spelling planted"; exit 1 ;; esac ;; esac
           set +e
           $py tools/qemu/release.py scan scanned "${forbid[@]}" > scan.log 2>&1
           code=$?
           set -e
-          echo "The copy with a planted path, which must fail:"
+          echo "The copy with a planted path in each spelling, which must fail on each:"
           cat scan.log
           test "$code" -eq 1
-          grep -qF "FAIL: NOTICE holds" scan.log
+          for n in $names; do
+            grep -qF "FAIL: planted-$n holds" scan.log || { echo "the scan missed planted-$n"; exit 1; }
+          done
           # Each hit is followed by the string around it and its offset.
           echo "The package itself:"
           $py tools/qemu/release.py scan out/qemu "${forbid[@]}"
