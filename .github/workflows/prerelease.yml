@@ -1,0 +1,144 @@
+name: prerelease
+
+# A pre-release of robco: the program for Linux, macOS and Windows, the
+# third-party notices of each, and robco-SHA256SUMS, the SHA-256 of every
+# file. The programs are built by release-build.yml, as in ci.yml.
+#
+# Only the publish job publishes, and only for a pushed tag of the form
+# robco-<version>-pre.<n>, where <version> is the workspace version, such
+# as robco-0.1.0-pre.1. A pull request, a manual start or a branch is a
+# dry run: the same files, as an artifact. No run script holds a GitHub
+# expression: every value reaches it through env.
+
+on:
+  push:
+    tags:
+      - "robco-*"
+  pull_request:
+    paths:
+      - tools/release/**
+      - .github/workflows/prerelease.yml
+      - .github/workflows/release-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests of the tag check, the SHA-256 list and the notices
+        run: python3 -I -m unittest discover -s tools/release -v
+
+  build:
+    uses: ./.github/workflows/release-build.yml
+
+  # Every run: gather the three programs and their notices, check the
+  # tag on a tag push, write the list, and keep it all as an artifact.
+  release:
+    needs: [tools, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TAG: ${{ startsWith(github.ref, 'refs/tags/robco-') && github.ref_name || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: robco-*
+          path: dist
+          merge-multiple: true
+      - name: The six files, and no other
+        run: |
+          ls -l dist
+          want=$(printf '%s\n' robco-linux-x64 robco-linux-x64-NOTICES.txt \
+            robco-macos-arm64 robco-macos-arm64-NOTICES.txt \
+            robco-windows-x64-NOTICES.txt robco-windows-x64.exe | LC_ALL=C sort)
+          got=$(cd dist && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+          if [ "$got" != "$want" ]; then
+            echo "::error::dist holds other files than the release:"
+            diff <(echo "$want") <(echo "$got")
+            exit 1
+          fi
+      # The Linux program names its version and the RobCo-Core commit, which
+      # must be the one this commit pins.
+      - name: Version and RobCo-Core commit
+        run: |
+          chmod +x dist/robco-linux-x64
+          line=$(dist/robco-linux-x64 --version --json)
+          echo "$line"
+          version=$(printf '%s' "$line" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          core=$(printf '%s' "$line" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["robco_core"])')
+          pin=$(git ls-tree HEAD external/robco-core | awk '{print $3}')
+          if [ "$core" != "$pin" ]; then
+            echo "::error::robco names RobCo-Core $core, the pin is $pin"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Tag check
+        if: env.TAG != ''
+        run: bash tools/release/check-tag.sh
+      - name: SHA-256 list
+        run: bash tools/release/sums.sh dist robco-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: robco-prerelease
+          path: dist
+          if-no-files-found: error
+
+  # Publishes only for a pushed tag that starts with robco-, and checks
+  # the tag's whole form again, as a string, before it uploads anything.
+  # Never on a branch, a pull request or a manual start.
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/robco-')
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: robco-prerelease
+          path: dist
+      - name: Tag check
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          chmod +x dist/robco-linux-x64
+          VERSION=$(dist/robco-linux-x64 --version --json \
+            | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          export VERSION
+          bash tools/release/check-tag.sh
+          cd dist && sha256sum -c robco-SHA256SUMS
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          core=$(dist/robco-linux-x64 --version --json \
+            | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["robco_core"])')
+          {
+            echo "robco, a pre-release, under GPL-3.0-or-later. Built with RobCo-Core $core."
+            echo
+            echo "One program per system: Linux x64, static with musl; macOS on Apple silicon;"
+            echo "Windows x64, with the C runtime linked in. Not signed and not notarised."
+            echo "Each robco-<system>-NOTICES.txt holds the licences of the code it contains."
+            echo "robco-SHA256SUMS lists the SHA-256 of every file."
+          } > notes.md
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --prerelease --title "robco $TAG" --notes-file notes.md
