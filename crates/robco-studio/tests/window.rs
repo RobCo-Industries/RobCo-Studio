@@ -1490,3 +1490,19 @@ fn cancel_on_the_second_question_keeps_both_edits_in_a_quit() {
         "no edit dropped"
     );
 }
+
+#[test]
+fn an_open_chooser_takes_no_click() {
+    let a = pipes("chooser-click").unwrap();
+    let (mut h, _) = with_fake(Some(&*a), None);
+    press_open(&mut h);
+    assert!(h.state().choosing());
+    page_tab(&h, "Card").unwrap().click();
+    h.run_steps(2);
+    assert_eq!(h.state().page, Page::Project, "the page tab does not act");
+    // A screen reader's click reaches the widget past the scrim.
+    page_tab(&h, "Card").unwrap().click_accesskit();
+    h.run_steps(2);
+    assert_eq!(h.state().page, Page::Project, "nor by a screen reader");
+    h.get_by_label(robco_studio::app::CHOOSING);
+}

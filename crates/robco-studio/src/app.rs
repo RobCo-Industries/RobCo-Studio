@@ -621,10 +621,20 @@ impl Studio {
         let ctx = ui.ctx().clone();
         self.choose_folder(&ctx);
         self.prepare(&ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && !self.editor.request_quit() {
+        // While the folder chooser is open the window stays: the chooser
+        // answers first, as with every other command.
+        if ctx.input(|i| i.viewport().close_requested())
+            && (self.choosing() || !self.editor.request_quit())
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.keys(&ctx);
+        // While the chooser is open nothing in the window acts: the whole
+        // frame is drawn disabled, under the scrim of the window's dialogs.
+        let choosing = self.choosing();
+        if choosing {
+            ui.disable();
+        }
         let Some((art, _, _)) = self.art.take() else {
             return;
         };
@@ -653,6 +663,9 @@ impl Studio {
             other => self.later_page(&kit, &mut page_ui, page, other),
         }
         self.status_bar(&kit, ui, status);
+        if choosing {
+            scrim(&kit, &ctx, full);
+        }
         self.dialog(&kit, &ctx, full);
         self.finish_switch();
         if self.theme.effects() == Effects::Soft {
@@ -960,7 +973,12 @@ impl Studio {
         };
         let division = "Engineering division";
         let div_w = kit.caps_width(&s, division) + size::FOOTER_SEG_PAD * 2.0 + stroke_w() * 2.0;
-        let (level, text) = &self.status;
+        let choosing = (Level::Info, CHOOSING.to_owned());
+        let (level, text) = if self.choosing() {
+            &choosing
+        } else {
+            &self.status
+        };
         let msg_need = size::FOOTER_SEG_PAD
             + size::ICON
             + size::UNIT * 2.0
@@ -1635,14 +1653,7 @@ impl Studio {
             return;
         };
         let p = kit.p();
-        egui::Area::new(Id::unique("scrim"))
-            .order(egui::Order::Middle)
-            .fixed_pos(full.min)
-            .show(ctx, |ui| {
-                ui.painter()
-                    .rect_filled(full, CornerRadius::ZERO, kit.theme.scrim());
-                ui.allocate_rect(full, Sense::click());
-            });
+        scrim(kit, ctx, full);
         let w = size::DIALOG_W;
         let h = size::DIALOG_H;
         let rect = Rect::from_center_size(full.center(), egui::vec2(w, h));
@@ -1728,6 +1739,21 @@ impl Studio {
         }
     }
 }
+
+/// The scrim over the whole window, which takes every click under it.
+fn scrim(kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
+    egui::Area::new(Id::unique("scrim"))
+        .order(egui::Order::Middle)
+        .fixed_pos(full.min)
+        .show(ctx, |ui| {
+            ui.painter()
+                .rect_filled(full, CornerRadius::ZERO, kit.theme.scrim());
+            ui.allocate_rect(full, Sense::click());
+        });
+}
+
+/// The status line while the folder chooser is open.
+pub const CHOOSING: &str = "A folder dialog is open.";
 
 fn stroke_w() -> f32 {
     crate::theme::stroke::FRAME
