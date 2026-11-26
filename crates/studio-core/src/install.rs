@@ -1138,28 +1138,6 @@ pub const TEMPLATES_LICENCES_DIR: &str = "LICENSES";
 /// only, so it must hold that file and holds nothing else.
 pub const TEMPLATES_LICENCES: &[&str] = &["MIT.txt"];
 
-/// "Layout of templates": whether a `templates` package may hold `path`, a
-/// `/` path from its root, a folder when `folder` is true. The root holds
-/// `sdk.json`, `templates.json`, `LICENSES/` and one folder per id that
-/// `templates.json` lists in `ids`, and "The archive holds nothing else".
-/// `cached` also allows the [`RECORD`] that a finished install writes at
-/// the root. What lies under a template folder is checked elsewhere, by
-/// `files` of `templates.json`.
-pub fn templates_layout_allows(path: &str, folder: bool, ids: &[&str], cached: bool) -> bool {
-    let (first, rest) = match path.split_once('/') {
-        Some((f, r)) => (f, Some(r)),
-        None => (path, None),
-    };
-    if ids.contains(&first) {
-        return rest.is_some() || folder;
-    }
-    match rest {
-        None if folder => first == TEMPLATES_LICENCES_DIR,
-        None => TEMPLATES_ROOT_FILES.contains(&first) || (cached && first == RECORD),
-        Some(r) => first == TEMPLATES_LICENCES_DIR && !folder && TEMPLATES_LICENCES.contains(&r),
-    }
-}
-
 /// A `templates` package, by [`templates::validate`], the check `robco
 /// new` makes too. The entries are the archive's, each file with the size
 /// `sdk.json` lists, which the hash of each file then holds to. Fails with

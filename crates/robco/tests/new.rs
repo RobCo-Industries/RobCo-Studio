@@ -1139,3 +1139,210 @@ fn new_an_old_unreadable_install_does_not_hide_a_newer_one() {
     );
     check_project(&f.work().join("PIPES"), "PIPES");
 }
+
+/// A package for the table: its files but `sdk.json`, its folder entries,
+/// and the size `sdk.json` is padded to.
+#[derive(Clone)]
+struct Pkg {
+    files: Vec<(String, Vec<u8>)>,
+    dirs: Vec<String>,
+    pad: Option<u64>,
+}
+
+impl Pkg {
+    fn json(json: &str) -> Self {
+        Self {
+            files: package_files(json),
+            dirs: Vec::new(),
+            pad: None,
+        }
+    }
+    fn spec() -> Self {
+        Self::json(TEMPLATES_JSON)
+    }
+    /// The spec's example with `from` replaced by `to` in `templates.json`.
+    fn edit(from: &str, to: &str) -> Self {
+        assert!(TEMPLATES_JSON.contains(from), "{from}");
+        Self::json(&TEMPLATES_JSON.replacen(from, to, 1))
+    }
+    fn with(mut self, path: &str, bytes: &[u8]) -> Self {
+        self.files.push((path.into(), bytes.to_vec()));
+        self.files.sort();
+        self
+    }
+    fn without(mut self, path: &str) -> Self {
+        self.files.retain(|(p, _)| p != path);
+        self
+    }
+    fn dir(mut self, path: &str) -> Self {
+        self.dirs.push(path.into());
+        self
+    }
+    fn pad(mut self, size: u64) -> Self {
+        self.pad = Some(size);
+        self
+    }
+    fn sdk(&self) -> Vec<u8> {
+        let mut b = sdk_json(&self.files).to_string().into_bytes();
+        if let Some(n) = self.pad {
+            b.resize(usize::try_from(n).unwrap(), b' ');
+        }
+        b
+    }
+    fn zip(&self) -> Vec<u8> {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let o = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        z.start_file("sdk.json", o).unwrap();
+        z.write_all(&self.sdk()).unwrap();
+        for d in &self.dirs {
+            z.add_directory(d.as_str(), o).unwrap();
+        }
+        for (p, b) in &self.files {
+            z.start_file(p.as_str(), o).unwrap();
+            z.write_all(b).unwrap();
+        }
+        z.finish().unwrap().into_inner()
+    }
+    /// Puts the package in the cache by hand, as a finished install.
+    fn place(&self, f: &Fixture) {
+        let pkg = f.pkg();
+        for d in &self.dirs {
+            fs::create_dir_all(pkg.join(d)).unwrap();
+        }
+        for (p, b) in &self.files {
+            let at = pkg.join(p);
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::write(at, b).unwrap();
+        }
+        fs::write(pkg.join("sdk.json"), self.sdk()).unwrap();
+        fs::write(pkg.join(".robco-archive"), format!("{}\n", "a".repeat(64))).unwrap();
+    }
+}
+
+/// `TEMPLATES_JSON` with a second template, `holotape-b`, before it.
+fn two_ids_json() -> String {
+    TEMPLATES_JSON.replacen(
+        "  \"templates\": [\n    {",
+        "  \"templates\": [\n    {\"id\": \"holotape-b\", \"title\": \"B\", \"description\": \"B.\", \"kind\": \"holotape\", \"files\": [{\"path\": \"robco.toml\", \"substitute\": true}]},\n    {",
+        1,
+    )
+}
+
+/// `TEMPLATES_JSON` with only `robco.toml`: the real shape at its smallest.
+fn one_file_json() -> String {
+    let mut s = TEMPLATES_JSON.to_owned();
+    for p in ["icon.pbm", "src/main.c", "tests/golden/start/ready.png"] {
+        s = s.replacen(
+            &format!("        {{\"path\": \"{p}\", \"substitute\": false}},\n"),
+            "",
+            1,
+        );
+    }
+    s.replacen(
+        ",\n        {\"path\": \"tests/start.toml\", \"substitute\": false}",
+        "",
+        1,
+    )
+}
+
+/// The table: a name, a package, and whether it is valid. One row per case.
+#[rustfmt::skip]
+fn verdict_cases() -> Vec<(&'static str, Pkg, bool)> {
+    let one = Pkg::json(&one_file_json()).without("holotape-c/icon.pbm").without("holotape-c/src/main.c").without("holotape-c/tests/golden/start/ready.png").without("holotape-c/tests/start.toml");
+    let max = studio_core::install::MAX_MANIFEST;
+    vec![
+        ("spec example", Pkg::spec(), true),
+        ("spec example with folders", Pkg::spec().dir("holotape-c/").dir("holotape-c/src/").dir("LICENSES/"), true),
+        ("one template, one file", one, true),
+        ("sdk.json at its limit", Pkg::spec().pad(max), true),
+        ("id with no folder", Pkg::json(&two_ids_json()), false),
+        ("extra root file", Pkg::spec().with("README.txt", b"x\n"), false),
+        ("extra root folder", Pkg::spec().dir("docs/"), false),
+        ("unlisted template folder", Pkg::spec().with("holotape-b/robco.toml", b"x\n"), false),
+        ("unlisted template file", Pkg::spec().with("holotape-c/notes.txt", b"x\n"), false),
+        ("empty folder in a template", Pkg::spec().dir("holotape-c/empty/"), false),
+        ("folders differ by case", Pkg::json(&folder_case_json()).with("holotape-c/A/foo.c", b"x\n").with("holotape-c/a/bar.c", b"y\n"), false),
+        ("reserved path", Pkg::edit("{\"path\": \"src/main.c\"", "{\"path\": \"build/x\", \"substitute\": false},\n        {\"path\": \"src/main.c\"").with("holotape-c/build/x", b"x\n"), false),
+        ("sdk.json over its limit", Pkg::spec().pad(max + 1), false),
+        ("extra licence", Pkg::spec().with("LICENSES/OTHER.txt", b"x\n"), false),
+        ("no licence", Pkg::spec().without("LICENSES/MIT.txt"), false),
+        ("listed file absent", Pkg::spec().without("holotape-c/icon.pbm"), false),
+        ("unknown field", Pkg::edit("\"kind\": \"holotape\",", "\"kind\": \"holotape\", \"x\": 1,"), false),
+        ("token in a path", Pkg::edit("\"icon.pbm\"", "\"@NAME@.pbm\"").without("holotape-c/icon.pbm").with("holotape-c/@NAME@.pbm", b"x\n"), false),
+    ]
+}
+
+/// The installer and `robco new` give one verdict on each package of the
+/// table: both accept it, or both refuse it. `new` reads the package put
+/// in the cache by hand, as an older installer may have left it.
+#[test]
+fn install_and_new_agree_on_every_package() {
+    let mut wrong = Vec::new();
+    for (tag, p, valid) in verdict_cases() {
+        let f = Fixture::new("verdict");
+        f.index(&p.zip());
+        let o = f.robco(&[
+            "sdk",
+            "install",
+            "templates",
+            "--index",
+            "../index.json",
+            "--json",
+        ]);
+        if (o.status.code() == Some(0)) != valid || f.pkg().exists() != valid {
+            wrong.push(format!("install, {tag}"));
+        }
+
+        let f = Fixture::new("verdict");
+        p.place(&f);
+        let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+        if (o.status.code() == Some(0)) != valid || f.in_work().is_empty() == valid {
+            wrong.push(format!("new, {tag}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The finding: a `templates.json` that declares a template the archive
+/// does not hold. The installer refuses it and records nothing, so the
+/// fixed package installs next. The same package left in the cache by an
+/// older installer is refused by `new`, with the way to replace it.
+#[test]
+fn a_declared_template_without_files_is_refused_end_to_end() {
+    let bad = Pkg::json(&two_ids_json());
+    let f = Fixture::new("finding");
+    f.index(&bad.zip());
+    let o = f.robco(&[
+        "sdk",
+        "install",
+        "templates",
+        "--index",
+        "../index.json",
+        "--json",
+    ]);
+    let (code, detail, _) = failure(&o);
+    assert_eq!(code, "package: manifest", "{detail}");
+    assert!(detail.contains("holotape-b/"), "{detail}");
+    assert!(!f.pkg().exists());
+    f.index(&Pkg::spec().zip());
+    let o = f.robco(&["sdk", "install", "templates", "--index", "../index.json"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(
+        f.robco(&["new", "holotape-c", "PIPES"]).status.code(),
+        Some(0)
+    );
+
+    let f = Fixture::new("finding-old");
+    bad.place(&f);
+    for id in ["holotape-b", "holotape-c"] {
+        let d = refused(&f, id, "PIPES", "templates: manifest", 4);
+        let pkg = f.pkg().display().to_string();
+        assert!(d.contains("holotape-b/"), "{d}");
+        assert!(
+            d.contains("the installed package") && d.contains("not valid"),
+            "{d}"
+        );
+        assert!(d.contains(&format!("delete the folder {pkg}")), "{d}");
+        assert!(d.contains("robco sdk install templates"), "{d}");
+    }
+}

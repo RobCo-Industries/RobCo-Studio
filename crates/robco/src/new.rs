@@ -11,12 +11,11 @@
 //! A package comes from an index, so nothing in it may make the command
 //! write outside the new project folder. Three rules hold that:
 //!
-//! - Each template path follows the path rules of a manifest path, and a
-//!   few more that keep it one plain file name per component on every
-//!   system: no `:`, no back slash, no component that starts with `-`, no
-//!   character Windows refuses in a name, no name Windows keeps for a
-//!   device such as `CON` or `NUL`, and no component that ends with a dot
-//!   or a space, which Windows drops.
+//! - The package is checked whole by `studio_core::templates::validate`,
+//!   the check the installer makes too: each template path follows the
+//!   path rules of a manifest path, and a few more that keep it one plain
+//!   file name per component on every system. Only the token rule of a
+//!   file body stays here, since it needs the bytes.
 //! - The package is read without following a link at the last component
 //!   of a path: `templates.json`, `sdk.json` and each template file must
 //!   be regular files, read up to a size limit, and a link under the
@@ -56,31 +55,17 @@
 //!   process that can already write in the person's own folder can do
 //!   this, and closing it needs the same folder by folder opening.
 
-use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value};
 use studio_core::install::{self, Cached};
 use studio_core::manifest;
-use studio_core::resolve::{TEMPLATES, Version, case_clash, sdk_json};
+use studio_core::resolve::{TEMPLATES, Version, sdk_json};
+use studio_core::templates::{self, Entry, Kind, Template};
 
 use crate::Failure;
 use crate::lines::{Out, Val};
-
-/// The `templates.json` `format` this tool reads.
-const FORMAT: u64 = 1;
-
-/// The paths of a project folder that only the tool writes, by "A project
-/// folder" of `docs/spec/STUDIO_PROJECT.md`: a template that lists one, or
-/// a path under one, is refused. Compared in lower case, so a case-blind
-/// file system cannot map another spelling onto them.
-const RESERVED: &[&str] = &["robco.lock", "build"];
-
-/// The file every template holds at its root: it makes the folder a
-/// project.
-const PROJECT_MANIFEST: &str = "robco.toml";
 
 /// The one token a template may hold.
 const NAME_TOKEN: &[u8] = b"@NAME@";
@@ -93,20 +78,6 @@ pub struct Request<'a> {
     pub name: &'a str,
     /// The current folder, where `NAME` is written.
     pub cwd: &'a Path,
-}
-
-/// A template of `templates.json`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Template {
-    id: String,
-    files: Vec<TemplateFile>,
-}
-
-/// A file of a template.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TemplateFile {
-    path: String,
-    substitute: bool,
 }
 
 /// Runs the command. The caller writes the error and the failed `result`
@@ -126,7 +97,7 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     )?
     .ok_or_else(|| {
         Failure::new(
-            "package: manifest",
+            PACKAGE_MANIFEST,
             format!(
                 "sdk.json is missing from the installed package {}",
                 pkg.display()
@@ -134,38 +105,20 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
         )
     })?;
     let sdk = sdk_json::parse(&sdk).map_err(|e| Failure::of(&e))?;
-    if sdk.name != TEMPLATES {
-        return Err(Failure::new(
-            "package: manifest",
-            format!(
-                "{}: sdk.json names the package {}, not templates",
-                pkg.display(),
-                sdk.name
-            ),
-        ));
-    }
 
-    // 4. templates.json, and the files each template lists.
+    // 4. The whole package, by the check the installer makes too.
     let list = read_regular(
-        &pkg.join("templates.json"),
+        &pkg.join(install::TEMPLATES_LIST),
         install::MAX_TEMPLATES_LIST,
         TEMPLATES_MANIFEST,
-    )?
-    .ok_or_else(|| {
-        Failure::new(
-            "templates: manifest",
-            format!("templates.json is missing from {}", pkg.display()),
-        )
-    })?;
-    let templates = parse_templates(&list)?;
-    check_root(&pkg, &templates)?;
-    for t in &templates {
-        check_folder(&pkg, t)?;
-    }
+    )?;
+    let entries = package_entries(&pkg, sdk.files.len())?;
+    let list = templates::validate(&sdk, list.as_deref(), &entries, &templates::Limits::DEFAULT)
+        .map_err(|e| invalid_package(&pkg, e))?;
 
     // 5. The template asked for.
-    let Some(t) = templates.iter().find(|t| t.id == req.template) else {
-        let ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
+    let Some(t) = list.iter().find(|t| t.id == req.template) else {
+        let ids: Vec<&str> = list.iter().map(|t| t.id.as_str()).collect();
         return Err(Failure::new(
             "new: template",
             format!(
@@ -178,37 +131,7 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     };
 
     // 6. Read every file, and check the tokens of each substitute file.
-    let mut files = Vec::with_capacity(t.files.len());
-    let mut total: u64 = 0;
-    for f in &t.files {
-        let path = file_path(&pkg, &t.id, &f.path);
-        let bytes = read_regular(&path, install::MAX_TEMPLATE_FILE, TEMPLATES_MANIFEST)?
-            .ok_or_else(|| {
-                Failure::new(
-                    "templates: manifest",
-                    format!("{}/{}: gone while the command read it", t.id, f.path),
-                )
-            })?;
-        total = total.saturating_add(bytes.len() as u64);
-        if total > install::MAX_TEMPLATE_BYTES {
-            return Err(Failure::new(
-                "templates: manifest",
-                format!(
-                    "{}/: more than {} bytes in all",
-                    t.id,
-                    install::MAX_TEMPLATE_BYTES
-                ),
-            ));
-        }
-        let bytes = if f.substitute {
-            substitute(&bytes, req.name.as_bytes()).map_err(|tok| {
-                Failure::new("templates: token", format!("{}/{}: {tok}", t.id, f.path))
-            })?
-        } else {
-            bytes
-        };
-        files.push((f.path.as_str(), bytes));
-    }
+    let files = read_template(&pkg, t, req.name)?;
 
     // 7. The target folder.
     let target = req.cwd.join(req.name);
@@ -234,6 +157,114 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
         ],
     );
     Ok(())
+}
+
+/// A package in the cache that [`templates::validate`] refuses. An older
+/// tool may have installed it under a narrower check, and a reinstall
+/// skips a finished install, so the line says how to replace it. No
+/// command removes a package yet: the folder is deleted by hand.
+fn invalid_package(pkg: &Path, e: templates::Error) -> Failure {
+    if e.code == "templates: format" {
+        return Failure::new(e.code, e.detail);
+    }
+    Failure::new(
+        e.code,
+        format!(
+            "the installed package {p} is not valid: {d}. No command removes it yet: delete the folder {p}, then run robco sdk install templates",
+            p = pkg.display(),
+            d = e.detail
+        ),
+    )
+}
+
+/// Step 6: the bytes of each file of `t`, with `@NAME@` replaced in each
+/// substitute file. Kept here, not in [`templates::validate`], because it
+/// needs the bytes: the token rule of a file body. Each file is read up to
+/// the size the check saw, so the limits it checked still hold.
+fn read_template<'t>(
+    pkg: &Path,
+    t: &'t Template,
+    name: &str,
+) -> Result<Vec<(&'t str, Vec<u8>)>, Failure> {
+    let mut files = Vec::with_capacity(t.files.len());
+    for f in &t.files {
+        let path = file_path(pkg, &t.id, &f.path);
+        let changed = || {
+            Failure::new(
+                TEMPLATES_MANIFEST,
+                format!("{}/{}: changed while the command read it", t.id, f.path),
+            )
+        };
+        let bytes = read_regular(&path, f.size, TEMPLATES_MANIFEST)?.ok_or_else(changed)?;
+        if bytes.len() as u64 != f.size {
+            return Err(changed());
+        }
+        let bytes = if f.substitute {
+            substitute(&bytes, name.as_bytes()).map_err(|tok| {
+                Failure::new("templates: token", format!("{}/{}: {tok}", t.id, f.path))
+            })?
+        } else {
+            bytes
+        };
+        files.push((f.path.as_str(), bytes));
+    }
+    Ok(files)
+}
+
+/// Every file and folder of the package folder, as `/` paths from its
+/// root, without following a link. The record of the install is left out:
+/// it is the cache's, not the package's. A name that is not UTF-8 fails.
+/// Far more files than `sdk.json` lists fails at once, so a large tree is
+/// not walked; a few more are left to the check, which names them.
+fn package_entries(pkg: &Path, listed: usize) -> Result<Vec<Entry>, Failure> {
+    let mut out = Vec::new();
+    let mut files = 0usize;
+    let mut stack = vec![(pkg.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|e| read_failure(&dir, &e))? {
+            let entry = entry.map_err(|e| read_failure(&dir, &e))?;
+            let name = entry.file_name().into_string().map_err(|n| {
+                Failure::new(
+                    TEMPLATES_MANIFEST,
+                    format!("{rel}{}: not a UTF-8 name", n.to_string_lossy()),
+                )
+            })?;
+            let path = format!("{rel}{name}");
+            if path == install::RECORD {
+                continue;
+            }
+            let kind = entry
+                .file_type()
+                .map_err(|e| read_failure(&entry.path(), &e))?;
+            if kind.is_dir() {
+                stack.push((entry.path(), format!("{path}/")));
+                out.push(Entry::folder(path));
+            } else if kind.is_file() {
+                let md = entry
+                    .metadata()
+                    .map_err(|e| read_failure(&entry.path(), &e))?;
+                files += 1;
+                if files as u64 > (listed as u64).saturating_add(1 + install::MAX_TEMPLATE_FILES) {
+                    return Err(Failure::new(
+                        TEMPLATES_MANIFEST,
+                        format!(
+                            "{}: holds far more files than sdk.json lists",
+                            pkg.display()
+                        ),
+                    ));
+                }
+                out.push(Entry::file(path, md.len()));
+            } else {
+                out.push(Entry {
+                    path,
+                    kind: Kind::Other,
+                    size: 0,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
 }
 
 fn read_failure(path: &Path, e: &std::io::Error) -> Failure {
@@ -409,416 +440,12 @@ fn file_path(pkg: &Path, id: &str, rel: &str) -> PathBuf {
     p
 }
 
-fn manifest_error(detail: impl Into<String>) -> Failure {
-    Failure::new(
-        "templates: manifest",
-        format!("templates.json: {}", detail.into()),
-    )
-}
-
-/// The keys of each object of `templates.json`.
-const TOP_KEYS: &[&str] = &["format", "templates"];
-const TEMPLATE_KEYS: &[&str] = &["id", "title", "description", "kind", "files"];
-const FILE_KEYS: &[&str] = &["path", "substitute"];
-
-/// Step 4 for the text of `templates.json`, in the order of "Order of
-/// checks": it parses, `format`, unknown fields, then each field in the
-/// order of the tables. The files on disk are [`check_folder`]'s.
-fn parse_templates(bytes: &[u8]) -> Result<Vec<Template>, Failure> {
-    let text = std::str::from_utf8(bytes).map_err(|_| manifest_error("the file is not UTF-8"))?;
-    let root: Value = serde_json::from_str(text)
-        .map_err(|e| manifest_error(format!("the file is not JSON: {e}")))?;
-    let o = root
-        .as_object()
-        .ok_or_else(|| manifest_error("the top value is not an object"))?;
-
-    match o.get("format").map(Value::as_u64) {
-        None => {
-            return Err(Failure::new(
-                "templates: format",
-                "templates.json: format is missing",
-            ));
-        }
-        Some(Some(n)) if n > FORMAT => {
-            return Err(Failure::new(
-                "templates: format",
-                format!(
-                    "templates.json has format {n} and this tool reads {FORMAT}: install a newer tool"
-                ),
-            ));
-        }
-        Some(Some(n)) if n >= 1 => {}
-        Some(_) => {
-            return Err(Failure::new(
-                "templates: format",
-                "templates.json: format is not a positive integer",
-            ));
-        }
-    }
-
-    unknown_fields(o)?;
-
-    let list = match o.get("templates") {
-        None => return Err(manifest_error("templates is missing")),
-        Some(Value::Array(a)) => a,
-        Some(_) => return Err(manifest_error("templates is not an array")),
-    };
-    if list.is_empty() {
-        return Err(manifest_error("templates is empty"));
-    }
-    let mut out: Vec<Template> = Vec::with_capacity(list.len());
-    for (i, v) in list.iter().enumerate() {
-        let at = format!("templates[{i}]");
-        let t = template(&at, v)?;
-        if let Some(prev) = out.last()
-            && prev.id.as_bytes() >= t.id.as_bytes()
-        {
-            return Err(manifest_error(format!(
-                "{at}.id {} {} {}: the list is sorted by id with no id twice",
-                t.id,
-                if prev.id == t.id {
-                    "repeats"
-                } else {
-                    "comes after"
-                },
-                prev.id
-            )));
-        }
-        out.push(t);
-    }
-    Ok(out)
-}
-
-/// Step 4 of "Order of checks": a field this spec does not define, at any
-/// level, before any value is checked. A value of the wrong type is left
-/// to step 5.
-fn unknown_fields(o: &Map<String, Value>) -> Result<(), Failure> {
-    let check = |at: &str, o: &Map<String, Value>, known: &[&str]| match o
-        .keys()
-        .find(|k| !known.contains(&k.as_str()))
-    {
-        Some(k) => Err(manifest_error(format!(
-            "{at}{k} is not a field of this format"
-        ))),
-        None => Ok(()),
-    };
-    check("", o, TOP_KEYS)?;
-    let Some(list) = o.get("templates").and_then(Value::as_array) else {
-        return Ok(());
-    };
-    for (i, t) in list.iter().enumerate() {
-        let Some(t) = t.as_object() else { continue };
-        check(&format!("templates[{i}]."), t, TEMPLATE_KEYS)?;
-        let Some(files) = t.get("files").and_then(Value::as_array) else {
-            continue;
-        };
-        for (j, f) in files.iter().enumerate() {
-            if let Some(f) = f.as_object() {
-                check(&format!("templates[{i}].files[{j}]."), f, FILE_KEYS)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn string<'a>(o: &'a Map<String, Value>, at: &str, key: &str) -> Result<&'a str, Failure> {
-    match o.get(key) {
-        None => Err(manifest_error(format!("{at}.{key} is missing"))),
-        Some(Value::String(s)) => Ok(s),
-        Some(_) => Err(manifest_error(format!("{at}.{key} is not a string"))),
-    }
-}
-
-/// An ASCII text of 1 to `max` bytes, with no control character.
-fn ascii_text(o: &Map<String, Value>, at: &str, key: &str, max: usize) -> Result<(), Failure> {
-    let s = string(o, at, key)?;
-    if s.is_empty() || s.len() > max || !s.bytes().all(|b| (0x20..0x7f).contains(&b)) {
-        return Err(manifest_error(format!(
-            "{at}.{key} is not ASCII text of 1 to {max} bytes"
-        )));
-    }
-    Ok(())
-}
-
-fn is_template_id(id: &str) -> bool {
-    (1..=32).contains(&id.len())
-        && id.as_bytes()[0].is_ascii_lowercase()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/// One template, its fields in the order of the table.
-fn template(at: &str, v: &Value) -> Result<Template, Failure> {
-    let o = v
-        .as_object()
-        .ok_or_else(|| manifest_error(format!("{at} is not an object")))?;
-    let id = string(o, at, "id")?;
-    if !is_template_id(id) {
-        return Err(manifest_error(format!(
-            "{at}.id {id:?}: 1 to 32 of a to z, 0 to 9 and -, starting with a letter"
-        )));
-    }
-    ascii_text(o, at, "title", 64)?;
-    ascii_text(o, at, "description", 200)?;
-    let kind = string(o, at, "kind")?;
-    if kind != "holotape" {
-        return Err(manifest_error(format!(
-            "{at}.kind {kind:?}: this tool writes holotape only"
-        )));
-    }
-    let list = match o.get("files") {
-        None => return Err(manifest_error(format!("{at}.files is missing"))),
-        Some(Value::Array(a)) => a,
-        Some(_) => return Err(manifest_error(format!("{at}.files is not an array"))),
-    };
-    let mut files: Vec<TemplateFile> = Vec::with_capacity(list.len());
-    for (j, f) in list.iter().enumerate() {
-        let fat = format!("{at}.files[{j}]");
-        let fo = f
-            .as_object()
-            .ok_or_else(|| manifest_error(format!("{fat} is not an object")))?;
-        let path = string(fo, &fat, "path")?;
-        let substitute = match fo.get("substitute") {
-            None => return Err(manifest_error(format!("{fat}.substitute is missing"))),
-            Some(Value::Bool(b)) => *b,
-            Some(_) => return Err(manifest_error(format!("{fat}.substitute is not a boolean"))),
-        };
-        check_template_path(&format!("{fat}.path"), path)?;
-        check_not_reserved(&format!("{fat}.path"), path)?;
-        if let Some(prev) = files.last()
-            && prev.path.as_bytes() >= path.as_bytes()
-        {
-            return Err(manifest_error(format!(
-                "{fat}.path {path}: the files are sorted by path with no path twice"
-            )));
-        }
-        files.push(TemplateFile {
-            path: path.to_owned(),
-            substitute,
-        });
-    }
-    // No two paths may differ only in case in any part, the folders above
-    // them included, by the rule the installer keeps for archive entries.
-    if let Some((a, b)) = case_clash(files.iter().map(|f| (f.path.as_str(), true))) {
-        return Err(manifest_error(format!(
-            "{at}.files: {b} and {a} of {id} differ only in case"
-        )));
-    }
-    if !files.iter().any(|f| f.path == PROJECT_MANIFEST) {
-        return Err(manifest_error(format!(
-            "{at}.files: {id} lists no {PROJECT_MANIFEST} at its root"
-        )));
-    }
-    Ok(Template {
-        id: id.to_owned(),
-        files,
-    })
-}
-
-/// A path whose first component, in lower case, is a path of [`RESERVED`]:
-/// the file itself or anything under it.
-fn check_not_reserved(key: &str, path: &str) -> Result<(), Failure> {
-    let first = path.split('/').next().unwrap_or(path).to_lowercase();
-    if RESERVED.contains(&first.as_str()) {
-        return Err(manifest_error(format!(
-            "{key}: {path:?}: only the tool writes {first} in a project"
-        )));
-    }
-    Ok(())
-}
-
-/// Names Windows keeps for devices, in any case and with any extension.
-const DEVICES: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-];
-
-/// The path rules of a manifest path, then the rules that keep each
-/// component one plain file name on every system, then no token.
-fn check_template_path(key: &str, path: &str) -> Result<(), Failure> {
-    manifest::check_relative_path(key, path).map_err(|e| manifest_error(e.detail()))?;
-    let bad = |why: &str| Err(manifest_error(format!("{key}: {path:?}: {why}")));
-    if let Some(c) = path
-        .chars()
-        .find(|c| c.is_control() || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'))
-    {
-        return bad(&format!("holds {c:?}, which a file name may not hold"));
-    }
-    for part in path.split('/') {
-        if part.starts_with('-') {
-            return bad("a component starts with -");
-        }
-        if part.ends_with('.') || part.ends_with(' ') {
-            return bad("a component ends with a dot or a space");
-        }
-        let stem = part.split('.').next().unwrap_or(part).trim_end();
-        if DEVICES.contains(&stem.to_ascii_lowercase().as_str()) {
-            return bad(&format!("{part} is a device name on Windows"));
-        }
-    }
-    if !tokens(path.as_bytes()).is_empty() {
-        return bad("a path holds no token");
-    }
-    Ok(())
-}
-
-/// Step 4 on disk: `<id>/` is a folder, each listed file is a regular file
-/// there, and it holds nothing else. Nothing is followed through a link.
-fn check_folder(pkg: &Path, t: &Template) -> Result<(), Failure> {
-    let bad = |d: String| Failure::new("templates: manifest", d);
-    let root = pkg.join(&t.id);
-    match fs::symlink_metadata(&root) {
-        Ok(md) if md.file_type().is_dir() => {}
-        Ok(_) => return Err(bad(format!("{}/: not a folder", t.id))),
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(bad(format!("{}/: the package does not hold it", t.id)));
-        }
-        Err(e) => return Err(read_failure(&root, &e)),
-    }
-    let mut held = BTreeSet::new();
-    walk(&root, "", &t.id, &mut held)?;
-    for f in &t.files {
-        if !held.contains(&f.path) {
-            return Err(bad(format!(
-                "{}/{}: listed, and the package does not hold it",
-                t.id, f.path
-            )));
-        }
-    }
-    if let Some(extra) = held.iter().find(|h| !t.files.iter().any(|f| &&f.path == h)) {
-        return Err(bad(format!(
-            "{}/{extra}: the package holds it, and files does not list it",
-            t.id
-        )));
-    }
-    Ok(())
-}
-
-/// "Layout of templates": the package root and its licences folder hold
-/// only what [`install::templates_layout_allows`] allows, the same rule
-/// the installer applies, and every licence file is there. A template
-/// folder that `templates.json` does not list is refused here; a listed
-/// one is checked by [`check_folder`].
-fn check_root(pkg: &Path, templates: &[Template]) -> Result<(), Failure> {
-    let layout_error = |d: String| Failure::new(TEMPLATES_MANIFEST, d);
-    let ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
-    let entries = |dir: &Path, rel: &str| -> Result<Vec<(String, bool)>, Failure> {
-        let mut v = Vec::new();
-        for entry in fs::read_dir(dir).map_err(|e| read_failure(dir, &e))? {
-            let entry = entry.map_err(|e| read_failure(dir, &e))?;
-            let name = entry.file_name().into_string().map_err(|n| {
-                layout_error(format!("{rel}{}: not a UTF-8 name", n.to_string_lossy()))
-            })?;
-            let kind = entry
-                .file_type()
-                .map_err(|e| read_failure(&entry.path(), &e))?;
-            if !kind.is_dir() && !kind.is_file() {
-                return Err(layout_error(format!(
-                    "{rel}{name}: a link or not a regular file"
-                )));
-            }
-            v.push((format!("{rel}{name}"), kind.is_dir()));
-        }
-        Ok(v)
-    };
-    let refuse = |name: &str| {
-        layout_error(format!(
-            "{name}: the layout of a templates package does not hold it"
-        ))
-    };
-    let mut licences = false;
-    for (name, folder) in entries(pkg, "")? {
-        if !install::templates_layout_allows(&name, folder, &ids, true) {
-            return Err(refuse(&name));
-        }
-        licences |= folder && name == install::TEMPLATES_LICENCES_DIR;
-    }
-    let dir = install::TEMPLATES_LICENCES_DIR;
-    let mut held = BTreeSet::new();
-    if licences {
-        for (name, folder) in entries(&pkg.join(dir), &format!("{dir}/"))? {
-            if !install::templates_layout_allows(&name, folder, &ids, true) {
-                return Err(refuse(&name));
-            }
-            held.insert(name);
-        }
-    }
-    for l in install::TEMPLATES_LICENCES {
-        let p = format!("{dir}/{l}");
-        if !held.contains(&p) {
-            return Err(layout_error(format!(
-                "{p}: a templates package must hold it"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// The regular files under `dir`, as `/` paths. A link, a name that is not
-/// UTF-8 or any other kind of entry fails the package.
-fn walk(dir: &Path, rel: &str, id: &str, held: &mut BTreeSet<String>) -> Result<(), Failure> {
-    let entries = fs::read_dir(dir).map_err(|e| read_failure(dir, &e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| read_failure(dir, &e))?;
-        let name = entry.file_name().into_string().map_err(|n| {
-            Failure::new(
-                "templates: manifest",
-                format!("{id}/{rel}{}: not a UTF-8 name", n.to_string_lossy()),
-            )
-        })?;
-        let path = format!("{rel}{name}");
-        let kind = entry
-            .file_type()
-            .map_err(|e| read_failure(&entry.path(), &e))?;
-        if kind.is_dir() {
-            walk(&entry.path(), &format!("{path}/"), id, held)?;
-        } else if kind.is_file() {
-            held.insert(path);
-        } else {
-            return Err(Failure::new(
-                "templates: manifest",
-                format!("{id}/{path}: a link or not a regular file"),
-            ));
-        }
-        if held.len() as u64 > install::MAX_TEMPLATE_FILES {
-            return Err(Failure::new(
-                "templates: manifest",
-                format!("{id}/: more than {} files", install::MAX_TEMPLATE_FILES),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The tokens of `b`, as ranges: `@`, one or more of `A` to `Z` and `_`,
-/// then `@`, read from the left.
-fn tokens(b: &[u8]) -> Vec<std::ops::Range<usize>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'@' {
-            let mut j = i + 1;
-            while j < b.len() && (b[j].is_ascii_uppercase() || b[j] == b'_') {
-                j += 1;
-            }
-            if j > i + 1 && j < b.len() && b[j] == b'@' {
-                out.push(i..j + 1);
-                i = j + 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
 /// Replaces every `@NAME@` by `name` and changes nothing else. Any other
 /// token is the error, as text.
 fn substitute(b: &[u8], name: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(b.len());
     let mut at = 0;
-    for r in tokens(b) {
+    for r in templates::tokens(b) {
         let tok = &b[r.clone()];
         if tok != NAME_TOKEN {
             return Err(format!(
@@ -1048,46 +675,6 @@ mod tests {
     }
 
     #[test]
-    fn template_paths_stay_one_plain_name_per_component() {
-        for ok in [
-            "robco.toml",
-            "src/main.c",
-            "tests/golden/start/ready.png",
-            "a-b/c.d",
-        ] {
-            assert!(check_template_path("k", ok).is_ok(), "{ok}");
-        }
-        for bad in [
-            "",
-            "/etc/x",
-            "../x",
-            "a/../x",
-            "a/./x",
-            "a//x",
-            "a\\x",
-            "C:x",
-            "c:/x",
-            "a:b",
-            "src/ab:c",
-            "-rf",
-            "src/-x.c",
-            "con",
-            "src/NUL.c",
-            "Com1.txt",
-            "lpt9",
-            "a./b",
-            "a /b",
-            "a\u{1}b",
-            "a*b",
-            "a?b",
-            "src/@NAME@.c",
-        ] {
-            let e = check_template_path("k", bad).unwrap_err();
-            assert_eq!(e.code, "templates: manifest", "{bad}");
-        }
-    }
-
-    #[test]
     fn a_failure_part_way_leaves_nothing() {
         let cwd = std::env::temp_dir().join(format!("robco-unit-new-{}", std::process::id()));
         let _ = fs::remove_dir_all(&cwd);
@@ -1156,34 +743,5 @@ mod tests {
             .open(&fifo);
         assert!(matches!(got, Ok(Ok(false))), "{got:?}");
         let _ = fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn reserved_paths_are_refused_in_any_case() {
-        for bad in [
-            "robco.lock",
-            "ROBCO.LOCK",
-            "Robco.Lock/x",
-            "build/x",
-            "BUILD/gen/a.c",
-            "build",
-        ] {
-            let e = check_not_reserved("k", bad).unwrap_err();
-            assert_eq!(e.code, "templates: manifest", "{bad}");
-            assert!(e.detail.contains(bad), "{}", e.detail);
-        }
-        for ok in ["robco.toml", "builds/x", "src/build/x", "robco.lock.txt"] {
-            assert!(check_not_reserved("k", ok).is_ok(), "{ok}");
-        }
-    }
-
-    #[test]
-    fn template_ids_follow_their_rule() {
-        for ok in ["holotape-c", "a", "a1-"] {
-            assert!(is_template_id(ok), "{ok}");
-        }
-        for bad in ["", "1a", "-a", "Holotape", "a_b", &"a".repeat(33)] {
-            assert!(!is_template_id(bad), "{bad}");
-        }
     }
 }
