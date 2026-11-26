@@ -72,15 +72,6 @@ use crate::lines::{Out, Val};
 /// The `templates.json` `format` this tool reads.
 const FORMAT: u64 = 1;
 
-/// The largest `sdk.json` or `templates.json` the command reads.
-const MAX_LIST: u64 = 1024 * 1024;
-
-/// The largest template file the command reads.
-const MAX_FILE: u64 = 16 * 1024 * 1024;
-
-/// The most entries a template folder may hold.
-const MAX_ENTRIES: usize = 4096;
-
 /// The paths of a project folder that only the tool writes, by "A project
 /// folder" of `docs/spec/STUDIO_PROJECT.md`: a template that lists one, or
 /// a path under one, is refused. Compared in lower case, so a case-blind
@@ -128,16 +119,20 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     let pkg = newest_package(cache)?;
 
     // 3. Its sdk.json.
-    let sdk =
-        read_regular(&pkg.join("sdk.json"), MAX_LIST, PACKAGE_MANIFEST)?.ok_or_else(|| {
-            Failure::new(
-                "package: manifest",
-                format!(
-                    "sdk.json is missing from the installed package {}",
-                    pkg.display()
-                ),
-            )
-        })?;
+    let sdk = read_regular(
+        &pkg.join("sdk.json"),
+        install::MAX_MANIFEST,
+        PACKAGE_MANIFEST,
+    )?
+    .ok_or_else(|| {
+        Failure::new(
+            "package: manifest",
+            format!(
+                "sdk.json is missing from the installed package {}",
+                pkg.display()
+            ),
+        )
+    })?;
     let sdk = sdk_json::parse(&sdk).map_err(|e| Failure::of(&e))?;
     if sdk.name != TEMPLATES {
         return Err(Failure::new(
@@ -151,13 +146,17 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
     }
 
     // 4. templates.json, and the files each template lists.
-    let list = read_regular(&pkg.join("templates.json"), MAX_LIST, TEMPLATES_MANIFEST)?
-        .ok_or_else(|| {
-            Failure::new(
-                "templates: manifest",
-                format!("templates.json is missing from {}", pkg.display()),
-            )
-        })?;
+    let list = read_regular(
+        &pkg.join("templates.json"),
+        install::MAX_TEMPLATES_LIST,
+        TEMPLATES_MANIFEST,
+    )?
+    .ok_or_else(|| {
+        Failure::new(
+            "templates: manifest",
+            format!("templates.json is missing from {}", pkg.display()),
+        )
+    })?;
     let templates = parse_templates(&list)?;
     for t in &templates {
         check_folder(&pkg, t)?;
@@ -179,14 +178,27 @@ pub fn run(out: &mut Out<'_>, cache: &Path, req: &Request<'_>) -> Result<(), Fai
 
     // 6. Read every file, and check the tokens of each substitute file.
     let mut files = Vec::with_capacity(t.files.len());
+    let mut total: u64 = 0;
     for f in &t.files {
         let path = file_path(&pkg, &t.id, &f.path);
-        let bytes = read_regular(&path, MAX_FILE, TEMPLATES_MANIFEST)?.ok_or_else(|| {
-            Failure::new(
+        let bytes = read_regular(&path, install::MAX_TEMPLATE_FILE, TEMPLATES_MANIFEST)?
+            .ok_or_else(|| {
+                Failure::new(
+                    "templates: manifest",
+                    format!("{}/{}: gone while the command read it", t.id, f.path),
+                )
+            })?;
+        total = total.saturating_add(bytes.len() as u64);
+        if total > install::MAX_TEMPLATE_BYTES {
+            return Err(Failure::new(
                 "templates: manifest",
-                format!("{}/{}: gone while the command read it", t.id, f.path),
-            )
-        })?;
+                format!(
+                    "{}/: more than {} bytes in all",
+                    t.id,
+                    install::MAX_TEMPLATE_BYTES
+                ),
+            ));
+        }
         let bytes = if f.substitute {
             substitute(&bytes, req.name.as_bytes()).map_err(|tok| {
                 Failure::new("templates: token", format!("{}/{}: {tok}", t.id, f.path))
@@ -683,10 +695,10 @@ fn walk(dir: &Path, rel: &str, id: &str, held: &mut BTreeSet<String>) -> Result<
                 format!("{id}/{path}: a link or not a regular file"),
             ));
         }
-        if held.len() > MAX_ENTRIES {
+        if held.len() as u64 > install::MAX_TEMPLATE_FILES {
             return Err(Failure::new(
                 "templates: manifest",
-                format!("{id}/: more than {MAX_ENTRIES} files"),
+                format!("{id}/: more than {} files", install::MAX_TEMPLATE_FILES),
             ));
         }
     }

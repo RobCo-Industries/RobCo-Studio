@@ -512,9 +512,10 @@ fn new_a_bad_sdk_json_is_a_package_error() {
 /// Unix, a link: each file fails under its own code.
 #[test]
 fn new_a_package_list_that_is_not_a_regular_file_fails_under_its_own_code() {
-    for (file, code) in [
-        ("sdk.json", "package: manifest"),
-        ("templates.json", "templates: manifest"),
+    use studio_core::install::{MAX_MANIFEST, MAX_TEMPLATES_LIST};
+    for (file, code, max) in [
+        ("sdk.json", "package: manifest", MAX_MANIFEST),
+        ("templates.json", "templates: manifest", MAX_TEMPLATES_LIST),
     ] {
         // A folder.
         let f = Fixture::new("list-dir");
@@ -523,12 +524,13 @@ fn new_a_package_list_that_is_not_a_regular_file_fails_under_its_own_code() {
         fs::remove_file(&p).unwrap();
         fs::create_dir(&p).unwrap();
         refused(&f, "holotape-c", "PIPES", code, 4);
-        // Over the limit of 1 MiB.
+        // Over its limit.
         let f = Fixture::new("list-big");
         f.good();
         let p = f.pkg().join(file);
-        fs::write(&p, vec![b' '; 1024 * 1024 + 1]).unwrap();
-        refused(&f, "holotape-c", "PIPES", code, 4);
+        fs::write(&p, vec![b' '; usize::try_from(max + 1).unwrap()]).unwrap();
+        let d = refused(&f, "holotape-c", "PIPES", code, 4);
+        assert!(d.contains(&format!("larger than {max} bytes")), "{d}");
         // A link to a good copy.
         #[cfg(unix)]
         {
@@ -885,4 +887,65 @@ fn new_a_template_without_robco_toml_is_refused() {
     fs::remove_file(f.pkg().join("holotape-c/robco.toml")).unwrap();
     let d = refused(&f, "holotape-c", "PIPES", "templates: manifest", 4);
     assert!(d.contains("robco.toml"), "{d}");
+}
+
+/// A package zip whose `sdk.json` is padded with spaces to `size` bytes.
+fn padded_zip(size: u64) -> Vec<u8> {
+    let files = package_files(TEMPLATES_JSON);
+    let mut sdk = sdk_json(&files).to_string().into_bytes();
+    sdk.resize(usize::try_from(size).unwrap(), b' ');
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let o = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    z.start_file("sdk.json", o).unwrap();
+    z.write_all(&sdk).unwrap();
+    for (p, b) in &files {
+        z.start_file(p.as_str(), o).unwrap();
+        z.write_all(b).unwrap();
+    }
+    z.finish().unwrap().into_inner()
+}
+
+/// The installer and `robco new` share one limit for `sdk.json`: a file of
+/// exactly that size installs and writes a project, one byte more is
+/// refused by both.
+#[test]
+fn new_and_install_agree_on_the_sdk_json_limit() {
+    let max = studio_core::install::MAX_MANIFEST;
+    let f = Fixture::new("sdk-limit");
+    f.index(&padded_zip(max));
+    let o = f.robco(&["sdk", "install", "templates", "--index", "../index.json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(fs::metadata(f.pkg().join("sdk.json")).unwrap().len(), max);
+    let o = f.robco(&["new", "holotape-c", "PIPES", "--json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+
+    let f = Fixture::new("sdk-over");
+    f.index(&padded_zip(max + 1));
+    let o = f.robco(&[
+        "sdk",
+        "install",
+        "templates",
+        "--index",
+        "../index.json",
+        "--json",
+    ]);
+    assert_eq!(failure(&o).0, "package: manifest");
+    // The same file put in the cache by hand.
+    f.good();
+    let sdk = f.pkg().join("sdk.json");
+    let mut b = fs::read(&sdk).unwrap();
+    b.resize(usize::try_from(max + 1).unwrap(), b' ');
+    fs::write(&sdk, b).unwrap();
+    let d = refused(&f, "holotape-c", "PIPES", "package: manifest", 4);
+    assert!(d.contains(&max.to_string()), "{d}");
 }

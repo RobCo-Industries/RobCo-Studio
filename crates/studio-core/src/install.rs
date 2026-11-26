@@ -58,8 +58,22 @@ const MANIFEST: &str = "sdk.json";
 // The bounds below are this file's own: the spec does not state them yet.
 // Each read of compressed data stops one byte past its bound.
 
-/// The most bytes of `sdk.json`. The spec does not state this limit yet.
-const MAX_MANIFEST: u64 = 4 << 20;
+/// The most bytes of `sdk.json`, for the installer and for every command
+/// that reads it from the cache. The spec does not state this limit yet.
+pub const MAX_MANIFEST: u64 = 4 << 20;
+/// The most bytes of the `templates.json` of a `templates` package, for
+/// the installer and for `robco new`. The spec does not state this limit
+/// yet.
+pub const MAX_TEMPLATES_LIST: u64 = 1 << 20;
+/// The most bytes of one file of a template, for the installer and for
+/// `robco new`. The spec does not state this limit yet.
+pub const MAX_TEMPLATE_FILE: u64 = 16 << 20;
+/// The most files of one template, for the installer and for `robco new`.
+/// The spec does not state this limit yet.
+pub const MAX_TEMPLATE_FILES: u64 = 4096;
+/// The most bytes of one template, all its files together, for the
+/// installer and for `robco new`. The spec does not state this limit yet.
+pub const MAX_TEMPLATE_BYTES: u64 = 64 << 20;
 /// The most bytes a tool archive may write, all entries together, and the
 /// most bytes of the tar stream of a tar.gz once ungzipped. The spec does
 /// not state this limit yet. The pinned compiler unpacks to about 1 GiB.
@@ -80,6 +94,10 @@ struct Limits {
     tool_bytes: u64,
     tool_entries: u64,
     meta: u64,
+    templates_list: u64,
+    template_file: u64,
+    template_files: u64,
+    template_bytes: u64,
 }
 
 const LIMITS: Limits = Limits {
@@ -87,6 +105,10 @@ const LIMITS: Limits = Limits {
     tool_bytes: MAX_TOOL_BYTES,
     tool_entries: MAX_TOOL_ENTRIES,
     meta: MAX_META,
+    templates_list: MAX_TEMPLATES_LIST,
+    template_file: MAX_TEMPLATE_FILE,
+    template_files: MAX_TEMPLATE_FILES,
+    template_bytes: MAX_TEMPLATE_BYTES,
 };
 
 /// Fetches the bytes of an archive. The caller passes one in, so tests read
@@ -1023,6 +1045,9 @@ fn extract_package(
 
     let listed: BTreeMap<&str, &sdk_json::FileEntry> =
         sdk.files.iter().map(|f| (f.path.as_str(), f)).collect();
+    if entry.name == resolve::TEMPLATES {
+        check_template_sizes(&sdk.files, limits)?;
+    }
     let present: BTreeSet<&str> = files.iter().map(|f| f.name.as_str()).collect();
     // "Layout of pipos" is the narrower rule: a file of the layout that
     // `files` leaves out fails with `package: manifest`, even when the
@@ -1085,6 +1110,52 @@ fn extract_package(
             return Err(Error::PackageHash(format!(
                 "{}: does not match its entry in {MANIFEST} files",
                 f.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The bounds a `templates` package must keep, read from the sizes its
+/// `sdk.json` lists, which the hash of each file then holds to: the same
+/// bounds `robco new` applies when it reads the package from the cache.
+fn check_template_sizes(files: &[sdk_json::FileEntry], limits: Limits) -> Result<(), Error> {
+    let over = |d: String| Error::Manifest(resolve::Error::PackageManifest(d));
+    // Per template id: the count of files and their bytes.
+    let mut per: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+    for f in files {
+        let (first, rest) = f.path.split_once('/').unwrap_or((f.path.as_str(), ""));
+        if f.path == "templates.json" {
+            if f.size > limits.templates_list {
+                return Err(over(format!(
+                    "templates.json: {} bytes, over the limit of {} bytes",
+                    f.size, limits.templates_list
+                )));
+            }
+            continue;
+        }
+        if rest.is_empty() || first == "LICENSES" {
+            continue;
+        }
+        if f.size > limits.template_file {
+            return Err(over(format!(
+                "{}: {} bytes, over the limit of {} bytes for a template file",
+                f.path, f.size, limits.template_file
+            )));
+        }
+        let e = per.entry(first).or_default();
+        e.0 += 1;
+        e.1 = e.1.saturating_add(f.size);
+        if e.0 > limits.template_files {
+            return Err(over(format!(
+                "{first}/: more than {} files",
+                limits.template_files
+            )));
+        }
+        if e.1 > limits.template_bytes {
+            return Err(over(format!(
+                "{first}/: more than {} bytes in all",
+                limits.template_bytes
             )));
         }
     }

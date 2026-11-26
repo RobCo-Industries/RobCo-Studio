@@ -1472,6 +1472,7 @@ fn lim(manifest: u64, tool_bytes: u64, tool_entries: u64, meta: u64) -> Limits {
         tool_bytes,
         tool_entries,
         meta,
+        ..LIMITS
     }
 }
 
@@ -2131,4 +2132,32 @@ fn progress_puts_each_early_failure_in_a_step() {
     let r = watch_zip(&d, &good_zip());
     mode(&parent, 0o755);
     assert_eq!(r, (Err("io: write".to_owned()), strings(IN_DOWNLOAD)));
+}
+
+#[test]
+fn install_refuses_a_templates_package_over_its_template_limits() {
+    let list = b"{\"format\": 1}\n".len() as u64;
+    let main = b"int main(void) { return 0; }\n".len() as u64;
+    let toml = b"[project]\nname = \"x\"\n".len() as u64;
+    let set = |l: &mut Limits, which: usize, v: u64| match which {
+        0 => l.templates_list = v,
+        1 => l.template_file = v,
+        2 => l.template_files = v,
+        _ => l.template_bytes = v,
+    };
+    // Each limit at the exact value installs, one below refuses.
+    for (which, at) in [(0, list), (1, main.max(toml)), (2, 2), (3, main + toml)] {
+        for (v, ok) in [(at, true), (at - 1, false)] {
+            let d = Dir::new("template-limit");
+            let mut l = LIMITS;
+            set(&mut l, which, v);
+            let r = install_zip_with(&d, &good_zip(), l);
+            if ok {
+                assert_eq!(r, Ok(State::Installed), "limit {which} at {v}");
+            } else {
+                let msg = refused(&d, r, "package: manifest");
+                assert!(msg.contains(&v.to_string()), "{msg}");
+            }
+        }
+    }
 }
