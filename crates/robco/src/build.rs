@@ -274,9 +274,7 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
             Some(manifest::read_icon(rel, data.as_deref()).map_err(|e| manifest_failure(&e))?)
         }
     };
-    let mut files = source_files(root, &manifest.build.sources)?;
-    files.sort();
-    let sources = plan_sources(root, &manifest, &files)?;
+    let (files, sources) = plan_sources(root, &manifest.build.sources)?;
     Ok(Project {
         manifest,
         icon,
@@ -289,53 +287,55 @@ fn manifest_failure(e: &ManifestError) -> Failure {
     Failure::of(e)
 }
 
-/// The source list, in link order, each source by its manifest path. A
-/// source that leads outside the project root through a link fails with
-/// `manifest: path`.
-fn plan_sources(root: &Path, m: &Manifest, files: &[String]) -> Result<Vec<String>, Failure> {
-    let files: Vec<&str> = files.iter().map(String::as_str).collect();
-    let list =
-        manifest::expand_sources(&m.build.sources, &files).map_err(|e| manifest_failure(&e))?;
-    for src in &list {
-        if manifest::inside_root(root, "build.sources", src)
-            .map_err(|e| manifest_failure(&e))?
-            .is_none()
-        {
-            return Err(Failure::new(
-                "manifest: sources",
-                format!("{src}: gone while the build read it"),
-            ));
-        }
-    }
-    Ok(list)
-}
-
-/// The regular files of the folders the source patterns name, relative to
-/// the project root with `/`. A pattern's `*` stands only in its last
-/// component, so a pattern reaches one folder and no other folder is read.
-/// A folder that is missing or not a folder gives no files, and the
-/// pattern then matches nothing. Links are followed: a folder or a file
-/// that leads outside the project root fails with `manifest: path`, here
-/// for a folder and in [`plan_sources`] for a file.
-fn source_files(root: &Path, patterns: &[String]) -> Result<Vec<String>, Failure> {
-    let mut dirs: Vec<&str> = patterns
-        .iter()
-        .map(|p| p.rsplit_once('/').map_or("", |(d, _)| d))
-        .collect();
-    dirs.sort_unstable();
-    dirs.dedup();
-    let mut out = Vec::new();
-    for rel in dirs {
+/// The matched files, sorted, and the source list in link order, each
+/// source by its manifest path.
+///
+/// Step 6 of "Order of checks" takes "each pattern of `sources` in order,
+/// `manifest: path` and `manifest: sources`". So one pattern is checked
+/// whole before the next: its folder and its matches against the path
+/// rule, then its own `sources` rules. A later pattern that matches
+/// nothing never hides an earlier pattern's link out of the root.
+///
+/// A pattern's `*` stands only in its last component, so a pattern reaches
+/// one folder and no other folder is read. A folder that is missing or not
+/// a folder gives no files, and the pattern then matches nothing. Links
+/// are followed: a folder or a file that leads outside the project root
+/// fails with `manifest: path`.
+fn plan_sources(root: &Path, patterns: &[String]) -> Result<(Vec<String>, Vec<String>), Failure> {
+    let mut files = Vec::new();
+    for pattern in patterns {
+        let rel = pattern.rsplit_once('/').map_or("", |(d, _)| d);
         let dir = if rel.is_empty() {
             Some(root.to_path_buf())
         } else {
             manifest::inside_root(root, "build.sources", rel).map_err(|e| manifest_failure(&e))?
         };
+        let mut matched = Vec::new();
         if let Some(dir) = dir.filter(|d| d.is_dir()) {
-            list_dir(&dir, rel, patterns, &mut out)?;
+            list_dir(&dir, rel, std::slice::from_ref(pattern), &mut matched)?;
         }
+        matched.sort();
+        for src in &matched {
+            if manifest::inside_root(root, "build.sources", src)
+                .map_err(|e| manifest_failure(&e))?
+                .is_none()
+            {
+                return Err(Failure::new(
+                    "manifest: sources",
+                    format!("{src}: gone while the build read it"),
+                ));
+            }
+        }
+        let refs: Vec<&str> = matched.iter().map(String::as_str).collect();
+        manifest::expand_sources(std::slice::from_ref(pattern), &refs)
+            .map_err(|e| manifest_failure(&e))?;
+        files.extend(matched);
     }
-    Ok(out)
+    files.sort();
+    files.dedup();
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let list = manifest::expand_sources(patterns, &refs).map_err(|e| manifest_failure(&e))?;
+    Ok((files, list))
 }
 
 /// The regular files of one folder, not of its subfolders, a link to a
