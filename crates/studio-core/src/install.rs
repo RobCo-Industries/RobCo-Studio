@@ -530,6 +530,9 @@ fn clear_unfinished(temp: &Path, dir: &Path) -> Result<Option<String>, Error> {
             }
         }
         match cached(dir)? {
+            // When another install took the place, the copy held aside goes
+            // with `temp`: `dir` holds a finished install with a valid
+            // record, all the cache promises, and the caller judges that one.
             Cached::Holds(h) => return Ok(Some(h)),
             Cached::Missing if held.is_none() => return Ok(None),
             Cached::Missing => continue,
