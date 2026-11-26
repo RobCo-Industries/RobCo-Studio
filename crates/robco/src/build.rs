@@ -16,6 +16,11 @@
 //! `manifest: path`, through [`manifest::inside_root`]; the build's own
 //! outputs, the `build` folder, the tape, the temp tape and the objects,
 //! are never written or deleted through a link.
+//!
+//! The build has succeeded once `write_tape` has renamed the tape into
+//! place, the last thing step 11 does. Nothing that can fail runs after
+//! that point: [`run`] only writes the `result` line, from what it already
+//! holds. So a failed build never leaves a new tape.
 
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -113,6 +118,8 @@ struct Project {
     manifest: Manifest,
     icon: Option<[u8; manifest::ICON_SIZE]>,
     files: Vec<String>,
+    /// The source list, in link order, as step 2 checked it.
+    sources: Vec<String>,
 }
 
 /// Runs the command, writing every line but the error and the failed
@@ -212,7 +219,9 @@ pub fn run(out: &mut Out<'_>, cache: &Path, net: &Net, req: &Request<'_>) -> Res
     let sha = sha256_hex(&built);
     let elf = format!("build/{}.elf", m.project.name);
     out.text(&format!("built {tape_rel}, {size} bytes, sha256 {sha}"));
-    let sources = plan_sources(root, &project)?;
+    // Nothing below can fail: the build has succeeded once the tape is
+    // written, and only the result line is left.
+    let sources = project.sources.clone();
     out.ok(
         "build",
         vec![
@@ -267,13 +276,13 @@ fn read_project(root: &Path) -> Result<Project, Failure> {
     };
     let mut files = source_files(root, &manifest.build.sources)?;
     files.sort();
-    let project = Project {
+    let sources = plan_sources(root, &manifest, &files)?;
+    Ok(Project {
         manifest,
         icon,
         files,
-    };
-    plan_sources(root, &project)?;
-    Ok(project)
+        sources,
+    })
 }
 
 fn manifest_failure(e: &ManifestError) -> Failure {
@@ -283,10 +292,10 @@ fn manifest_failure(e: &ManifestError) -> Failure {
 /// The source list, in link order, each source by its manifest path. A
 /// source that leads outside the project root through a link fails with
 /// `manifest: path`.
-fn plan_sources(root: &Path, p: &Project) -> Result<Vec<String>, Failure> {
-    let files: Vec<&str> = p.files.iter().map(String::as_str).collect();
-    let list = manifest::expand_sources(&p.manifest.build.sources, &files)
-        .map_err(|e| manifest_failure(&e))?;
+fn plan_sources(root: &Path, m: &Manifest, files: &[String]) -> Result<Vec<String>, Failure> {
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    let list =
+        manifest::expand_sources(&m.build.sources, &files).map_err(|e| manifest_failure(&e))?;
     for src in &list {
         if manifest::inside_root(root, "build.sources", src)
             .map_err(|e| manifest_failure(&e))?

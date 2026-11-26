@@ -617,3 +617,128 @@ fn an_entry_no_pattern_matches_is_not_looked_at() {
     link(&f, "loop.txt", "proj/src/loop.txt");
     passes_step_2(&f);
 }
+
+/// The hashes a warm cache records and its lock pins.
+#[cfg(unix)]
+const PKG_HASH: &str = "00000000000000000000000000000000000000000000000000000000000000a1";
+#[cfg(unix)]
+const GCC_HASH: &str = "00000000000000000000000000000000000000000000000000000000000000a2";
+
+/// A cache that holds a `pipos` 1.4.0 package and a `gcc` tool, each with
+/// its `.robco-archive`, and a lock that pins both, so a build reads no
+/// index. The two programs are shell scripts: `gcc` makes an empty file at
+/// each `-o`, and `objcopy` writes a raw image as the startup code would,
+/// then runs `hook`, a shell line, in the project root.
+#[cfg(unix)]
+fn warm_cache(f: &Fixture, hook: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut sdk: Value =
+        serde_json::from_str(include_str!("../../studio-core/tests/fixtures/sdk.json")).unwrap();
+    sdk["version"] = json!("1.4.0");
+    sdk["abi"] = json!("1.4");
+    let pkg = "cache/packages/pipos/1.4.0";
+    f.put(
+        &format!("{pkg}/.robco-archive"),
+        format!("{PKG_HASH}\n").as_bytes(),
+    );
+    f.put(&format!("{pkg}/sdk.json"), sdk.to_string().as_bytes());
+    f.put(
+        &format!("{pkg}/flags.json"),
+        include_bytes!("../../studio-core/tests/plan/flags.json"),
+    );
+    let gcc = format!("cache/tools/gcc/15.2.1-1.1/{}", host());
+    f.put(
+        &format!("{gcc}/.robco-archive"),
+        format!("{GCC_HASH}\n").as_bytes(),
+    );
+    let raw = studio_sys::rimg_pack(
+        &[0u8; 64],
+        &studio_sys::PackOpts {
+            magic: "ROBCO78",
+            subtype: 1,
+            load_addr: 0x0080_0000,
+            abi_version: Some(0x0001_0004),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    f.put("raw.bin", &raw);
+    let raw = f.dir.join("raw.bin");
+    let gcc_sh = "#!/bin/sh\nprev=\nfor a; do [ \"$prev\" = -o ] && : > \"$a\"; prev=$a; done\n";
+    let objcopy_sh = format!(
+        "#!/bin/sh\nfor a; do last=$a; done\ncp '{}' \"$last\"\n{hook}\n",
+        raw.display()
+    );
+    for (name, body) in [
+        ("arm-none-eabi-gcc", gcc_sh.to_owned()),
+        ("arm-none-eabi-objcopy", objcopy_sh),
+    ] {
+        let p = format!("{gcc}/bin/{name}");
+        f.put(&p, body.as_bytes());
+        fs::set_permissions(f.dir.join(p), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let lock = STALE_LOCK
+        .replace("1.3.0", "1.4.0")
+        .replace(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            PKG_HASH,
+        )
+        .replace(
+            "0000000000000000000000000000000000000000000000000000000000000002",
+            GCC_HASH,
+        );
+    let lock = lock.replace("linux-x64 = \"", &format!("{} = \"", host()));
+    let lock = dedup_hosts(&lock);
+    f.put("proj/robco.lock", lock.as_bytes());
+}
+
+/// Drops a host line that a replacement made twice within one table.
+#[cfg(unix)]
+fn dedup_hosts(lock: &str) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = String::new();
+    for l in lock.lines() {
+        if l.starts_with('[') {
+            seen.clear();
+        }
+        if let Some((k, _)) = l.split_once(" = ")
+            && !l.starts_with("name")
+            && !l.starts_with("version")
+            && !l.starts_with("sha256")
+            && !l.starts_with("index")
+            && !l.starts_with("format")
+        {
+            if seen.contains(&k) {
+                continue;
+            }
+            seen.push(k);
+        }
+        out.push_str(l);
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn a_warm_cache_builds_a_tape_with_no_index() {
+    let f = Fixture::new("warm");
+    warm_cache(&f, "");
+    let o = f.robco(&["build", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(f.tape().is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_removed_during_the_build_leaves_no_failure_after_the_tape() {
+    // The source goes away before the tape is written. The build already
+    // holds its source list, so it reports it and does not fail after the
+    // tape is in place.
+    let f = Fixture::new("gone");
+    warm_cache(&f, "rm src/main.c");
+    let o = f.robco(&["build", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(f.tape().is_file());
+    assert_eq!(lines(&o).pop().unwrap()["sources"], json!(["src/main.c"]));
+}
