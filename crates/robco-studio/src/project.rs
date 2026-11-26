@@ -78,8 +78,17 @@ pub struct Project {
     pub root_open: bool,
 }
 
+/// `p` as an absolute path without `.` or `..`: resolved through links
+/// when it can be, else joined to the working folder.
+fn absolute(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p)
+        .or_else(|_| std::path::absolute(p))
+        .unwrap_or_else(|_| p.to_owned())
+}
+
 impl Project {
-    /// Open `root` and read its top level.
+    /// Open `root` and read its top level. The root is kept as an
+    /// absolute path, so `.` or `my-project` has a name and a parent.
     pub fn open(root: &Path) -> Result<Project, String> {
         if !root.is_dir() {
             return Err(format!(
@@ -87,6 +96,7 @@ impl Project {
                 root.display()
             ));
         }
+        let root = &absolute(root);
         let path = root.join("robco.toml");
         let manifest = match crate::document::read_regular(&path, crate::document::MAX_FILE) {
             Err(_)
@@ -242,10 +252,13 @@ mod tests {
         let names: Vec<_> = p.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["src", "a.txt"]);
         assert_eq!(p.manifest, Manifest::Missing);
-        p.toggle(&d.join("src"));
+        // The root is absolute and through links: rows hang from it.
+        assert_eq!(p.root, std::fs::canonicalize(&d).unwrap());
+        let root = p.root.clone();
+        p.toggle(&root.join("src"));
         let names: Vec<_> = p.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["src", "main.c", "a.txt"]);
-        assert_eq!(p.shown(&d.join("src/main.c")), "src/main.c");
+        assert_eq!(p.shown(&root.join("src/main.c")), "src/main.c");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

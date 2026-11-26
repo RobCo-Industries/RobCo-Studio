@@ -1272,7 +1272,10 @@ fn open_folder_switches_the_project() {
         fake.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .starts,
-        [a.parent().map(Path::to_path_buf)]
+        [std::fs::canonicalize(&*a)
+            .unwrap()
+            .parent()
+            .map(Path::to_path_buf)]
     );
     assert_eq!(h.state().title(), format!("{name} - RobCo Studio"));
     assert!(tree_root(&h, &name).is_some());
@@ -1505,4 +1508,21 @@ fn an_open_chooser_takes_no_click() {
     h.run_steps(2);
     assert_eq!(h.state().page, Page::Project, "nor by a screen reader");
     h.get_by_label(robco_studio::app::CHOOSING);
+}
+
+#[test]
+fn a_project_opened_as_dot_has_an_absolute_root() {
+    // The tests run in the crate's folder; "." is that folder, read only.
+    let here = std::fs::canonicalize(".").unwrap();
+    let (mut h, fake) = with_fake(Some(Path::new(".")), Some(Choice::Cancelled));
+    let root = h.state().project.as_ref().unwrap().root.clone();
+    assert_eq!(root, here);
+    assert_eq!(h.state().title(), "robco-studio - RobCo Studio");
+    press_open(&mut h);
+    assert_eq!(
+        fake.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .starts,
+        [here.parent().map(Path::to_path_buf)]
+    );
 }
