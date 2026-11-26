@@ -94,7 +94,12 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Class)> {
             while i < b.len() && b[i] != c && b[i] != b'\n' {
                 i += if b[i] == b'\\' { 2 } else { 1 };
             }
-            i = (i + 1).min(b.len());
+            // An unescaped line end ends an unfinished literal: the main loop
+            // takes it, so the next line starts a line.
+            if b.get(i) == Some(&c) {
+                i += 1;
+            }
+            i = i.min(b.len());
             Class::Str
         } else if c.is_ascii_digit() || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit))
         {
@@ -191,5 +196,33 @@ mod tests {
         assert!(k.contains(&("#define A \\\n  1", Class::Preproc)), "{k:?}");
         let k = classes("\\\n#define B\n");
         assert!(k.contains(&("#define B", Class::Preproc)), "{k:?}");
+    }
+
+    #[test]
+    fn directive_after_each_token() {
+        for before in [
+            "int a;",
+            "\"done\"",
+            "\"open",
+            "'c'",
+            "'open",
+            "\"sp\\\nlit\"",
+            "\"a\\\\\"",
+            "// note",
+            "// note \\\nmore",
+            "/* done */",
+            "/* open\nstill */",
+            "#if 1",
+            "#define A \\\n 1",
+            "\\\n",
+            "12.5e+3",
+        ] {
+            let s = format!("{before}\n#define X\n");
+            let k = classes(&s);
+            assert!(
+                k.contains(&("#define X", Class::Preproc)),
+                "{before:?}: {k:?}"
+            );
+        }
     }
 }
