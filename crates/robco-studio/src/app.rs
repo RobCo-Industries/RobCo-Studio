@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The window: its strips, its pages, the panes of the Project page, focus
-//! from pane to pane, and the one dialog this release has.
+//! from pane to pane, the save question and the screen's Adjust dialog.
 
 use crate::art::{Art, Icon, Mark};
 use crate::chooser::{self, Choice, FolderChooser, SystemChooser};
@@ -9,7 +9,8 @@ use crate::editor::{Answer, Editor};
 use crate::kit::{Button, ButtonKind, Kit, Level};
 use crate::menus::{self, Command};
 use crate::project::{Manifest, Project, Row};
-use crate::theme::{Effects, Theme, Type, effect, size};
+use crate::screen::{self, Adapter};
+use crate::theme::{Screen, Strengths, Theme, Type, crt, effect, size};
 use eframe::egui::{
     self, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, UiBuilder, accesskit::Role,
 };
@@ -170,7 +171,9 @@ pub struct Studio {
     sim_room: u8,
     /// Commands chosen in a menu outside the window, run next frame.
     pub pending: Vec<Command>,
-    art: Option<(Art, f32, Effects)>,
+    /// The screen pass and its settings beyond the level.
+    pub screen: screen::Settings,
+    art: Option<(Art, f32, bool)>,
     styled: Option<Theme>,
     fonts: bool,
     focus_request: Option<Place>,
@@ -340,6 +343,7 @@ impl Studio {
             sim_zoom: 1,
             sim_room: 1,
             pending: Vec::new(),
+            screen: screen::Settings::default(),
             art: None,
             styled: None,
             fonts: false,
@@ -422,12 +426,70 @@ impl Studio {
     }
 
     /// Why the menu item `it` cannot act now, or None. The scale items
-    /// follow the simulator pane's room, as its Larger button does.
+    /// follow the simulator pane's room, as its Larger button does. The
+    /// screen levels follow the adapter and high legibility.
     pub fn unavailable(&self, it: &menus::Item) -> Option<String> {
         match it.command {
             Command::SimZoom(z) => zoom_unavailable(z, self.sim_room),
+            Command::Screen(l) => {
+                screen::unavailable(l, self.screen.adapter, self.theme.high_legibility)
+                    .map(str::to_owned)
+            }
+            Command::ScreenAdjust => (!self.theme.screen().pass()).then(|| ADJUST_NOT.to_owned()),
             _ => it.unavailable.map(str::to_owned),
         }
+    }
+
+    /// Whether the radio item `it` is the chosen one, or None when it is
+    /// not a radio item. No level is chosen while the strengths are Custom.
+    pub fn checked(&self, it: &menus::Item) -> Option<bool> {
+        match it.command {
+            Command::Screen(l) => Some(self.theme.screen() == l && !self.screen_custom()),
+            _ => None,
+        }
+    }
+
+    /// The strengths differ from the level's own.
+    pub fn screen_custom(&self) -> bool {
+        screen::custom(self.theme.screen(), &self.screen.strengths)
+    }
+
+    /// Choose the screen level at start, by the rules: a level asked for
+    /// on the command line, the adapter, the system's reduce-motion
+    /// setting. With eframe's render state the pass is plugged into `ctx`
+    /// and draws: call this before the first frame.
+    pub fn start_screen(
+        &mut self,
+        ctx: &egui::Context,
+        adapter: Adapter,
+        gpu: Option<&eframe::egui_wgpu::RenderState>,
+        reduce_motion: Option<bool>,
+        asked: Option<Screen>,
+    ) {
+        self.screen.plug(ctx, gpu);
+        self.choose_screen(adapter, reduce_motion, asked);
+    }
+
+    /// Choose the screen level by the rules of [`Studio::start_screen`],
+    /// for a window whose screen is plugged in already.
+    pub fn choose_screen(
+        &mut self,
+        adapter: Adapter,
+        reduce_motion: Option<bool>,
+        asked: Option<Screen>,
+    ) {
+        self.screen.adapter = adapter;
+        let (level, why) = screen::start(adapter, reduce_motion, asked);
+        self.set_screen(level);
+        if let Some(why) = why {
+            self.status = (Level::Info, why);
+        }
+    }
+
+    /// Show `level` with its own strengths.
+    fn set_screen(&mut self, level: Screen) {
+        self.theme.screen = level;
+        self.screen.strengths = level.strengths();
     }
 
     /// The folder chooser is open or about to open.
@@ -550,8 +612,22 @@ impl Studio {
             Command::NextPane => self.move_focus(ctx, true),
             Command::PreviousPane => self.move_focus(ctx, false),
             Command::Phosphor(s) => self.theme.scheme = s,
-            Command::EffectsOff => self.theme.effects = Effects::Off,
-            Command::EffectsSoft => self.theme.effects = Effects::Soft,
+            Command::Screen(l) => {
+                match screen::unavailable(l, self.screen.adapter, self.theme.high_legibility) {
+                    Some(why) => self.status = (Level::Info, why.to_owned()),
+                    None => {
+                        self.set_screen(l);
+                        self.status = (Level::Info, screen::news(l, false));
+                    }
+                }
+            }
+            Command::ScreenAdjust => {
+                if self.theme.screen().pass() {
+                    self.screen.adjusting = true;
+                } else {
+                    self.status = (Level::Info, ADJUST_NOT.to_owned());
+                }
+            }
             Command::HighLegibility => self.theme.high_legibility = !self.theme.high_legibility,
             c => {
                 if let Some(name) = menus::not_yet(c) {
@@ -621,9 +697,9 @@ impl Studio {
             self.styled = Some(self.theme);
         }
         let ppp = ctx.pixels_per_point();
-        let fx = self.theme.effects();
-        if !matches!(&self.art, Some((_, p, e)) if *p == ppp && *e == fx) {
-            self.art = Some((Art::new(ctx, &self.theme), ppp, fx));
+        let glow = self.theme.still_glow();
+        if !matches!(&self.art, Some((_, p, g)) if *p == ppp && *g == glow) {
+            self.art = Some((Art::new(ctx, &self.theme), ppp, glow));
         }
         let title = match &self.project {
             Some(p) => format!("{} - RobCo Studio", p.name()),
@@ -693,8 +769,9 @@ impl Studio {
             scrim(&kit, &ctx, full);
         }
         self.dialog(&kit, &ctx, full);
+        self.adjust(&kit, &ctx, full);
         self.finish_switch();
-        if self.theme.effects() == Effects::Soft {
+        if self.theme.still_glow() {
             art.scanlines(
                 &ctx.layer_painter(egui::LayerId::new(
                     egui::Order::Debug,
@@ -713,7 +790,8 @@ impl Studio {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.focus_request = None;
-        self.art = Some((art, ctx.pixels_per_point(), self.theme.effects()));
+        self.art = Some((art, ctx.pixels_per_point(), self.theme.still_glow()));
+        self.screen.end_frame(&ctx, self.theme.screen());
     }
 
     /// The header band: wordmark, atom, divider, the caps line and the
@@ -811,16 +889,23 @@ impl Studio {
             egui::Popup::menu(&resp)
                 .width(size::MENU_POPUP_W)
                 .show(|ui| {
-                    for it in &m.items {
-                        let note = it.shortcut.map(|s| s.shown(mac)).unwrap_or_default();
-                        let why = self.unavailable(it);
-                        if kit
-                            .menu_row(ui, it.text, &note, why.as_deref(), size::MENU_POPUP_W)
-                            .clicked()
-                        {
-                            chosen = Some(it.command);
-                            ui.close();
+                    let mut i = 0;
+                    while i < m.items.len() {
+                        let Some(group) = m.items[i].group else {
+                            self.menu_item(kit, ui, &m.items[i], mac, &mut chosen);
+                            i += 1;
+                            continue;
+                        };
+                        let start = i;
+                        while i < m.items.len() && m.items[i].group == Some(group) {
+                            i += 1;
                         }
+                        let row = kit.menu_row(ui, group, SUBMENU, None, size::MENU_POPUP_W);
+                        egui::containers::menu::SubMenu::new().show(ui, &row, |ui| {
+                            for it in &m.items[start..i] {
+                                self.menu_item(kit, ui, it, mac, &mut chosen);
+                            }
+                        });
                     }
                 });
         }
@@ -830,6 +915,40 @@ impl Studio {
         );
         if let Some(c) = chosen {
             self.run(ui.ctx(), c);
+        }
+    }
+
+    /// One item of a menu row's popup, with its separator before it.
+    fn menu_item(
+        &self,
+        kit: &Kit<'_>,
+        ui: &mut Ui,
+        it: &menus::Item,
+        mac: bool,
+        chosen: &mut Option<Command>,
+    ) {
+        if it.separator {
+            ui.separator();
+        }
+        let note = match it.shortcut {
+            Some(s) => s.shown(mac),
+            None if it.command == Command::ScreenAdjust && self.screen_custom() => {
+                CUSTOM.to_owned()
+            }
+            None => String::new(),
+        };
+        let why = self.unavailable(it);
+        let row = kit.menu_choice(
+            ui,
+            it.text,
+            &note,
+            self.checked(it),
+            why.as_deref(),
+            size::MENU_POPUP_W,
+        );
+        if row.clicked() {
+            *chosen = Some(it.command);
+            ui.close();
         }
     }
 
@@ -1796,6 +1915,105 @@ impl Studio {
             }
         }
     }
+
+    /// The Adjust dialog of View, Screen: a slider for each strength, the
+    /// frame rate, and Reset back to the level's own numbers.
+    fn adjust(&mut self, kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
+        if !self.screen.adjusting {
+            return;
+        }
+        if !self.theme.screen().pass() {
+            self.screen.adjusting = false;
+            return;
+        }
+        let p = kit.p();
+        scrim(kit, ctx, full);
+        let level = self.theme.screen();
+        let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
+        let mut reset = false;
+        let mut s = self.screen.strengths;
+        let mut rate = self.screen.rate;
+        let w = size::DIALOG_W;
+        egui::Area::new(Id::unique("adjust"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .accessible_name(ADJUST_TITLE)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(p.pane)
+                    .stroke(kit.theme.frame(p.bright))
+                    .inner_margin(size::PAD_SIDE + size::UNIT)
+                    .show(ui, |ui| {
+                        let inner = w - (size::PAD_SIDE + size::UNIT) * 2.0;
+                        ui.set_width(inner);
+                        ui.horizontal(|ui| {
+                            let (r, _) = ui.allocate_exact_size(
+                                egui::vec2(size::ICON, size::CONTROL_H),
+                                Sense::hover(),
+                            );
+                            kit.art.icon(ui.painter(), r, Icon::Settings, p.bright);
+                            kit.text(ui, ADJUST_TITLE, Type::BodyBold, p.text);
+                            let what = if screen::custom(level, &s) {
+                                CUSTOM
+                            } else {
+                                level.name()
+                            };
+                            kit.text(ui, what, Type::Body, p.dim);
+                        });
+                        ui.add_space(size::UNIT);
+                        ui.spacing_mut().slider_width = inner / 2.0;
+                        // A rail that shows on the pane, filled up to the handle.
+                        let v = ui.visuals_mut();
+                        v.slider_trailing_fill = true;
+                        v.selection.bg_fill = p.bright;
+                        v.widgets.inactive.bg_fill = p.frame_dim;
+                        for (n, name) in Strengths::NAMES.iter().enumerate() {
+                            if let Some(v) = s.get_mut(n) {
+                                ui.add(
+                                    egui::Slider::new(v, 0.0..=1.0)
+                                        .step_by(crt::SLIDER_STEP)
+                                        .fixed_decimals(2)
+                                        .text(*name),
+                                );
+                            }
+                        }
+                        ui.add_space(size::UNIT);
+                        ui.horizontal(|ui| {
+                            kit.text(ui, RATE_LABEL, Type::Body, p.text);
+                            let parts: Vec<String> =
+                                crt::RATES.iter().map(u32::to_string).collect();
+                            let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+                            let at = crt::RATES.iter().position(|r| *r == rate).unwrap_or(1);
+                            if let Some(k) = kit.segmented(ui, RATE_LABEL, &parts, at)
+                                && let Some(r) = crt::RATES.get(k)
+                            {
+                                rate = *r;
+                            }
+                        });
+                        ui.add_space(size::UNIT);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if kit
+                                .button(ui, Button::quiet("Close").kind(ButtonKind::Filled))
+                                .clicked()
+                            {
+                                close = true;
+                            }
+                            if kit.button(ui, Button::quiet("Reset")).clicked() {
+                                reset = true;
+                            }
+                        });
+                    });
+            });
+        let custom_before = self.screen_custom();
+        self.screen.strengths = if reset { level.strengths() } else { s };
+        self.screen.rate = rate;
+        if self.screen_custom() != custom_before {
+            self.status = (Level::Info, screen::news(level, self.screen_custom()));
+        }
+        if close {
+            self.screen.adjusting = false;
+        }
+    }
 }
 
 /// Why zoom `step` cannot be chosen when the simulator pane has room for
@@ -1816,6 +2034,17 @@ fn scrim(kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
             ui.allocate_rect(full, Sense::click());
         });
 }
+
+/// The title of the Adjust dialog.
+pub const ADJUST_TITLE: &str = "Adjust the screen";
+/// The frame rate choice of the Adjust dialog.
+const RATE_LABEL: &str = "Frames a second";
+/// Said by Adjust when the screen has no pass to adjust.
+pub const ADJUST_NOT: &str = "Adjust works at Still, Live and Arcade.";
+/// The note of Adjust while the strengths differ from the level's.
+pub const CUSTOM: &str = "Custom";
+/// The note of a row that opens a submenu.
+const SUBMENU: &str = ">";
 
 /// The status line while the folder chooser is open.
 pub const CHOOSING: &str = "A folder dialog is open.";

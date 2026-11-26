@@ -238,8 +238,8 @@ impl<'a> Kit<'a> {
     }
 
     /// Paint a caps label as [`Kit::caps`] does, with `tracking` font
-    /// pixels after each cell, and over its halo when `lit` and effects are
-    /// on. Light only `bright` labels on `ground` or `pane`. The Plex Mono
+    /// pixels after each cell, and over its halo when `lit` and the screen
+    /// is Soft. Light only `bright` labels on `ground` or `pane`. The Plex Mono
     /// fallback has no halo. `at` is the left end of the label's centre line.
     pub fn caps_styled(
         &self,
@@ -1198,6 +1198,20 @@ impl<'a> Kit<'a> {
         unavailable: Option<&str>,
         width: f32,
     ) -> Response {
+        self.menu_choice(ui, text, note, None, unavailable, width)
+    }
+
+    /// A menu row that is one of a set of radio items when `checked` is
+    /// Some: the chosen one shows a tick where the lock would be.
+    pub fn menu_choice(
+        &self,
+        ui: &mut Ui,
+        text: &str,
+        note: &str,
+        checked: Option<bool>,
+        unavailable: Option<&str>,
+        width: f32,
+    ) -> Response {
         let p = self.p();
         let sense = if unavailable.is_some() {
             Sense::focusable_noninteractive()
@@ -1205,7 +1219,11 @@ impl<'a> Kit<'a> {
             Sense::click()
         };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::ROW_TREE), sense);
-        resp.widget_info(|| WidgetInfo::labeled(Role::MenuItem, unavailable.is_none(), text));
+        let on = unavailable.is_none();
+        resp.widget_info(|| match checked {
+            Some(c) => WidgetInfo::selected(Role::MenuItemRadio, on, c, text),
+            None => WidgetInfo::labeled(Role::MenuItem, on, text),
+        });
         if let Some(why) = unavailable {
             ui.ctx().accesskit_node_builder(resp.id, |n| {
                 n.set_disabled();
@@ -1218,15 +1236,22 @@ impl<'a> Kit<'a> {
         }
         let fg = if unavailable.is_some() { p.dim } else { p.text };
         let mut x = rect.left() + size::UNIT * 2.0;
-        if unavailable.is_some() {
+        let mark = if unavailable.is_some() {
+            Some((Icon::Lock, p.dim))
+        } else if checked == Some(true) {
+            Some((Icon::Ok, p.bright))
+        } else {
+            None
+        };
+        if let Some((icon, colour)) = mark {
             self.art.icon(
                 painter,
                 Rect::from_min_size(
                     egui::pos2(x, rect.top()),
                     egui::vec2(size::ICON, rect.height()),
                 ),
-                Icon::Lock,
-                p.dim,
+                icon,
+                colour,
             );
         }
         x += size::ICON + size::UNIT;

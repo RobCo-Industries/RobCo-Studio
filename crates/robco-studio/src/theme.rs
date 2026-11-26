@@ -40,13 +40,225 @@ impl Scheme {
     }
 }
 
-/// How much of the screen look is drawn.
+/// How the screen looks: the levels of View, Screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Effects {
-    /// No scanlines and no halo.
+pub enum Screen {
+    /// Nothing extra: no halo, no scanlines.
     Off,
-    /// Faint scanlines and a halo on lit things. The default.
+    /// Still overlays: faint scanlines, a halo on lit things, the baked
+    /// glow of the drawings. No screen pass. The default with no graphics
+    /// adapter.
     Soft,
+    /// The screen pass with the effects that do not move.
+    Still,
+    /// The screen pass with motion. The default on a graphics adapter.
+    Live,
+    /// The screen pass, everything strong.
+    Arcade,
+}
+
+impl Screen {
+    /// Every level, in menu order.
+    pub const ALL: [Screen; 5] = [
+        Screen::Off,
+        Screen::Soft,
+        Screen::Still,
+        Screen::Live,
+        Screen::Arcade,
+    ];
+
+    /// The level's name in the menu and on the status line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Screen::Off => "Off",
+            Screen::Soft => "Soft",
+            Screen::Still => "Still",
+            Screen::Live => "Live",
+            Screen::Arcade => "Arcade",
+        }
+    }
+
+    /// The level whose name is `name`, in any case.
+    pub fn from_name(name: &str) -> Option<Screen> {
+        Screen::ALL
+            .into_iter()
+            .find(|l| l.name().eq_ignore_ascii_case(name))
+    }
+
+    /// The level draws through the screen pass.
+    pub fn pass(self) -> bool {
+        matches!(self, Screen::Still | Screen::Live | Screen::Arcade)
+    }
+
+    /// The level moves: the scanlines drift.
+    pub fn moving(self) -> bool {
+        matches!(self, Screen::Live | Screen::Arcade)
+    }
+
+    /// The strengths of the level. Zero for the levels with no pass.
+    pub fn strengths(self) -> Strengths {
+        match self {
+            Screen::Off | Screen::Soft => Strengths::NONE,
+            Screen::Still => crt::STILL,
+            Screen::Live => crt::LIVE,
+            Screen::Arcade => crt::ARCADE,
+        }
+    }
+}
+
+/// The ten strengths of the screen pass, each from 0 to 1. Zero turns an
+/// effect off.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Strengths {
+    /// A glow around bright pixels.
+    pub bloom: f32,
+    /// Darker corners.
+    pub vignette: f32,
+    /// Dark lines across.
+    pub scanlines: f32,
+    /// The bulge of the glass.
+    pub curvature: f32,
+    /// The last frame fades instead of vanishing.
+    pub persistence: f32,
+    /// Grain that changes every frame.
+    pub noise: f32,
+    /// Brightness that wavers.
+    pub flicker: f32,
+    /// A bright band that rolls down the screen.
+    pub band: f32,
+    /// Red, green and blue columns of a colour tube.
+    pub mask: f32,
+    /// Red and blue pulled apart at the edges.
+    pub aberration: f32,
+}
+
+impl Strengths {
+    /// Every effect off.
+    pub const NONE: Strengths = Strengths {
+        bloom: 0.0,
+        vignette: 0.0,
+        scanlines: 0.0,
+        curvature: 0.0,
+        persistence: 0.0,
+        noise: 0.0,
+        flicker: 0.0,
+        band: 0.0,
+        mask: 0.0,
+        aberration: 0.0,
+    };
+
+    /// The ten names, in the order of [`Strengths::get`].
+    pub const NAMES: [&'static str; 10] = [
+        "Bloom",
+        "Vignette",
+        "Scanlines",
+        "Curvature",
+        "Persistence",
+        "Noise",
+        "Flicker",
+        "Rolling band",
+        "Shadow mask",
+        "Chromatic aberration",
+    ];
+
+    /// The strength at `i`, in the order of [`Strengths::NAMES`].
+    pub fn get_mut(&mut self, i: usize) -> Option<&mut f32> {
+        Some(match i {
+            0 => &mut self.bloom,
+            1 => &mut self.vignette,
+            2 => &mut self.scanlines,
+            3 => &mut self.curvature,
+            4 => &mut self.persistence,
+            5 => &mut self.noise,
+            6 => &mut self.flicker,
+            7 => &mut self.band,
+            8 => &mut self.mask,
+            9 => &mut self.aberration,
+            _ => return None,
+        })
+    }
+
+    /// The strength at `i`, in the order of [`Strengths::NAMES`].
+    pub fn get(&self, i: usize) -> Option<f32> {
+        let mut c = *self;
+        c.get_mut(i).map(|v| *v)
+    }
+
+    /// The same with every effect that moves turned off: what an
+    /// unfocused window holds.
+    pub fn still(&self) -> Strengths {
+        Strengths {
+            persistence: 0.0,
+            noise: 0.0,
+            flicker: 0.0,
+            band: 0.0,
+            ..*self
+        }
+    }
+}
+
+/// The screen pass's numbers.
+pub mod crt {
+    use super::Strengths;
+
+    /// Still: the pass with the effects that do not move.
+    pub const STILL: Strengths = Strengths {
+        bloom: 0.35,
+        vignette: 0.50,
+        scanlines: 0.30,
+        curvature: 0.12,
+        persistence: 0.0,
+        noise: 0.0,
+        flicker: 0.0,
+        band: 0.0,
+        mask: 0.0,
+        aberration: 0.0,
+    };
+    /// Live: the pass with motion.
+    pub const LIVE: Strengths = Strengths {
+        persistence: 0.50,
+        noise: 0.10,
+        flicker: 0.20,
+        band: 0.30,
+        ..STILL
+    };
+    /// Arcade: everything strong.
+    pub const ARCADE: Strengths = Strengths {
+        bloom: 0.60,
+        vignette: 0.80,
+        scanlines: 0.60,
+        curvature: 0.40,
+        persistence: 0.80,
+        noise: 0.40,
+        flicker: 0.50,
+        band: 0.60,
+        mask: 0.30,
+        aberration: 0.20,
+    };
+    /// The frame rates the Adjust dialog offers, a second.
+    pub const RATES: [u32; 3] = [15, 30, 60];
+    /// The frame rate of Live and Arcade unless changed.
+    pub const RATE: u32 = 30;
+    /// Curvature 1 moves a corner of the glass by this part of the half
+    /// width. Keep in step with `curve` in `screen.wgsl`.
+    pub const CURVE: f32 = 0.12;
+    /// What persistence 1 keeps of the last frame after one frame at
+    /// [`PERSIST_RATE`].
+    pub const PERSIST_KEEP: f32 = 0.82;
+    /// The frame rate at which [`PERSIST_KEEP`] holds. At other rates the
+    /// fade is scaled by the time between frames.
+    pub const PERSIST_RATE: f32 = 30.0;
+    /// The time between frames that persistence assumes at most and at
+    /// least, in seconds.
+    pub const PERSIST_DT: [f32; 2] = [1.0 / 240.0, 0.25];
+    /// The scanline period, in points.
+    pub const SCAN_PERIOD: f32 = 3.0;
+    /// How fast the scanlines drift down, in points a second.
+    pub const SCAN_DRIFT: f32 = 6.0;
+    /// The steps of the pointer's inverse mapping.
+    pub const INVERSE_STEPS: usize = 50;
+    /// A slider moves by this step.
+    pub const SLIDER_STEP: f64 = 0.01;
 }
 
 /// The colour roles of one scheme.
@@ -425,22 +637,16 @@ pub mod effect {
     pub const HALO_SPREAD: u8 = 0;
     /// Halo alpha at Soft, out of 1, of `bright`.
     pub const HALO_ALPHA: f32 = 0.38;
-    /// Halo alpha at Full, out of 1, of `bright`.
-    pub const HALO_ALPHA_FULL: f32 = 0.55;
     /// The focused pane's halo, as a part of the halo alpha.
     pub const HALO_PANE: f32 = 0.7;
     /// A pressed filled button moves this far towards `ink`.
     pub const PRESS_DARKEN: f32 = 0.22;
     /// The label halo's tint at Soft, out of 1, of the label colour.
     pub const LABEL_HALO_SOFT: f32 = 0.30;
-    /// The label halo's tint at Full.
-    pub const LABEL_HALO_FULL: f32 = 0.40;
     /// The label halo's Gaussian, in font pixels.
     pub const LABEL_HALO_SIGMA: f32 = 1.5;
     /// The room around each glyph of the label halo atlas, in font pixels.
     pub const LABEL_HALO_PAD: usize = 4;
-    /// Corner shading at Full, at the far corner, out of 1, black.
-    pub const CORNER_SHADE_MAX: f32 = 0.18;
     /// The device with no machine running, out of 1, of `bright`.
     pub const DEVICE_IDLE: f32 = 0.62;
     /// A tape that is not built, out of 1, of `bright`.
@@ -492,15 +698,15 @@ pub enum Type {
     LabelFallback,
 }
 
-/// The scheme, the mode and the effects of the running window.
+/// The scheme, the mode and the screen level of the running window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     /// The phosphor.
     pub scheme: Scheme,
-    /// Neutral text and frames, effects off.
+    /// Neutral text and frames, the screen Off.
     pub high_legibility: bool,
-    /// Effects, unless high legibility forces them off.
-    pub effects: Effects,
+    /// The screen level, unless high legibility forces it Off.
+    pub screen: Screen,
 }
 
 impl Default for Theme {
@@ -508,7 +714,7 @@ impl Default for Theme {
         Self {
             scheme: Scheme::Green,
             high_legibility: false,
-            effects: Effects::Soft,
+            screen: Screen::Soft,
         }
     }
 }
@@ -532,13 +738,20 @@ impl Theme {
         p
     }
 
-    /// The effects actually drawn: high legibility forces Off.
-    pub fn effects(&self) -> Effects {
+    /// The screen level actually drawn: high legibility forces Off.
+    pub fn screen(&self) -> Screen {
         if self.high_legibility {
-            Effects::Off
+            Screen::Off
         } else {
-            self.effects
+            self.screen
         }
+    }
+
+    /// The kit draws its still glow: rectangle halos, label halos, the
+    /// scanline quad and the drawings' baked halo groups. Only at Soft:
+    /// the screen pass's bloom does that work at the pass levels.
+    pub fn still_glow(&self) -> bool {
+        self.screen() == Screen::Soft
     }
 
     /// The font of a text role. High legibility raises body and code to 14.
@@ -587,9 +800,9 @@ impl Theme {
         }
     }
 
-    /// The halo under a lit thing, or None with effects off.
+    /// The halo under a lit thing, or None but at Soft.
     pub fn halo(&self) -> Option<Shadow> {
-        (self.effects() == Effects::Soft).then(|| Shadow {
+        self.still_glow().then(|| Shadow {
             offset: [0, 0],
             blur: effect::HALO_BLUR,
             spread: effect::HALO_SPREAD,
@@ -623,10 +836,10 @@ impl Theme {
         })
     }
 
-    /// The tint of a bright caps label's halo, out of 1, or None with
-    /// effects off.
+    /// The tint of a bright caps label's halo, out of 1, or None but at
+    /// Soft.
     pub fn label_halo(&self) -> Option<f32> {
-        (self.effects() == Effects::Soft).then_some(effect::LABEL_HALO_SOFT)
+        self.still_glow().then_some(effect::LABEL_HALO_SOFT)
     }
 
     /// The fill under an error row: 12 percent `alarm` over `pane`.
@@ -636,9 +849,9 @@ impl Theme {
     }
 
     /// The scanline texture: `SCANLINE_PERIOD` rows of one device pixel,
-    /// black with alpha in the first row. None with effects off.
+    /// black with alpha in the first row. None but at Soft.
     pub fn scanline_image(&self) -> Option<egui::ColorImage> {
-        if self.effects() == Effects::Off {
+        if !self.still_glow() {
             return None;
         }
         let mut px = vec![Color32::TRANSPARENT; effect::SCANLINE_PERIOD];
@@ -782,14 +995,21 @@ mod tests {
     }
 
     #[test]
-    fn halos_go_with_effects_off() {
+    fn halos_only_at_soft() {
         let on = Theme::default();
-        let off = Theme {
-            effects: Effects::Off,
-            ..on
-        };
         assert!(on.pane_halo().is_some() && on.label_halo().is_some());
-        assert!(off.pane_halo().is_none() && off.label_halo().is_none());
+        assert!(on.scanline_image().is_some());
+        for level in [Screen::Off, Screen::Still, Screen::Live, Screen::Arcade] {
+            let off = Theme {
+                screen: level,
+                ..on
+            };
+            assert!(
+                off.pane_halo().is_none() && off.label_halo().is_none(),
+                "{level:?}"
+            );
+            assert!(off.scanline_image().is_none(), "{level:?}");
+        }
         let (h, f) = (on.halo().map(|s| s.color), on.pane_halo().map(|s| s.color));
         assert!(f.zip(h).is_some_and(|(f, h)| f.a() < h.a()));
     }
@@ -806,15 +1026,50 @@ mod tests {
     }
 
     #[test]
-    fn high_legibility_turns_effects_off() {
+    fn high_legibility_turns_the_screen_off() {
         let t = Theme {
             high_legibility: true,
+            screen: Screen::Arcade,
             ..Theme::default()
         };
-        assert_eq!(t.effects(), Effects::Off);
+        assert_eq!(t.screen(), Screen::Off);
         assert!(t.halo().is_none());
         assert!(t.scanline_image().is_none());
         assert_eq!(t.palette().text, HIGH_LEGIBILITY.text);
+    }
+
+    /// The levels hold their numbers: Still, Live and Arcade.
+    #[test]
+    fn levels_hold_their_numbers() {
+        let still = Screen::Still.strengths();
+        assert_eq!(
+            [
+                still.bloom,
+                still.vignette,
+                still.scanlines,
+                still.curvature
+            ],
+            [0.35, 0.50, 0.30, 0.12]
+        );
+        for i in 4..10 {
+            assert_eq!(still.get(i), Some(0.0), "{}", Strengths::NAMES[i]);
+        }
+        let live = Screen::Live.strengths();
+        let want = [0.35, 0.50, 0.30, 0.12, 0.50, 0.10, 0.20, 0.30, 0.0, 0.0];
+        let arcade = [0.60, 0.80, 0.60, 0.40, 0.80, 0.40, 0.50, 0.60, 0.30, 0.20];
+        for i in 0..10 {
+            assert_eq!(live.get(i), Some(want[i]), "{}", Strengths::NAMES[i]);
+            assert_eq!(Screen::Arcade.strengths().get(i), Some(arcade[i]));
+            assert_eq!(Screen::Off.strengths().get(i), Some(0.0));
+            assert_eq!(Screen::Soft.strengths().get(i), Some(0.0));
+        }
+        assert_eq!(Strengths::NONE.get(10), None);
+        assert!(Screen::Live.moving() && Screen::Arcade.moving() && !Screen::Still.moving());
+        assert!(!Screen::Soft.pass() && !Screen::Off.pass() && Screen::Still.pass());
+        assert_eq!(Screen::from_name("live"), Some(Screen::Live));
+        assert_eq!(Screen::from_name("full"), None);
+        assert_eq!(live.still().noise, 0.0);
+        assert_eq!(live.still().bloom, live.bloom);
     }
 
     #[test]

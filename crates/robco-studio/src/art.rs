@@ -6,12 +6,12 @@
 //!
 //! One loader serves every drawing file. It removes the file's ground
 //! rectangle, turns `currentColor` white, drops the group with class `halo`
-//! when effects are off, and rasterises the rest at a whole number of device
-//! pixels. The textures are made again when the display scale or the
-//! effects level changes. The device is made for a zoom step when it is
+//! unless the screen is Soft, and rasterises the rest at a whole number of
+//! device pixels. The textures are made again when the display scale
+//! changes or the screen goes to or from Soft. The device is made for a zoom step when it is
 //! first drawn at that step.
 
-use crate::theme::{self, Effects, effect, size, text};
+use crate::theme::{self, effect, size, text};
 use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureHandle, TextureOptions, Vec2};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -399,14 +399,11 @@ pub fn remove_class(svg: &str, class: &str) -> String {
     s
 }
 
-/// A drawing file made ready for the window: white on nothing, and without
-/// its halo group when effects are off.
-pub fn prepare(svg: &str, effects: Effects) -> String {
+/// A drawing file made ready for the window: white on nothing, and
+/// without its halo group unless `halo`.
+pub fn prepare(svg: &str, halo: bool) -> String {
     let s = remove_class(svg, "asset-ground").replace("currentColor", "#fff");
-    match effects {
-        Effects::Off => remove_class(&s, "halo"),
-        Effects::Soft => s,
-    }
+    if halo { s } else { remove_class(&s, "halo") }
 }
 
 /// A drawing rasterised for the window.
@@ -422,12 +419,12 @@ pub struct Raster {
 /// Rasterise a drawing so that its box is `box_h` points high on a display
 /// of `pixels_per_point`. The image covers the whole view box, glow room
 /// included, at a whole number of device pixels.
-pub fn render(d: Drawing, box_h: f32, pixels_per_point: f32, effects: Effects) -> Option<Raster> {
+pub fn render(d: Drawing, box_h: f32, pixels_per_point: f32, halo: bool) -> Option<Raster> {
     let [x, y, w, h] = d.view_box();
     let s = box_h * pixels_per_point / d.box_units().y;
     let (pw, ph) = ((w * s).round(), (h * s).round());
     let (ox, oy) = ((x * s).round(), (y * s).round());
-    let svg = prepare(d.source(), effects);
+    let svg = prepare(d.source(), halo);
     let bytes = rasterise_bytes(&svg, pw as u32, ph as u32)?;
     Some(Raster {
         image: ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], &bytes),
@@ -767,13 +764,14 @@ impl Placed {
     }
 }
 
-/// Every texture the window draws, made for one display scale and one
-/// effects level.
+/// Every texture the window draws, made for one display scale, with or
+/// without the still glow.
 pub struct Art {
     /// The display scale they were made for.
     pub pixels_per_point: f32,
-    /// The effects level they were made for.
-    pub effects: Effects,
+    /// They were made with the still glow: the baked halo groups and the
+    /// scanline texture.
+    pub halos: bool,
     /// The Spleen atlas.
     pub label: LabelFont,
     marks: BTreeMap<Mark, Placed>,
@@ -784,10 +782,10 @@ pub struct Art {
 
 impl Art {
     /// Make every texture for the context's display scale and the theme's
-    /// effects.
+    /// screen level.
     pub fn new(ctx: &egui::Context, theme: &theme::Theme) -> Self {
         let ppp = ctx.pixels_per_point();
-        let effects = theme.effects();
+        let halos = theme.still_glow();
         let px = (size::ICON * ppp).round().max(1.0);
         let mut icons = BTreeMap::new();
         for icon in Icon::ALL {
@@ -801,7 +799,7 @@ impl Art {
         }
         let mut marks = BTreeMap::new();
         for m in Mark::ALL {
-            if let Some(r) = render(m.drawing(), m.box_h(), ppp, effects) {
+            if let Some(r) = render(m.drawing(), m.box_h(), ppp, halos) {
                 marks.insert(m, Placed::load(ctx, &format!("{m:?}"), r));
             }
         }
@@ -817,7 +815,7 @@ impl Art {
         });
         Self {
             pixels_per_point: ppp,
-            effects,
+            halos,
             label: LabelFont::new(ctx),
             marks,
             devices: RefCell::new(BTreeMap::new()),
@@ -867,7 +865,7 @@ impl Art {
         let size = Self::device_size(zoom);
         let mut cache = self.devices.borrow_mut();
         if !cache.contains_key(&zoom)
-            && let Some(r) = render(Drawing::Device, size.y, self.pixels_per_point, self.effects)
+            && let Some(r) = render(Drawing::Device, size.y, self.pixels_per_point, self.halos)
         {
             let p = Placed::load(painter.ctx(), &format!("device-{zoom}"), r);
             cache.insert(zoom, p);
@@ -961,11 +959,11 @@ mod tests {
     #[test]
     fn prepare_drops_ground_and_halo() {
         for d in Drawing::ALL {
-            let on = prepare(d.source(), Effects::Soft);
+            let on = prepare(d.source(), true);
             assert!(!on.contains("asset-ground"), "{d:?}");
             assert!(!on.contains("currentColor"), "{d:?}");
             assert!(on.contains("class=\"halo\""), "{d:?} has no halo group");
-            let off = prepare(d.source(), Effects::Off);
+            let off = prepare(d.source(), false);
             assert!(!off.contains("class=\"halo\""), "{d:?}");
             assert!(usvg_ok(&off), "{d:?} no longer parses without its halo");
         }
@@ -995,8 +993,8 @@ mod tests {
         for (d, h) in sizes {
             let [_, _, vw, vh] = d.view_box();
             let s = h / d.box_units().y;
-            let on = render(d, h, 1.0, Effects::Soft).unwrap();
-            let off = render(d, h, 1.0, Effects::Off).unwrap();
+            let on = render(d, h, 1.0, true).unwrap();
+            let off = render(d, h, 1.0, false).unwrap();
             assert_eq!(
                 on.image.size,
                 [(vw * s).round() as usize, (vh * s).round() as usize]
@@ -1029,8 +1027,8 @@ mod tests {
     #[test]
     fn the_halo_glows_outside_the_lines() {
         for d in Drawing::ALL {
-            let on = render(d, d.box_units().y, 1.0, Effects::Soft).unwrap();
-            let off = render(d, d.box_units().y, 1.0, Effects::Off).unwrap();
+            let on = render(d, d.box_units().y, 1.0, true).unwrap();
+            let off = render(d, d.box_units().y, 1.0, false).unwrap();
             let glow = on
                 .image
                 .pixels
@@ -1058,14 +1056,14 @@ mod tests {
         );
         assert_eq!(Art::mark_size(Mark::Tape).y, size::TAPE_ART[1]);
         assert_eq!(Drawing::Device.box_units(), egui::Vec2::from(size::DEVICE));
-        let d = render(Drawing::Device, size::DEVICE[1], 1.0, Effects::Soft).unwrap();
+        let d = render(Drawing::Device, size::DEVICE[1], 1.0, true).unwrap();
         assert_eq!(d.image.size, [416, 362]);
         let bleed = size::DEVICE_BLEED;
         assert_eq!(d.offset, [-bleed[0] as i32, -bleed[1] as i32]);
-        let d2 = render(Drawing::Device, size::DEVICE[1], 2.0, Effects::Soft).unwrap();
+        let d2 = render(Drawing::Device, size::DEVICE[1], 2.0, true).unwrap();
         assert_eq!(d2.image.size, [832, 724]);
         assert_eq!(d2.offset, [-24, -28]);
-        let t = render(Drawing::Tape, size::TAPE_ART[1], 1.0, Effects::Soft).unwrap();
+        let t = render(Drawing::Tape, size::TAPE_ART[1], 1.0, true).unwrap();
         assert_eq!(t.image.size[1], 83);
     }
 
@@ -1073,7 +1071,7 @@ mod tests {
     /// 12 device pixels into the texture: the glow room, once.
     #[test]
     fn the_box_lands_where_the_offset_says() {
-        let d = render(Drawing::Device, size::DEVICE[1], 1.0, Effects::Off).unwrap();
+        let d = render(Drawing::Device, size::DEVICE[1], 1.0, false).unwrap();
         let w = d.image.size[0];
         let left = d
             .image
@@ -1231,7 +1229,7 @@ mod tests {
     /// The alpha at a point given in file units, for a mark at a scale.
     fn alpha_at_unit(m: Mark, ppp: f32, u: [f32; 2]) -> u8 {
         let d = m.drawing();
-        let r = render(d, m.box_h(), ppp, Effects::Off).unwrap();
+        let r = render(d, m.box_h(), ppp, false).unwrap();
         let s = m.box_h() * ppp / d.box_units().y;
         let [x, y] = [(u[0] * s) as usize, (u[1] * s) as usize];
         r.image.pixels[y * r.image.size[0] + x].a()
@@ -1258,7 +1256,7 @@ mod tests {
             for ppp in [1.0, 2.0] {
                 let a = alpha_at_unit(m, ppp, at);
                 assert!(a < 96, "{m:?} at {ppp}: the counter is shut, alpha {a}");
-                let r = render(m.drawing(), m.box_h(), ppp, Effects::Off).unwrap();
+                let r = render(m.drawing(), m.box_h(), ppp, false).unwrap();
                 let c = counters(&r.image, 128);
                 assert!(
                     c.len() >= holes,
@@ -1281,7 +1279,7 @@ mod tests {
         ] {
             let [x, y, w, h] = d.view_box();
             let pad = 8.0;
-            let wide = prepare(d.source(), Effects::Off).replacen(
+            let wide = prepare(d.source(), false).replacen(
                 &format!("viewBox=\"{x} {y} {w} {h}\" width=\"{w}\" height=\"{h}\""),
                 &format!(
                     "viewBox=\"{} {} {} {}\" width=\"{}\" height=\"{}\"",
@@ -1294,7 +1292,7 @@ mod tests {
                 ),
                 1,
             );
-            assert_ne!(wide, prepare(d.source(), Effects::Off), "{d:?}");
+            assert_ne!(wide, prepare(d.source(), false), "{d:?}");
             let (pw, ph) = ((w + 2.0 * pad) as u32, (h + 2.0 * pad) as u32);
             let px = rasterise_bytes(&wide, pw, ph).unwrap();
             let inside = |i: usize| {

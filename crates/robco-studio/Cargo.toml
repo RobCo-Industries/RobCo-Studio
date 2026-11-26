@@ -31,6 +31,9 @@ resvg = { version = "0.45", default-features = false }
 egui_kittest = { version = "=0.37.0", features = ["wgpu"] }
 # Writes the PNG renders. MIT OR Apache-2.0.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+# Parses and validates the screen pass's WGSL with no GPU. The version wgpu
+# uses, already in eframe's tree. MIT OR Apache-2.0.
+naga = { version = "30.0.2", features = ["wgsl-in"] }
 
 [lints]
 workspace = true
@@ -42,3 +45,10 @@ libc = "0.2"
 # The native menu bar on macOS. Apache-2.0 OR MIT.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.17", default-features = false }
+# Reads the system's Reduce motion switch. Already in the tree through muda
+# and winit; these features add no crate. Zlib OR Apache-2.0 OR MIT.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSAccessibility",
+    "NSWorkspace",
+] }

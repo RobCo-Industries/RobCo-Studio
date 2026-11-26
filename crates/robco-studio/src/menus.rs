@@ -2,7 +2,8 @@
 
 //! The menus, described once. The row in the window reads this model, and so
 //! would a native menu bar. Each item has its command, its shortcut, and,
-//! when this release cannot do it, the reason.
+//! when this release cannot do it, the reason. An item can sit in a submenu
+//! of its menu, and can have a separator before it.
 
 /// A command a menu item gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +40,8 @@ pub enum Command {
     TextSmaller,
     TextReset,
     Phosphor(crate::theme::Scheme),
-    EffectsOff,
-    EffectsSoft,
+    Screen(crate::theme::Screen),
+    ScreenAdjust,
     HighLegibility,
     ProjectSettings,
     NewFile,
@@ -128,7 +129,14 @@ pub struct Item {
     pub shortcut: Option<Shortcut>,
     /// Why this release cannot do it, or None.
     pub unavailable: Option<&'static str>,
+    /// The submenu it sits in, or None for the menu itself.
+    pub group: Option<&'static str>,
+    /// A separator comes before it.
+    pub separator: bool,
 }
+
+/// The submenu of the screen levels and Adjust, in View.
+pub const SCREEN: &str = "Screen";
 
 /// One menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,7 +187,26 @@ const fn it(
         command,
         shortcut,
         unavailable,
+        group: None,
+        separator: false,
     }
+}
+
+/// The items of View, Screen: the five levels, a separator and Adjust.
+pub fn screen_items() -> Vec<Item> {
+    let mut out: Vec<Item> = crate::theme::Screen::ALL
+        .iter()
+        .map(|l| Item {
+            group: Some(SCREEN),
+            ..it(l.name(), Command::Screen(*l), None, None)
+        })
+        .collect();
+    out.push(Item {
+        group: Some(SCREEN),
+        separator: true,
+        ..it("Adjust", Command::ScreenAdjust, None, None)
+    });
+    out
 }
 
 /// Every menu of the design's menu table, in order.
@@ -192,16 +219,13 @@ pub fn menus() -> Vec<Menu> {
         .iter()
         .map(|s| it(s.name(), C::Phosphor(*s), None, None))
         .collect();
-    phosphor.extend([
-        it("Effects off", C::EffectsOff, None, None),
-        it("Effects soft", C::EffectsSoft, None, None),
-        it(
-            "High legibility",
-            C::HighLegibility,
-            sc(M::CmdShift, "L"),
-            None,
-        ),
-    ]);
+    phosphor.extend(screen_items());
+    phosphor.extend([it(
+        "High legibility",
+        C::HighLegibility,
+        sc(M::CmdShift, "L"),
+        None,
+    )]);
     let mut view = vec![
         it("Project", C::PageProject, sc(M::Cmd, "1"), None),
         it("Card", C::PageCard, sc(M::Cmd, "2"), None),
@@ -404,6 +428,21 @@ mod tests {
         }
         assert_eq!(command_for_id("99.0"), None);
         assert_eq!(command_for_id("x"), None);
+    }
+
+    #[test]
+    fn view_has_the_screen_submenu() {
+        let view = menus().into_iter().find(|m| m.title == "View").unwrap();
+        let screen: Vec<_> = view
+            .items
+            .iter()
+            .filter(|i| i.group == Some(SCREEN))
+            .collect();
+        let names: Vec<_> = screen.iter().map(|i| i.text).collect();
+        assert_eq!(names, ["Off", "Soft", "Still", "Live", "Arcade", "Adjust"]);
+        let seps: Vec<_> = screen.iter().map(|i| i.separator).collect();
+        assert_eq!(seps, [false, false, false, false, false, true]);
+        assert!(view.items.iter().all(|i| !i.text.contains("ffects")));
     }
 
     #[test]

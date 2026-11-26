@@ -2,7 +2,8 @@
 
 //! The macOS menu bar, built from the same model as the row in the window.
 //! About, Settings and Quit move into the application menu, where macOS
-//! expects them.
+//! expects them. Items of a group go into a submenu, and radio items become
+//! check items that follow the window's choice.
 
 use crate::menus::{self, Command, Item, Mods};
 use muda::accelerator::{Accelerator, Code, Modifiers};
@@ -15,7 +16,29 @@ pub struct NativeMenu {
     _menu: muda::Menu,
     chosen: std::sync::mpsc::Receiver<String>,
     /// Every item, with the state it was last given.
-    items: Vec<(Item, muda::MenuItem, bool)>,
+    items: Vec<(Item, Native, bool, bool)>,
+}
+
+/// A native item: plain, or a check item for a radio item of the model.
+enum Native {
+    Plain(muda::MenuItem),
+    Check(muda::CheckMenuItem),
+}
+
+impl Native {
+    fn set_enabled(&self, on: bool) {
+        match self {
+            Native::Plain(i) => i.set_enabled(on),
+            Native::Check(i) => i.set_enabled(on),
+        }
+    }
+
+    fn as_item(&self) -> &dyn muda::IsMenuItem {
+        match self {
+            Native::Plain(i) => i,
+            Native::Check(i) => i,
+        }
+    }
 }
 
 fn code(key: &str) -> Option<Code> {
@@ -79,14 +102,27 @@ fn accelerator(it: &Item) -> Option<Accelerator> {
     Some(Accelerator::new(mods, code(s.key)?))
 }
 
-fn item(id: String, it: &Item) -> muda::MenuItem {
-    muda::MenuItem::with_id(id, it.text, it.unavailable.is_none(), accelerator(it))
+fn item(id: String, it: &Item, checked: Option<bool>) -> Native {
+    let on = it.unavailable.is_none();
+    match checked {
+        Some(c) => Native::Check(muda::CheckMenuItem::with_id(
+            id,
+            it.text,
+            on,
+            c,
+            accelerator(it),
+        )),
+        None => Native::Plain(muda::MenuItem::with_id(id, it.text, on, accelerator(it))),
+    }
 }
 
 impl NativeMenu {
     /// Build the bar from the model and give it to the application. Call
     /// once, on the main thread, after the window's event loop exists.
-    pub fn install(ctx: eframe::egui::Context) -> Result<NativeMenu, String> {
+    pub fn install(
+        ctx: eframe::egui::Context,
+        studio: &crate::Studio,
+    ) -> Result<NativeMenu, String> {
         let model = menus::menus();
         let bar = muda::Menu::new();
         let mut items = Vec::new();
@@ -94,21 +130,46 @@ impl NativeMenu {
         for (m, menu) in model.iter().enumerate() {
             for (i, it) in menu.items.iter().enumerate() {
                 if APP_MENU.contains(&it.command) {
-                    let mi = item(menus::item_id(m, i), it);
-                    app.append(&mi).map_err(|e| e.to_string())?;
-                    items.push((*it, mi, it.unavailable.is_none()));
+                    let mi = item(menus::item_id(m, i), it, None);
+                    app.append(mi.as_item()).map_err(|e| e.to_string())?;
+                    items.push((*it, mi, it.unavailable.is_none(), false));
                 }
             }
         }
         bar.append(&app).map_err(|e| e.to_string())?;
         for (m, menu) in model.iter().enumerate() {
             let sub = muda::Submenu::new(menu.title, true);
+            let mut group: Option<(&str, muda::Submenu)> = None;
             for (i, it) in menu.items.iter().enumerate() {
-                if !APP_MENU.contains(&it.command) {
-                    let mi = item(menus::item_id(m, i), it);
-                    sub.append(&mi).map_err(|e| e.to_string())?;
-                    items.push((*it, mi, it.unavailable.is_none()));
+                if APP_MENU.contains(&it.command) {
+                    continue;
                 }
+                // Close the open group when this item is not part of it.
+                if group.as_ref().map(|(g, _)| Some(*g)) != Some(it.group)
+                    && let Some((_, g)) = group.take()
+                {
+                    sub.append(&g).map_err(|e| e.to_string())?;
+                }
+                if group.is_none()
+                    && let Some(g) = it.group
+                {
+                    group = Some((g, muda::Submenu::new(g, true)));
+                }
+                let into: &muda::Submenu = match &group {
+                    Some((_, g)) => g,
+                    None => &sub,
+                };
+                if it.separator {
+                    into.append(&muda::PredefinedMenuItem::separator())
+                        .map_err(|e| e.to_string())?;
+                }
+                let checked = studio.checked(it);
+                let mi = item(menus::item_id(m, i), it, checked);
+                into.append(mi.as_item()).map_err(|e| e.to_string())?;
+                items.push((*it, mi, it.unavailable.is_none(), checked == Some(true)));
+            }
+            if let Some((_, g)) = group.take() {
+                sub.append(&g).map_err(|e| e.to_string())?;
             }
             bar.append(&sub).map_err(|e| e.to_string())?;
         }
@@ -127,13 +188,23 @@ impl NativeMenu {
     }
 
     /// Give each item the state the window's own menu gives it now, by
-    /// [`crate::Studio::unavailable`]. Call after each frame.
+    /// [`crate::Studio::unavailable`] and [`crate::Studio::checked`]. Call
+    /// after each frame.
     pub fn sync(&mut self, studio: &crate::Studio) {
-        for (it, mi, on) in &mut self.items {
+        for (it, mi, on, checked) in &mut self.items {
             let now = studio.unavailable(it).is_none();
             if now != *on {
                 mi.set_enabled(now);
                 *on = now;
+            }
+            // muda flips a check item when it is clicked: set it each
+            // time, so it shows the window's choice.
+            if let Native::Check(c) = mi {
+                let want = studio.checked(it) == Some(true);
+                if want != *checked || c.is_checked() != want {
+                    c.set_checked(want);
+                    *checked = want;
+                }
             }
         }
     }
