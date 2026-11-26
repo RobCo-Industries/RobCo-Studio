@@ -56,6 +56,20 @@ static const studio_sys_layout_entry_t entries[] = {
     SZ(rimg_expect_t), AL(rimg_expect_t),
     OF(rimg_expect_t, magic), OF(rimg_expect_t, slot_base), OF(rimg_expect_t, slot_size),
     OF(rimg_expect_t, abi_major), OF(rimg_expect_t, file_size),
+
+    SZ(rimg_icon_format_t), AL(rimg_icon_format_t),
+
+    SZ(rimg_seal_opts_t), AL(rimg_seal_opts_t),
+    OF(rimg_seal_opts_t, name), OF(rimg_seal_opts_t, has_image_version),
+    OF(rimg_seal_opts_t, image_version), OF(rimg_seal_opts_t, title),
+    OF(rimg_seal_opts_t, icon), OF(rimg_seal_opts_t, icon_len),
+    OF(rimg_seal_opts_t, icon_format),
+
+    SZ(rimg_pack_opts_t), AL(rimg_pack_opts_t),
+    OF(rimg_pack_opts_t, seal), OF(rimg_pack_opts_t, magic), OF(rimg_pack_opts_t, subtype),
+    OF(rimg_pack_opts_t, load_addr), OF(rimg_pack_opts_t, has_mem_size),
+    OF(rimg_pack_opts_t, mem_size), OF(rimg_pack_opts_t, has_abi_version),
+    OF(rimg_pack_opts_t, abi_version), OF(rimg_pack_opts_t, meta), OF(rimg_pack_opts_t, entry),
 };
 
 /* The fixed formats do not depend on the host. */

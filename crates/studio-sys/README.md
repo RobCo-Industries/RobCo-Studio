@@ -4,15 +4,15 @@ RobCo-Core's C, compiled into Studio, with a thin Rust binding.
 
 ## How the C gets in
 
-RobCo-Core is the submodule at `external/robco-core`. `build.rs` compiles 11 of its files with the `cc` crate, the flags of the library's own host tests: `-std=gnu11 -DROBCO_HOST=1 -Wall -Wextra`, warnings as errors.
+RobCo-Core is the submodule at `external/robco-core`. `build.rs` compiles 12 of its files with the `cc` crate, the flags of the library's own host tests: `-std=gnu11 -DROBCO_HOST=1 -Wall -Wextra`, warnings as errors.
 
 | Part | Files |
 |---|---|
-| Library | `src/lib/rimg.c`, `crc32.c`, `ini.c`, `part.c`, `blk_ram.c`, `k_string.c`, `datetime.c` |
+| Library | `src/lib/rimg.c`, `rimg_seal.c`, `crc32.c`, `ini.c`, `part.c`, `blk_ram.c`, `k_string.c`, `datetime.c` |
 | File system | `src/fs/fs.c`, `fs_glue.c` |
 | FatFs | `third_party/fatfs/ff.c`, `ffunicode.c` |
 
-The include paths are `include`, `src/fs` and `third_party/fatfs`. `csrc/layout.c` reports the size, alignment and field offsets of the 9 shared structs, 65 entries. `tests/layout.rs` compares each one with Rust's view.
+The include paths are `include`, `src/fs` and `third_party/fatfs`. `csrc/layout.c` reports the size, alignment and field offsets of the 12 shared types, 88 entries. `tests/layout.rs` compares each one with Rust's view.
 
 ## The C compiler
 
@@ -22,6 +22,7 @@ The include paths are `include`, `src/fs` and `third_party/fatfs`. `csrc/layout.
 ## What it wraps
 
 - `crc32`, `ini_parse`, `ini_get_int`, `rimg_validate`, `rimg_crc`.
+- `rimg_seal` and `rimg_pack`, as in the "Sealing and packing" section of [IMAGE_FORMAT.md](https://github.com/RobCo-Industries/RobCo-Core/blob/main/docs/spec/IMAGE_FORMAT.md#sealing-and-packing). The C runs every step. The wrappers pass the bytes and options through and return a new `Vec<u8>`. A failure returns the C's `RIMG_E_*` code and no bytes. A name, title or magic with a NUL byte fails with code -1 before the C runs.
 - `build_card` and `read_back`: a card image built in memory on the library's RAM block device. Rust writes the MBR, one partition at LBA 2048. FatFs formats and fills it. A fixed clock, the weak `fs_time_hook` of `fs_glue.c`, gives the same bytes on every system.
 - The raw declarations are in `src/ffi.rs`.
 
@@ -40,7 +41,7 @@ The file system's state is global in the C. The card functions hold one lock, so
 
 ## What is tested and what is not
 
-- Tested on Ubuntu, macOS and Windows in CI: the build, the 65 layout entries, CRC-32, INI, `rimg_validate` on an image sealed by `tools/rimg.py`, the card size table at each edge, FAT16 cards of 4 and 32 MiB, and a FAT16 card of 16 MiB whose SHA-256 starts with `ee100f0f93696cff` on each system. A Linux job reads that card with mtools: `scripts/check_card.sh`.
+- Tested on Ubuntu, macOS and Windows in CI: the build, the 88 layout entries, CRC-32, INI, `rimg_validate` on an image sealed by `tools/rimg.py`, every vector of RobCo-Core's `tests/vectors/rimg/vectors.ini` through `rimg_seal` and `rimg_pack`, the card size table at each edge, FAT16 cards of 4 and 32 MiB, and a FAT16 card of 16 MiB whose SHA-256 starts with `ee100f0f93696cff` on each system. A Linux job reads that card with mtools: `scripts/check_card.sh`.
 - Built but not checked by another tool: a FAT32 card of 64 MiB. Its FAT type is checked, nothing reads it with mtools.
 - Not tested: FAT32 cards above 64 MiB, cards larger than memory, and ARM64 Windows.
 

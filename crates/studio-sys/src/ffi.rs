@@ -230,6 +230,61 @@ pub struct RimgExpect {
     pub file_size: u32,
 }
 
+/// `rimg_icon_format_t`, a C enum the size of `int`.
+pub type RimgIconFormat = c_int;
+/// `RIMG_ICON_AUTO`: 128 bytes is raw, any other length is PBM.
+pub const RIMG_ICON_AUTO: RimgIconFormat = 0;
+/// `RIMG_ICON_RAW`: exactly 128 bytes in the META layout.
+pub const RIMG_ICON_RAW: RimgIconFormat = 1;
+/// `RIMG_ICON_PBM`: a 32 by 32 PBM, P1 or P4.
+pub const RIMG_ICON_PBM: RimgIconFormat = 2;
+
+/// `rimg_seal_opts_t`, the inputs of `rimg_seal`. NULL is an absent input.
+#[repr(C)]
+#[derive(Debug)]
+pub struct RimgSealOpts {
+    /// NUL-terminated name, or NULL.
+    pub name: *const c_char,
+    /// Non-zero when `image_version` is given.
+    pub has_image_version: c_int,
+    /// `(X << 16) | (Y << 8) | Z`.
+    pub image_version: u32,
+    /// NUL-terminated title, or NULL.
+    pub title: *const c_char,
+    /// The icon file's bytes, or NULL.
+    pub icon: *const u8,
+    /// The number of icon bytes.
+    pub icon_len: usize,
+    /// How to decode the icon.
+    pub icon_format: RimgIconFormat,
+}
+
+/// `rimg_pack_opts_t`, the inputs of `rimg_pack`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct RimgPackOpts {
+    /// Name, image version, title and icon.
+    pub seal: RimgSealOpts,
+    /// NUL-terminated magic: `BOOT`, `ROM1` or `ROBCO78`.
+    pub magic: *const c_char,
+    /// The subtype.
+    pub subtype: i64,
+    /// The load address.
+    pub load_addr: i64,
+    /// Non-zero when `mem_size` is given.
+    pub has_mem_size: c_int,
+    /// The bytes in memory.
+    pub mem_size: i64,
+    /// Non-zero when `abi_version` is given.
+    pub has_abi_version: c_int,
+    /// `(MAJOR << 16) | MINOR`.
+    pub abi_version: u32,
+    /// -1 follows the magic, 0 no META block, 1 a META block.
+    pub meta: c_int,
+    /// The entry offset.
+    pub entry: i64,
+}
+
 /// One entry of the C's layout table in `csrc/layout.c`.
 #[repr(C)]
 #[derive(Debug)]
@@ -261,6 +316,10 @@ pub const FS_MKFS_FAT32: c_uint = 2;
 pub const RIMG_OK: c_int = 0;
 /// `RIMG_E_CRC`.
 pub const RIMG_E_CRC: c_int = 8;
+/// `RIMG_E_IO`.
+pub const RIMG_E_IO: c_int = 2;
+/// The bytes `rimg_pack` adds to a payload with a META block: header and META.
+pub const RIMG_PACK_MAX_EXTRA: usize = 0x120;
 /// The shortest file `rimg_crc` and `rimg_validate` read: `RIMG_META_OFFSET`.
 pub const RIMG_MIN_FILE: usize = 0x60;
 
@@ -296,6 +355,22 @@ unsafe extern "C" {
     ) -> c_int;
     /// The CRC the header of `image` should hold.
     pub fn rimg_crc(image: *const c_void, file_size: u32) -> u32;
+    /// Seals `len` bytes of `image` into `out`, which holds `len` bytes.
+    pub fn rimg_seal(
+        image: *const c_void,
+        len: usize,
+        opts: *const RimgSealOpts,
+        out: *mut c_void,
+    ) -> c_int;
+    /// Packs a payload into `out`, which holds `out_cap` bytes.
+    pub fn rimg_pack(
+        payload: *const c_void,
+        payload_len: usize,
+        opts: *const RimgPackOpts,
+        out: *mut c_void,
+        out_cap: usize,
+        out_len: *mut usize,
+    ) -> c_int;
     /// Short text for a `RIMG_*` code.
     pub fn rimg_strerror(code: c_int) -> *const c_char;
     /// A block device over a RAM buffer.
