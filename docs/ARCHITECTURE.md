@@ -145,7 +145,7 @@ The window, on `eframe` and `egui` 0.37.0. It depends on `studio-core`, and noth
 | Module | Holds |
 |---|---|
 | `theme` | Every colour, size, stroke, radius and font: the four schemes, high legibility, effects Off and Soft. The only module that may hold a colour or a size literal. |
-| `kit` | The thin layer: pane, filled and outlined buttons, tabs, segmented control, zoom group, tree row, text field, dropdown, menu row, banner, empty state, divider, rail page, footer segment. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
+| `kit` | The thin layer: pane, filled and outlined buttons, tabs, segmented control, zoom group, tree row, text field, dropdown, menu row, banner, empty state, divider, footer segment. The segmented control also serves as a tab list. A view builds from these and never styles the toolkit. Each gives the accessibility tree a role and a name. |
 | `art` | The drawings and the icons, rasterised from their SVG files with `resvg`, the Spleen 8x16 label atlas built from its BDF file, its blurred halo atlas, and the application icon. |
 | `menus` | The menus, described once. The row in the window and the macOS menu bar both read it. |
 | `native_menu` | macOS only: the system menu bar, through `muda`. |
@@ -161,24 +161,26 @@ The window is cut into strips, top to bottom:
 flowchart TB
     H["Header: wordmark, atom, caps line, skyline. 60 high, 36 compact"]
     M["Menu row: caps menu names. Absent on macOS, where the system bar has the menus"]
-    T["Toolbar: PROJECT and TARGET dropdowns, Build, Run, Debug, Write card"]
-    P["Rail at the left, then the page"]
-    F["Footer: Industries mark, division, status line, SDK, Sim, Link, Position"]
+    T["Toolbar: pages control, PROJECT and TARGET dropdowns, Build, Run, Debug, Write card"]
+    P["Page, from margin to margin"]
+    F["Footer: Industries mark, division, status line, SDK, Sim, Link, Position, Settings, Help"]
     H --> M --> T --> P --> F
 ```
 
 - The header is tall when the window's inner height is 720 points or more, and compact under that or when View, Compact header is on. It takes no focus; a screen reader gets one image named "RobCo Studio".
-- Panes are rounded, with a title row and a rule. Tabs stand on the rule; the active tab, the chosen part of a segmented control and the current page of the rail are filled in `bright` with a halo.
+- Panes are rounded, with a title row and a rule. Tabs stand on the rule; the active tab, the chosen part of a segmented control and the current page are filled in `bright` with a halo.
 - The simulator pane shows the device at 62 percent with the empty state in its screen opening while no machine runs, then the honest line and Stop, Reset, Fit and the zoom group. The Simulator menu's scale items set the same step. A step that does not fit the pane is not available.
+- The pages control is the toolbar's first control: PROJECT, CARD, DEVICE and SDK in one outline. A screen reader gets a tab list named "Pages" with one tab per page, the current one selected. It is one stop in the Tab order, and the left and right arrows move between pages. The page shortcuts and the View menu move its selection.
+- The four actions fit their icon and label, no narrower than a set minimum. At 1280 points the whole toolbar fits with room to spare.
 - The bottom pane puts the log's filters in its tab row while the Log tab is on.
-- A long status line in the footer hides the division first, then Position, then ends in an ellipsis.
+- A long status line in the footer hides the division first, then Position, then ends in an ellipsis. Settings and Help hold the right end and never give way.
 
 Rules, each with a test:
 
 - No colour, float size or font outside `theme`. `tests/tokens.rs` searches the source.
 - Text is never dropped without asking. Closing a tab or quitting with edits opens one question, which names its document.
 - A control that cannot act is marked disabled in the accessibility tree and says why.
-- F6 moves through toolbar, rail, the page's panes left to right and top to bottom, then the footer.
+- F6 moves through the toolbar, the page's panes left to right and top to bottom, then the footer.
 
 Known limits:
 

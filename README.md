@@ -23,7 +23,7 @@ cargo run -p robco-studio -- path/to/a/folder
 
 What works today:
 
-- The window's regions: the menus, the toolbar, the rail with its four pages, the page and the status bar. On macOS the menus are in the system's menu bar. On Windows and Ubuntu they are a row in the window.
+- The window's regions: the menus, the toolbar, the page and the status bar. The toolbar starts with one control for the four pages: Project, Card, Device and SDK. On macOS the menus are in the system's menu bar. On Windows and Ubuntu they are a row in the window.
 - The Project page: Files, the editor, the simulator, the tape and the bottom pane, at their default sizes. The dividers between them drag, and take focus: the arrow keys move them and Enter puts them back.
 - Files lists the real folder. A click opens a file in a tab.
 - The editor edits plain text and C, with line numbers and colours for C. It saves with Cmd or Ctrl+S, finds and replaces with Cmd or Ctrl+F, and keeps a file's CRLF line endings. A file it cannot open as text is refused with the reason, and nothing changes.
