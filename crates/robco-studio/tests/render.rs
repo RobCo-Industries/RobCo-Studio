@@ -369,7 +369,8 @@ fn screen_harness_gpu(
 
 /// The Project page at each screen level, three Live frames half a second
 /// apart, an open menu, an open dropdown, a tooltip and a dialog at Live,
-/// and Live at display scale 2. Into `STUDIO_SHOTS`, as `screen-*.png`.
+/// and Live at display scale 2, as `screen-*.png`, and View with high
+/// legibility on, as `menu-view-marks.png`. Into `STUDIO_SHOTS`.
 #[test]
 #[ignore = "writes PNG files; needs a wgpu adapter"]
 fn render_the_screen_levels() {
@@ -431,6 +432,24 @@ fn render_the_screen_levels() {
     // A dialog over the scrim.
     h.state_mut().screen.adjusting = true;
     shot(&mut h, &dir, "screen-live-dialog.png").unwrap();
+    h.state_mut().screen.adjusting = false;
+    h.run_steps(2);
+    // View with high legibility on: its mark, and Off's in Screen.
+    h.state_mut().theme.high_legibility = true;
+    h.run_steps(2);
+    h.query_all_by_label("View")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    let sub = h
+        .query_all_by_label("Screen")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MenuItem)
+        .unwrap()
+        .rect();
+    h.hover_at(sub.center());
+    h.run_steps(3);
+    shot(&mut h, &dir, "menu-view-marks.png").unwrap();
     drop(h);
     let mut h = screen_harness(Some(&d), 2.0, Screen::Live);
     open_main(&mut h);
