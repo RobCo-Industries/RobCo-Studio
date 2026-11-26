@@ -1232,6 +1232,23 @@ impl<'a> Kit<'a> {
         width: f32,
         rows: &[&str],
     ) -> (Response, Option<usize>) {
+        self.dropdown_held(ui, name, icon, value, none, width, rows, &[])
+    }
+
+    /// The dropdown of [`Kit::dropdown_response`], whose list ends with
+    /// `held`: rows that cannot be picked, each with the reason it gives.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dropdown_held(
+        &self,
+        ui: &mut Ui,
+        name: &str,
+        icon: Icon,
+        value: &str,
+        none: bool,
+        width: f32,
+        rows: &[&str],
+        held: &[(&str, &str)],
+    ) -> (Response, Option<usize>) {
         let p = self.p();
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size::FIELD_H), Sense::click());
         let shown = format!("{name}: {value}");
@@ -1274,6 +1291,9 @@ impl<'a> Kit<'a> {
                     if self.menu_row(ui, r, "", None, width).clicked() {
                         chosen = Some(i);
                     }
+                }
+                for (r, why) in held {
+                    self.menu_row(ui, r, "", Some(why), width);
                 }
             });
         if chosen.is_some() {

@@ -1220,7 +1220,12 @@ struct FakeState {
 struct FakeChooser(std::sync::Arc<std::sync::Mutex<FakeState>>);
 
 impl robco_studio::chooser::FolderChooser for FakeChooser {
-    fn start(&mut self, _ctx: &egui::Context, start: Option<&Path>) {
+    fn start(
+        &mut self,
+        _ctx: &egui::Context,
+        start: Option<&Path>,
+        _ask: robco_studio::chooser::Ask,
+    ) {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

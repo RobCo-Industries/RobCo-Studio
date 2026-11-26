@@ -179,12 +179,11 @@ pub const LATER: &str = "Not in this release of Studio. Nothing was done.";
 /// The jobs drawn ready whose commands do not exist yet, with their
 /// names. Their buttons and menu items act, and the act only says so on
 /// the status line. A real command takes its job out of this list.
-pub const NOT_YET: [(Command, &str); 6] = [
+pub const NOT_YET: [(Command, &str); 5] = [
     (Command::Build, "Build"),
     (Command::Run, "Run"),
     (Command::Debug, "Debug"),
     (Command::WriteCard, "Write card"),
-    (Command::ThemeAdd, "Add a theme file"),
     (Command::ThemeFolder, "Show the themes folder"),
 ];
 

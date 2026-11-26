@@ -155,7 +155,7 @@ impl Studio {
 
     /// How `settings.toml` names the theme at `i`: its file, or the name
     /// of a theme that ships.
-    fn key(&self, i: usize) -> String {
+    pub(super) fn key(&self, i: usize) -> String {
         match self.theme_files.get(i) {
             Some(Some(f)) => f.clone(),
             _ => self
@@ -166,7 +166,7 @@ impl Studio {
     }
 
     /// The place of the theme `key` names.
-    fn find_key(&self, key: &str) -> Option<usize> {
+    pub(super) fn find_key(&self, key: &str) -> Option<usize> {
         if key.ends_with(".toml") {
             self.theme_files
                 .iter()
@@ -178,7 +178,7 @@ impl Studio {
 
     /// The name of the theme at `i` as its file gives it, without the
     /// file's name a listed twin carries.
-    fn own_name(&self, i: usize) -> String {
+    pub(super) fn own_name(&self, i: usize) -> String {
         let name = self.themes.get(i).map_or("", |t| t.name.as_ref());
         match self.theme_files.get(i) {
             Some(Some(f)) => name
@@ -282,6 +282,17 @@ impl Studio {
         Ok((name, taken))
     }
 
+    /// The name `base` with the next free number, "Green 2", for the name
+    /// row and the question.
+    pub fn next_name(&self, base: &str) -> String {
+        let base: String = base.chars().take(store::NAME_MAX - 4).collect();
+        let base = base.trim_end();
+        (2..10_000)
+            .map(|n| format!("{base} {n}"))
+            .find(|c| self.check_name(c, None).is_ok())
+            .unwrap_or_else(|| base.to_owned())
+    }
+
     /// The themes folder, or the fault when there is none.
     fn folder_or_fault(&self) -> Result<PathBuf, ThemeFault> {
         self.themes_folder().ok_or(ThemeFault::NoFolder)
@@ -383,6 +394,26 @@ impl Studio {
         };
         let dir = self.folder_or_fault()?;
         let name = self.own_name(self.current);
+        let cannot = |why: &str| {
+            ThemeFault::Write(format!(
+                "Studio could not delete {}: {why}. The theme is kept.",
+                store::shown(&file)
+            ))
+        };
+        // One plain file of the folder itself: no part of a path, no link
+        // and no folder.
+        let plain = Path::new(&file)
+            .file_name()
+            .is_some_and(|n| n == std::ffi::OsStr::new(&file))
+            && file.ends_with(".toml");
+        if !plain {
+            return Err(cannot("not a theme file of the folder"));
+        }
+        let meta =
+            std::fs::symlink_metadata(dir.join(&file)).map_err(|e| cannot(&e.to_string()))?;
+        if !meta.is_file() {
+            return Err(cannot("not a plain file"));
+        }
         std::fs::remove_file(dir.join(&file)).map_err(|e| {
             ThemeFault::Write(format!(
                 "Studio could not delete {}: {e}. The theme is kept.",

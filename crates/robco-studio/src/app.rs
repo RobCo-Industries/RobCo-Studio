@@ -5,7 +5,7 @@
 //! theme.
 
 use crate::art::{Art, Icon, Mark};
-use crate::chooser::{self, Choice, FolderChooser, SystemChooser};
+use crate::chooser::{self, Ask, Choice, FolderChooser, SystemChooser};
 use crate::editor::{Answer, Editor};
 use crate::kit::{Button, ButtonKind, Kit, Level, MenuMark};
 use crate::menus::{self, Command, ThemeId};
@@ -228,6 +228,8 @@ pub struct Studio {
     title: String,
     chooser: Box<dyn FolderChooser>,
     choosing: Choosing,
+    /// What the chooser asks for.
+    asking: Ask,
     next_project: Option<Project>,
 }
 
@@ -416,6 +418,7 @@ impl Studio {
             title: String::new(),
             chooser: Box::new(SystemChooser::default()),
             choosing: Choosing::Idle,
+            asking: Ask::Folder,
             next_project: None,
         };
         if let Some(f) = folder {
@@ -427,7 +430,8 @@ impl Studio {
         s
     }
 
-    /// The same window, asking `chooser` for a folder on File, Open folder.
+    /// The same window, asking `chooser` for a folder on File, Open folder,
+    /// and for a file on Add a theme file.
     pub fn with_chooser(mut self, chooser: Box<dyn FolderChooser>) -> Self {
         self.chooser = chooser;
         self
@@ -476,8 +480,13 @@ impl Studio {
             // A menu or a dropdown list open now would stay open, inert,
             // over the scrim.
             egui::Popup::close_all(ctx);
-            let start = chooser::start_folder(self.project.as_ref().map(|p| p.root.as_path()));
-            self.chooser.start(ctx, start.as_deref());
+            let start = match self.asking {
+                Ask::Folder => {
+                    chooser::start_folder(self.project.as_ref().map(|p| p.root.as_path()))
+                }
+                Ask::ThemeFile => chooser::start_folder(None),
+            };
+            self.chooser.start(ctx, start.as_deref(), self.asking);
         }
         if self.choosing != Choosing::Open {
             return;
@@ -489,6 +498,11 @@ impl Studio {
         match answer {
             Choice::Cancelled => {}
             Choice::Failed(e) => self.say(Level::Error, e),
+            Choice::Chosen(f) if self.asking == Ask::ThemeFile => {
+                if let Err(e) = self.add_theme_file(&f) {
+                    self.say(Level::Error, e.message());
+                }
+            }
             Choice::Chosen(f) => match Project::open(&f) {
                 Err(e) => self.say(Level::Error, e),
                 Ok(p) => {
@@ -723,7 +737,7 @@ impl Studio {
     /// editor.
     /// Under the chooser it is drawn too, held with the rest.
     fn dialog_shown(&self) -> Front {
-        if self.editor.question.is_some() {
+        if self.editor.question.is_some() || self.theme_editor.question.is_some() {
             Front::Question
         } else if self.theme_editor.open {
             Front::Theme
@@ -822,8 +836,15 @@ impl Studio {
         match c {
             Command::OpenFolder => {
                 self.choosing = Choosing::Due;
-                ctx.request_repaint();
+                self.asking = Ask::Folder;
             }
+            Command::ThemeAdd => match self.themes_folder() {
+                Some(_) => {
+                    self.choosing = Choosing::Due;
+                    self.asking = Ask::ThemeFile;
+                }
+                None => self.say(Level::Error, themes::ThemeFault::NoFolder.message()),
+            },
             Command::Save => self.editor.save(),
             Command::SaveAll => self.editor.save_all(),
             Command::CloseTab => {
@@ -861,7 +882,7 @@ impl Studio {
             },
             Command::NextPane => self.move_focus(ctx, true),
             Command::PreviousPane => self.move_focus(ctx, false),
-            Command::Theme(ThemeId::At(i)) => self.pick_theme(i),
+            Command::Theme(ThemeId::At(i)) => self.ask_pick(i),
             Command::ThemeEdit => self.theme_editor.open = true,
             Command::HighLegibility => {
                 self.theme.high_legibility = !self.theme.high_legibility;
@@ -2150,6 +2171,10 @@ impl Studio {
     }
 
     fn dialog(&mut self, kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
+        if self.theme_editor.question.is_some() {
+            self.theme_dialog(kit, ctx, full);
+            return;
+        }
         let (Some(q), Some(text)) = (self.editor.question, self.editor.question_text()) else {
             return;
         };
@@ -2883,6 +2908,14 @@ mod tests {
             Verdict::Acts
         );
         assert_eq!(verdict(Command::ThemeAdd, Front::Theme), Verdict::Acts);
+        assert_eq!(
+            verdict(Command::ThemeAdd, Front::Question),
+            Verdict::Refused(ASKING)
+        );
+        assert_eq!(
+            verdict(Command::ThemeAdd, Front::Chooser),
+            Verdict::Refused(CHOOSING)
+        );
         assert_eq!(verdict(Command::OpenFolder, Front::Theme), Verdict::Acts);
         assert_eq!(
             verdict(Command::Save, Front::Theme),
@@ -3433,8 +3466,11 @@ mod tests {
         s.edit_theme(|t| t.strengths.bloom = 0.8);
         assert_eq!(s.status.1, "x", "said once");
         assert_eq!(s.theme_name(), "Arcade, changed");
-        // Another theme takes its place, and the change goes.
+        // Another theme asks first; Do not save lets it take the place,
+        // and the change goes.
         s.run(&ctx, Command::Theme(ThemeId::At(1)));
+        assert_eq!(s.front(), Front::Question);
+        s.answer_theme(crate::editor::Answer::DoNotSave);
         assert_eq!(marked(&s), [Command::Theme(ThemeId::At(1))]);
         assert!(s.changed.is_none());
         assert_eq!(s.status.1, "Theme: Amber.");
@@ -3489,8 +3525,9 @@ mod tests {
         );
     }
 
-    /// Edit theme opens the pane by its shortcut; Add a theme file and Show
-    /// the themes folder are not built yet and say so.
+    /// Edit theme opens the pane by its shortcut; Add a theme file needs a
+    /// settings folder; Show the themes folder is not built yet and says
+    /// so.
     #[test]
     fn edit_theme_opens_the_pane_and_the_rest_say_not_yet() {
         let ctx = egui::Context::default();
@@ -3499,7 +3536,9 @@ mod tests {
         assert_eq!(s.front(), Front::Theme);
         s.theme_editor.open = false;
         s.run(&ctx, Command::ThemeAdd);
-        assert_eq!(s.status.1, "Add a theme file is not in this version yet.");
+        assert_eq!(s.status.1, ThemeFault::NoFolder.message());
+        assert_eq!(s.front(), Front::Nothing);
+        s.status_read = true;
         s.run(&ctx, Command::ThemeFolder);
         assert_eq!(
             s.status.1,

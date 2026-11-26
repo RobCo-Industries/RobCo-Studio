@@ -4,9 +4,10 @@
 //! a Screen tab. Every change goes through [`Studio::edit_theme`], so the
 //! window behind, its preview, changes in the next frame.
 
-use super::{Studio, page_area};
+use super::{Studio, ThemeFault, page_area};
 use crate::art::Icon;
-use crate::kit::{Button, ButtonKind, Kit, Rail, Slider};
+use crate::editor::Answer;
+use crate::kit::{Button, ButtonKind, Kit, Level, Rail, Slider};
 use crate::palette::{self, QUICK};
 use crate::screen::Held;
 use crate::theme::{Strengths, Type, crt, size, stroke};
@@ -44,6 +45,36 @@ pub struct ThemeEditor {
     /// The editor drew last frame. On its first frame the Theme dropdown
     /// takes the focus.
     was_open: bool,
+    /// The name row, open in place of the buttons.
+    pub naming: Option<Naming>,
+    /// The question about a theme, in front of the editor.
+    pub question: Option<ThemeQuestion>,
+}
+
+/// The name row of Save as and Rename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Naming {
+    /// Rename, else Save as.
+    pub rename: bool,
+    /// The name as typed.
+    pub text: String,
+    /// The field takes the focus on its next frame.
+    focus: bool,
+}
+
+/// A question about a theme. Each comes in front of the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeQuestion {
+    /// Keep the changes before the theme `to`, by its settings key, takes
+    /// their place? `name` is the Name field, for a theme that ships.
+    Leave {
+        /// The theme picked.
+        to: String,
+        /// The name to save a theme that ships as.
+        name: String,
+    },
+    /// Delete the theme in use?
+    Delete,
 }
 
 impl ThemeEditor {
@@ -120,6 +151,38 @@ pub const SHIPPED_SAVE: &str =
 pub const BUTTONS: [&str; 5] = ["Delete", "Rename", "Revert", "Save as", "Save"];
 /// The close button's name.
 pub const CLOSE: &str = "Close";
+/// The name row's field.
+pub const NAME: &str = "Name";
+/// The question's buttons.
+pub const CANCEL: &str = "Cancel";
+/// Drop the changes and go on.
+pub const DO_NOT_SAVE: &str = "Do not save";
+/// Save over a theme of the same name.
+pub const REPLACE: &str = "Replace";
+/// The Delete question's act.
+pub const DELETE_THEME: &str = "Delete theme";
+
+/// The title of the question on leaving a changed theme.
+pub fn leave_title(name: &str) -> String {
+    format!("Keep the changes to {name}?")
+}
+
+/// The text of the question on leaving a changed theme.
+pub fn leave_text(name: &str, to: &str) -> String {
+    format!("{name} was changed and not saved. {to} takes its place now.")
+}
+
+/// The title of the Delete question.
+pub fn delete_title(name: &str) -> String {
+    format!("Delete the theme {name}?")
+}
+
+/// The text of the Delete question.
+pub fn delete_text(file: &str) -> String {
+    format!(
+        "Studio deletes {file} from the themes folder. This cannot be undone. The window goes back to Green."
+    )
+}
 
 /// The line under the field when the rule raised the colour.
 pub fn raised_news(c: Color32) -> String {
@@ -185,6 +248,14 @@ struct Asked {
     pick: Option<usize>,
     revert: bool,
     close: bool,
+    save: bool,
+    save_as: bool,
+    rename: bool,
+    delete: bool,
+    /// The name row's Save, Replace or Rename.
+    named: bool,
+    /// The name row's Cancel, or Escape in it.
+    unnamed: bool,
 }
 
 impl Studio {
@@ -204,10 +275,31 @@ impl Studio {
         let rect = self.theme_pane_rect();
         let base = self.spec().base;
         self.theme_editor.follow(base);
+        // Escape leaves the name row first, then the editor.
+        let escape = enabled && ctx.input(|i| i.key_pressed(Key::Escape));
+        let naming = self.theme_editor.naming.is_some();
         let mut asked = Asked {
-            close: enabled && ctx.input(|i| i.key_pressed(Key::Escape)),
+            close: escape && !naming,
+            unnamed: escape && naming,
             ..Asked::default()
         };
+        let own = self.own_file().is_some();
+        let folder = self.themes_folder().is_some();
+        let no_folder = ThemeFault::NoFolder.message();
+        let why_own = if !folder {
+            Some(no_folder.as_str())
+        } else if !own {
+            Some(SHIPPED_SAVE)
+        } else {
+            None
+        };
+        let why_as = (!folder).then_some(no_folder.as_str());
+        let fault = self.name_fault();
+        let refused: Vec<(String, String)> = self
+            .refused
+            .iter()
+            .map(|(f, why)| (crate::store::shown(f), why.clone()))
+            .collect();
         let name = self.theme_name();
         let changed = self.changed.is_some();
         let tag = if changed {
@@ -283,9 +375,18 @@ impl Studio {
                             egui::pos2(c.left(), c.bottom() - size::SMALL_H),
                             c.right_bottom(),
                         );
+                        // The name row's fault, in a line over the row.
+                        let said = fault.as_ref().map(|f| {
+                            let r = Rect::from_min_max(
+                                egui::pos2(c.left(), foot.top() - size::GAP_DOWN - size::ROW_FACT),
+                                egui::pos2(c.right(), foot.top() - size::GAP_DOWN),
+                            );
+                            (r, f.message())
+                        });
+                        let body_end = said.as_ref().map_or(foot.top(), |(r, _)| r.top());
                         let body = Rect::from_min_max(
                             c.min,
-                            egui::pos2(c.right(), foot.top() - size::GAP_DOWN),
+                            egui::pos2(c.right(), body_end - size::GAP_DOWN),
                         );
                         let mut ui = ui.new_child(
                             UiBuilder::new()
@@ -294,7 +395,11 @@ impl Studio {
                         );
                         ui.spacing_mut().item_spacing.y = size::UNIT;
                         let row_names: Vec<&str> = rows.iter().map(String::as_str).collect();
-                        let dd = kit.dropdown_response(
+                        let held: Vec<(&str, &str)> = refused
+                            .iter()
+                            .map(|(f, why)| (f.as_str(), why.as_str()))
+                            .collect();
+                        let dd = kit.dropdown_held(
                             &mut ui,
                             crate::app::THEME_TITLE,
                             Icon::Settings,
@@ -302,6 +407,7 @@ impl Studio {
                             false,
                             body.width(),
                             &row_names,
+                            &held,
                         );
                         dropdown = Some(dd.0.clone());
                         if let Some(i) = dd.1 {
@@ -340,42 +446,42 @@ impl Studio {
                                 notes(kit, ui, &spec, &shown.held);
                             });
 
-                        // The buttons: Delete and Rename at the left,
-                        // Revert, Save as and Save at the right.
+                        if let Some((r, text)) = &said {
+                            let mut ui = ui.new_child(
+                                UiBuilder::new()
+                                    .max_rect(*r)
+                                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                            );
+                            note(kit, &mut ui, Icon::Refused, text, p.alarm, None);
+                        }
                         let mut ui = ui.new_child(
                             UiBuilder::new()
                                 .max_rect(foot)
                                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         );
-                        let later = |b: &str| crate::menus::not_yet_news(b);
-                        let delete = later(BUTTONS[0]);
-                        let rename = later(BUTTONS[1]);
-                        let save_as = later(BUTTONS[3]);
-                        let save = if spec.is_shipped() {
-                            SHIPPED_SAVE.to_owned()
-                        } else {
-                            later(BUTTONS[4])
-                        };
-                        kit.button(
-                            &mut ui,
-                            Button::quiet(BUTTONS[0]).small().unavailable(&delete),
-                        );
-                        kit.button(
-                            &mut ui,
-                            Button::quiet(BUTTONS[1]).small().unavailable(&rename),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            kit.button(
-                                ui,
-                                Button::quiet(BUTTONS[4])
-                                    .small()
-                                    .kind(ButtonKind::Filled)
-                                    .unavailable(&save),
-                            );
-                            kit.button(ui, Button::quiet(BUTTONS[3]).small().unavailable(&save_as));
-                            if kit.button(ui, Button::quiet(BUTTONS[2]).small()).clicked() {
-                                asked.revert = true;
+                        if let Some(n) = &mut self.theme_editor.naming {
+                            // The name row: the field, then Cancel and the act.
+                            name_row(kit, &mut ui, n, fault.as_ref(), &mut asked);
+                            return;
+                        }
+                        // The buttons: Delete and Rename at the left,
+                        // Revert, Save as and Save at the right.
+                        let button = |ui: &mut egui::Ui, text: &str, why: Option<&str>, filled| {
+                            let mut b = Button::quiet(text).small();
+                            if filled {
+                                b = b.kind(ButtonKind::Filled);
                             }
+                            if let Some(w) = why {
+                                b = b.unavailable(w);
+                            }
+                            kit.button(ui, b).clicked()
+                        };
+                        asked.delete = button(&mut ui, BUTTONS[0], why_own, false);
+                        asked.rename = button(&mut ui, BUTTONS[1], why_own, false);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            asked.save = button(ui, BUTTONS[4], why_own, true);
+                            asked.save_as = button(ui, BUTTONS[3], why_as, false);
+                            asked.revert = button(ui, BUTTONS[2], None, false);
                         });
                     },
                 );
@@ -570,8 +676,22 @@ impl Studio {
     /// Change the theme as the pane asked, through `edit_theme`.
     fn apply(&mut self, ctx: &egui::Context, a: Asked) {
         let before = self.spec().clone();
-        if let Some(i) = a.pick {
-            self.pick_theme(i);
+        if a.unnamed {
+            self.theme_editor.naming = None;
+        } else if a.named {
+            self.finish_naming();
+        } else if a.save_as || a.rename {
+            self.start_naming(a.rename);
+        } else if a.save {
+            if let Err(f) = self.save_theme() {
+                self.say(Level::Error, f.message());
+            }
+        } else if a.delete {
+            if self.own_file().is_some() {
+                self.theme_editor.question = Some(ThemeQuestion::Delete);
+            }
+        } else if let Some(i) = a.pick {
+            self.ask_pick(i);
         } else if a.revert {
             if self.changed.is_some() {
                 self.pick_theme(self.current);
@@ -602,8 +722,331 @@ impl Studio {
         }
         if !self.theme_editor.open {
             self.theme_editor.was_open = false;
+            self.theme_editor.naming = None;
         }
     }
+
+    /// The file of the theme in use, when it is one of the person's own.
+    pub fn own_file(&self) -> Option<String> {
+        self.theme_files.get(self.current).cloned().flatten()
+    }
+
+    /// Take the theme at place `i`, from the menu or the editor's
+    /// dropdown. While a changed theme is not saved, ask first.
+    pub fn ask_pick(&mut self, i: usize) {
+        if i >= self.themes.len() {
+            return;
+        }
+        if self.changed.is_none() {
+            self.pick_theme(i);
+            return;
+        }
+        let name = if self.own_file().is_some() {
+            String::new()
+        } else {
+            self.next_name(&self.own_name(self.current))
+        };
+        self.theme_editor.naming = None;
+        self.theme_editor.question = Some(ThemeQuestion::Leave {
+            to: self.key(i),
+            name,
+        });
+    }
+
+    /// Open the name row of Save as, with the next free name, or of
+    /// Rename, with the current name.
+    pub fn start_naming(&mut self, rename: bool) {
+        if rename && self.own_file().is_none() {
+            return;
+        }
+        let own = self.own_name(self.current);
+        let text = if rename { own } else { self.next_name(&own) };
+        self.theme_editor.naming = Some(Naming {
+            rename,
+            text,
+            focus: true,
+        });
+    }
+
+    /// What is wrong with the name in the name row, or in the question's
+    /// Name field. [`ThemeFault::Exists`] offers Replace on Save as.
+    pub fn name_fault(&self) -> Option<ThemeFault> {
+        if let Some(n) = &self.theme_editor.naming {
+            let except = n.rename.then_some(self.current);
+            return self.check_name(&n.text, except).err();
+        }
+        match &self.theme_editor.question {
+            Some(ThemeQuestion::Leave { name, .. }) if self.own_file().is_none() => {
+                self.check_name(name, None).err()
+            }
+            _ => None,
+        }
+    }
+
+    /// Save as or Rename with the name in the name row. The row closes
+    /// when it worked. A name that exists is replaced on Save as, since the
+    /// button read Replace.
+    pub fn finish_naming(&mut self) {
+        let Some(n) = self.theme_editor.naming.clone() else {
+            return;
+        };
+        let done = if n.rename {
+            self.rename_theme(&n.text)
+        } else {
+            let replace = matches!(self.check_name(&n.text, None), Err(ThemeFault::Exists(_)));
+            self.save_theme_as(&n.text, replace)
+        };
+        match done {
+            Ok(_) => self.theme_editor.naming = None,
+            Err(f) => self.say_fault(&f),
+        }
+    }
+
+    /// Say a fault that the name row does not show.
+    fn say_fault(&mut self, f: &ThemeFault) {
+        if matches!(
+            f,
+            ThemeFault::Write(_)
+                | ThemeFault::NoFolder
+                | ThemeFault::NotTheme(_)
+                | ThemeFault::ShippedTheme
+        ) {
+            self.say(Level::Error, f.message());
+        }
+    }
+
+    /// Answer the question about a theme. Cancel keeps all as it was.
+    /// On leaving a changed theme, Do not save drops the changes and Save
+    /// keeps them first, then the theme picked takes their place. On
+    /// Delete, Save is Delete theme.
+    pub fn answer_theme(&mut self, a: Answer) {
+        let Some(q) = self.theme_editor.question.clone() else {
+            return;
+        };
+        if a == Answer::Cancel {
+            self.theme_editor.question = None;
+            return;
+        }
+        match q {
+            ThemeQuestion::Delete => {
+                self.theme_editor.question = None;
+                if a == Answer::Save
+                    && let Err(f) = self.delete_theme()
+                {
+                    self.say(Level::Error, f.message());
+                }
+            }
+            ThemeQuestion::Leave { to, name } => {
+                if a == Answer::Save {
+                    let kept = if self.own_file().is_some() {
+                        self.save_theme()
+                    } else {
+                        let replace =
+                            matches!(self.check_name(&name, None), Err(ThemeFault::Exists(_)));
+                        self.save_theme_as(&name, replace)
+                    };
+                    if let Err(f) = kept {
+                        self.say_fault(&f);
+                        return;
+                    }
+                }
+                self.theme_editor.question = None;
+                if let Some(i) = self.find_key(&to) {
+                    self.pick_theme(i);
+                }
+            }
+        }
+    }
+
+    /// The question about a theme, under the scrim, in front of the
+    /// editor. Escape cancels it.
+    pub(super) fn theme_dialog(&mut self, kit: &Kit<'_>, ctx: &egui::Context, full: Rect) {
+        let Some(q) = self.theme_editor.question.clone() else {
+            return;
+        };
+        let p = kit.p();
+        let own = self.own_name(self.current);
+        let (title, text, danger) = match &q {
+            ThemeQuestion::Delete => {
+                let file = self.own_file().unwrap_or_default();
+                (
+                    delete_title(&own),
+                    delete_text(&crate::store::shown(&file)),
+                    true,
+                )
+            }
+            ThemeQuestion::Leave { to, .. } => {
+                let to = self
+                    .find_key(to)
+                    .and_then(|i| self.themes.get(i))
+                    .map_or_else(String::new, |t| t.name.to_string());
+                (leave_title(&own), leave_text(&own, &to), false)
+            }
+        };
+        let field = matches!(q, ThemeQuestion::Leave { .. }) && self.own_file().is_none();
+        let fault = if field { self.name_fault() } else { None };
+        let extra = if field {
+            size::FIELD_H + size::ROW_FACT + size::UNIT * 2.0
+        } else {
+            0.0
+        };
+        let rect = Rect::from_center_size(
+            full.center(),
+            egui::vec2(size::DIALOG_W, size::DIALOG_H + size::ROW_FACT + extra),
+        );
+        let line = if danger { p.alarm } else { p.bright };
+        let mut answer = None;
+        egui::Area::new(Id::unique("theme-question"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .accessible_name(title.clone())
+            .show(ctx, |ui| {
+                ui.set_min_size(rect.size());
+                if let Some(h) = kit.theme.halo() {
+                    ui.painter().add(h.as_shape(rect, egui::CornerRadius::ZERO));
+                }
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::ZERO, p.pane);
+                ui.painter().rect_stroke(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    kit.theme.frame(line),
+                    egui::StrokeKind::Inside,
+                );
+                let inner = rect.shrink(size::PAD_SIDE + size::UNIT);
+                let mut ui = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(inner)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                ui.spacing_mut().item_spacing.y = size::UNIT;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = size::UNIT * 2.0;
+                    let (r, _) = ui.allocate_exact_size(
+                        egui::vec2(size::ICON, size::CONTROL_H),
+                        Sense::hover(),
+                    );
+                    let icon = if danger { Icon::Warn } else { Icon::Save };
+                    kit.art.icon(ui.painter(), r, icon, line);
+                    kit.text(ui, &title, Type::BodyBold, p.text);
+                });
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&text)
+                            .font(kit.theme.font(Type::Body))
+                            .color(p.text),
+                    )
+                    .wrap(),
+                );
+                if field
+                    && let Some(ThemeQuestion::Leave { name, .. }) = &mut self.theme_editor.question
+                {
+                    kit.text_field(
+                        &mut ui,
+                        Id::unique("theme-question-name"),
+                        name,
+                        NAME,
+                        "",
+                        inner.width(),
+                        fault.is_some(),
+                    );
+                    if let Some(f) = &fault {
+                        note(kit, &mut ui, Icon::Refused, &f.message(), p.alarm, None);
+                    }
+                }
+                let row = Rect::from_min_max(
+                    egui::pos2(inner.left(), inner.bottom() - size::CONTROL_H),
+                    inner.right_bottom(),
+                );
+                ui.scope_builder(
+                    UiBuilder::new()
+                        .max_rect(row)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    |ui| {
+                        let (act, why) = match &q {
+                            ThemeQuestion::Delete => (DELETE_THEME, None),
+                            ThemeQuestion::Leave { .. } if !field => (BUTTONS[4], None),
+                            ThemeQuestion::Leave { .. } => match &fault {
+                                None => (BUTTONS[3], None),
+                                Some(ThemeFault::Exists(_)) => (REPLACE, None),
+                                Some(f) => (BUTTONS[3], Some(f.message())),
+                            },
+                        };
+                        let mut b = Button::quiet(act).kind(ButtonKind::Filled);
+                        if let Some(w) = &why {
+                            b = b.unavailable(w);
+                        }
+                        if kit.button(ui, b).clicked() {
+                            answer = Some(Answer::Save);
+                        }
+                        let cancel = kit.button(ui, Button::quiet(CANCEL));
+                        if cancel.clicked() {
+                            answer = Some(Answer::Cancel);
+                        }
+                        let inside = ui
+                            .memory(|m| m.focused())
+                            .and_then(|f| ui.ctx().read_response(f))
+                            .is_some_and(|r| rect.contains(r.rect.center()));
+                        if !inside {
+                            cancel.request_focus();
+                        }
+                        if matches!(q, ThemeQuestion::Leave { .. })
+                            && kit.button(ui, Button::quiet(DO_NOT_SAVE)).clicked()
+                        {
+                            answer = Some(Answer::DoNotSave);
+                        }
+                    },
+                );
+            });
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            answer = Some(Answer::Cancel);
+        }
+        if let Some(a) = answer {
+            self.answer_theme(a);
+        }
+    }
+}
+
+/// The name row: the Name field, then Cancel and Save, Replace or Rename.
+/// Enter acts as the last button; Escape is taken by the pane.
+fn name_row(
+    kit: &Kit<'_>,
+    ui: &mut egui::Ui,
+    n: &mut Naming,
+    fault: Option<&ThemeFault>,
+    asked: &mut Asked,
+) {
+    let (act, why) = match fault {
+        None if n.rename => (BUTTONS[1], None),
+        None => (BUTTONS[4], None),
+        Some(ThemeFault::Exists(_)) if !n.rename => (REPLACE, None),
+        Some(f) => (
+            if n.rename { BUTTONS[1] } else { BUTTONS[4] },
+            Some(f.message()),
+        ),
+    };
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let mut b = Button::quiet(act).small().kind(ButtonKind::Filled);
+        if let Some(w) = &why {
+            b = b.unavailable(w);
+        }
+        if kit.button(ui, b).clicked() {
+            asked.named = true;
+        }
+        if kit.button(ui, Button::quiet(CANCEL).small()).clicked() {
+            asked.unnamed = true;
+        }
+        let id = Id::unique("theme-name-row");
+        let w = ui.available_width();
+        let resp = kit.text_field(ui, id, &mut n.text, NAME, "", w, fault.is_some());
+        if n.focus {
+            resp.request_focus();
+            n.focus = false;
+        }
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && why.is_none() {
+            asked.named = true;
+        }
+    });
 }
 
 /// The Screen tab: the ten strengths, the switch and the frame rate.
@@ -718,3 +1161,11 @@ fn note(
             .accesskit_node_builder(r.id, |n| n.set_live(egui::accesskit::Live::Polite));
     });
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test; a failed unwrap is a failed test"
+)]
+mod tests;
