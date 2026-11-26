@@ -17,11 +17,15 @@ fn main() -> std::process::ExitCode {
         Some(a) => Some(PathBuf::from(a)),
         None => None,
     };
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size(theme::size::WINDOW)
+        .with_min_inner_size(theme::size::WINDOW)
+        .with_title("RobCo Studio");
+    if let Some(icon) = robco_studio::art::app_icon(theme::size::APP_ICON) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size(theme::size::WINDOW)
-            .with_min_inner_size(theme::size::WINDOW)
-            .with_title("RobCo Studio"),
+        viewport,
         ..Default::default()
     };
     let studio = Studio::new(folder.as_deref());
