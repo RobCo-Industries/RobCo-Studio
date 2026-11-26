@@ -41,6 +41,8 @@ struct Pkg {
     /// Paths `sdk.json` leaves out, or lists without a file.
     unlisted: Vec<String>,
     ghost: Vec<String>,
+    /// Text replacements in `sdk.json`.
+    sdk_edits: Vec<(String, String)>,
 }
 
 impl Pkg {
@@ -63,6 +65,7 @@ impl Pkg {
             folders: Vec::new(),
             unlisted: Vec::new(),
             ghost: Vec::new(),
+            sdk_edits: Vec::new(),
         }
     }
     fn spec() -> Self {
@@ -96,8 +99,17 @@ impl Pkg {
         self.ghost.push(path.into());
         self
     }
+    /// Replaces `from` with `to` in the text of `sdk.json`.
+    fn sdk_edit(mut self, from: &str, to: &str) -> Self {
+        self.sdk_edits.push((from.into(), to.into()));
+        self
+    }
 
     fn sdk(&self) -> SdkJson {
+        self.try_sdk().unwrap()
+    }
+
+    fn try_sdk(&self) -> Result<SdkJson, Error> {
         let mut listed: Vec<String> = self
             .files
             .iter()
@@ -117,7 +129,7 @@ impl Pkg {
             ));
         }
         listed.sort();
-        let text = format!(
+        let mut text = format!(
             r#"{{"format": 1, "name": "templates", "version": "0.1.0",
   "built_from": [{{"repo": "RobCo-Reel", "commit": "3333333333333333333333333333333333333333"}}],
   "formats": {{"templates": 1, "project": 1, "scenario": 1}},
@@ -125,7 +137,14 @@ impl Pkg {
   "files": [{}]}}"#,
             listed.join(", ")
         );
-        sdk_json::parse(text.as_bytes()).unwrap()
+        for (from, to) in &self.sdk_edits {
+            assert!(text.contains(from.as_str()), "{from}");
+            text = text.replacen(from.as_str(), to, 1);
+        }
+        sdk_json::parse(text.as_bytes()).map_err(|e| Error {
+            code: e.code(),
+            detail: e.to_string(),
+        })
     }
 
     fn entries(&self) -> Vec<Entry> {
@@ -145,7 +164,7 @@ impl Pkg {
             .iter()
             .find(|(p, _)| p == TEMPLATES_LIST)
             .map(|(_, b)| b.as_slice());
-        validate(&self.sdk(), list, &self.entries(), limits)
+        validate(&self.try_sdk()?, list, &self.entries(), limits)
     }
 }
 
@@ -228,6 +247,23 @@ fn bad_cases() -> Vec<(&'static str, Pkg, &'static str, &'static str)> {
         ("ids not sorted", Pkg::json(&two.replace("holotape-b", "holotape-z")), m, "sorted"),
         ("not in sdk.json", Pkg::spec().not_in_sdk("holotape-c/icon.pbm"), "package: manifest", "holotape-c/icon.pbm"),
         ("ghost in sdk.json", Pkg::spec().ghost_in_sdk("LICENSES/X.txt"), "package: manifest", "LICENSES/X.txt"),
+        // The property table of "The templates package", one row each.
+        ("version not X.Y.Z", Pkg::spec().sdk_edit("\"0.1.0\"", "\"0.1\""), "package: manifest", "version"),
+        ("abi present", Pkg::spec().sdk_edit("\"built_from\"", "\"abi\": \"0.1\", \"built_from\""), "package: manifest", "abi"),
+        ("tools present", Pkg::spec().sdk_edit("\"built_from\"", "\"tools\": [], \"built_from\""), "package: manifest", "tools"),
+        ("firmware present", Pkg::spec().sdk_edit("\"built_from\"", "\"firmware\": {}, \"built_from\""), "package: manifest", "firmware"),
+        ("requires nonempty", Pkg::spec().sdk_edit("\"licences\"", "\"requires\": [{\"name\": \"pipos\", \"abi\": \"1.3\"}], \"licences\""), "package: manifest", "requires names pipos"),
+        ("built_from other repo", Pkg::spec().sdk_edit("RobCo-Reel", "Pip-OS"), "package: manifest", "built_from"),
+        ("built_from two repos", Pkg::spec().sdk_edit("\"built_from\": [", "\"built_from\": [{\"repo\": \"Pip-OS\", \"commit\": \"1111111111111111111111111111111111111111\"}, "), "package: manifest", "built_from"),
+        ("built_from empty", Pkg::spec().sdk_edit("{\"repo\": \"RobCo-Reel\", \"commit\": \"3333333333333333333333333333333333333333\"}", ""), "package: manifest", "built_from"),
+        ("formats lacks one", Pkg::spec().sdk_edit(", \"scenario\": 1", ""), "package: manifest", "formats.scenario"),
+        ("formats of pipos", Pkg::spec().sdk_edit("\"scenario\": 1", "\"scenario\": 1, \"rimg\": 1"), "package: manifest", "formats.rimg"),
+        ("formats unknown value", Pkg::spec().sdk_edit("\"project\": 1", "\"project\": 2"), "package: format", "project"),
+        ("licence not MIT", Pkg::spec().sdk_edit("\"spdx\": \"MIT\"", "\"spdx\": \"GPL-3.0-only\""), "package: manifest", "GPL-3.0-only"),
+        ("a second licence", Pkg::spec().sdk_edit("\"spdx\": \"MIT\"}", "\"spdx\": \"MIT\"}, {\"paths\": [\"holotape-c/src/\"], \"spdx\": \"Apache-2.0\"}"), "package: manifest", "Apache-2.0"),
+        ("a path no licence covers", Pkg::spec().sdk_edit("\"paths\": [\"\"]", "\"paths\": [\"holotape-c\", \"LICENSES/\"]"), "package: manifest", "templates.json"),
+        ("a prefix is no folder", Pkg::spec().sdk_edit("\"paths\": [\"\"]", "\"paths\": [\"holotape\", \"LICENSES\", \"templates.json\"]"), "package: manifest", "holotape-c/icon.pbm"),
+        ("no licences", Pkg::spec().sdk_edit("{\"paths\": [\"\"], \"spdx\": \"MIT\"}", ""), "package: manifest", "LICENSES/MIT.txt"),
     ]
 }
 
@@ -238,6 +274,20 @@ fn every_broken_rule_is_refused_with_its_code_and_names_the_path() {
         assert_eq!(e.code, code, "{tag}: {e}");
         assert!(e.detail.contains(named), "{tag}: {e}");
     }
+}
+
+/// The `sdk.json` RobCo-Reel's `tools/templates_package.py` writes: one
+/// `RobCo-Reel` entry, the three formats, empty `requires`, one MIT entry
+/// for path `""`. Licences that cover each file by its folders pass too.
+#[test]
+fn the_package_reel_builds_and_licences_by_folder_are_valid() {
+    let reel = Pkg::spec().sdk_edit("\"licences\"", "\"requires\": [], \"licences\"");
+    assert!(reel.check(&Limits::DEFAULT).is_ok());
+    let by_folder = Pkg::spec().sdk_edit(
+        "{\"paths\": [\"\"], \"spdx\": \"MIT\"}",
+        "{\"paths\": [\"holotape-c/\", \"LICENSES\"], \"spdx\": \"MIT\"}, {\"paths\": [\"templates.json\"], \"spdx\": \"MIT\"}",
+    );
+    assert!(by_folder.check(&Limits::DEFAULT).is_ok());
 }
 
 #[test]

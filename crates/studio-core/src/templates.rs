@@ -185,6 +185,76 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// The repository that builds the `templates` package.
+pub const BUILT_FROM_REPO: &str = "RobCo-Reel";
+
+/// The licence of every file of a `templates` package.
+pub const LICENCE: &str = "MIT";
+
+/// Holds `sdk.json` to the property table of "The templates package".
+///
+/// `sdk_json::parse` already holds `version` to `X.Y.Z`, refuses `abi`,
+/// `tools` and `firmware`, requires the three formats, and refuses a format
+/// it does not know. This checks the rest: `requires` is empty,
+/// `built_from` is one `RobCo-Reel` entry, `formats` holds the three
+/// formats and no other, and every file has an MIT licence and no other.
+fn check_sdk(sdk: &SdkJson) -> Result<(), Error> {
+    if let Some(r) = sdk.requires.first() {
+        return Err(Error::package(format!(
+            "{SDK_JSON}: requires names {}, and {TEMPLATES} requires nothing",
+            r.name
+        )));
+    }
+    match sdk.built_from.as_slice() {
+        [b] if b.repo == BUILT_FROM_REPO => {}
+        _ => {
+            return Err(Error::package(format!(
+                "{SDK_JSON}: built_from must be one {BUILT_FROM_REPO} entry and its commit"
+            )));
+        }
+    }
+    let want = resolve::required_formats(TEMPLATES);
+    if let Some(f) = sdk.formats.keys().find(|f| !want.contains(&f.as_str())) {
+        return Err(Error::package(format!(
+            "{SDK_JSON}: formats.{f} is present, and {TEMPLATES} carries only {}",
+            want.join(", ")
+        )));
+    }
+    if let Some(l) = sdk.licences.iter().find(|l| l.spdx != LICENCE) {
+        return Err(Error::package(format!(
+            "{SDK_JSON}: licences holds {}, and every file of {TEMPLATES} is {LICENCE}",
+            l.spdx
+        )));
+    }
+    let covered = |path: &str| {
+        sdk.licences
+            .iter()
+            .flat_map(|l| &l.paths)
+            .any(|p| covers(p, path))
+    };
+    if let Some(f) = sdk.files.iter().find(|f| !covered(&f.path)) {
+        return Err(Error::package(format!(
+            "{SDK_JSON}: {}: no licences entry covers it",
+            f.path
+        )));
+    }
+    Ok(())
+}
+
+/// Whether the licence prefix `prefix` covers `path`. A prefix is a whole
+/// path or whole folders: `""` covers every path, `a` and `a/` cover
+/// `a/b`, and `a` does not cover `ab`.
+fn covers(prefix: &str, path: &str) -> bool {
+    if prefix.is_empty() || prefix == path {
+        return true;
+    }
+    if prefix.ends_with('/') {
+        return path.starts_with(prefix);
+    }
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Checks a whole `templates` package and returns its templates.
 ///
 /// `sdk` is its parsed `sdk.json`, `list` the bytes of `templates.json` or
@@ -193,8 +263,8 @@ impl std::error::Error for Error {}
 /// archive may leave its folders out; a folder of the cache lists them.
 /// The record a finished install adds is no entry of the package.
 ///
-/// It checks, in this order: `sdk.json` names the package and keeps its
-/// limit; `templates.json` is there, keeps its limit, and has the form,
+/// It checks, in this order: `sdk.json` names the package, keeps the
+/// property table of the spec, and keeps its limit; `templates.json` is there, keeps its limit, and has the form,
 /// format, fields, sort orders, ids, paths, reserved names and
 /// `robco.toml` of the spec; no entry is a link or other kind; no two
 /// entries differ only in case; the root holds the layout and nothing else;
@@ -218,6 +288,7 @@ pub fn validate(
             sdk.name
         )));
     }
+    check_sdk(sdk)?;
     let find = |p: &str| entries.iter().find(|e| e.path == p);
     match find(SDK_JSON) {
         Some(e) if e.kind == Kind::File && e.size > limits.manifest => {
