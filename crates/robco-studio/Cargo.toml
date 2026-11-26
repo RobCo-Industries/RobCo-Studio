@@ -10,6 +10,27 @@ publish.workspace = true
 
 [dependencies]
 studio-core.workspace = true
+# The window toolkit, at the version spikes K4 and K7 tried. MIT or Apache-2.0.
+# No default fonts: Studio bundles its own. No links feature: Studio opens no URL.
+eframe = { version = "=0.37.0", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+# Rasterises the wordmark and the icons at start-up. Apache-2.0 OR MIT.
+resvg = { version = "0.45", default-features = false }
+
+[dev-dependencies]
+# Headless tests through the accessibility tree, and the PNG renders. MIT or Apache-2.0.
+egui_kittest = { version = "=0.37.0", features = ["wgpu"] }
+# Writes the PNG renders. MIT OR Apache-2.0.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true
+
+# The native menu bar on macOS. Apache-2.0 OR MIT.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.17", default-features = false }

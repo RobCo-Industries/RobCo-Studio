@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 64" width="470" height="64" role="img" aria-labelledby="wm-t" style="color:#5cff8f">
+<!-- SPDX-FileCopyrightText: 2026 The RobCo Studio contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Provenance: original art, drawn for RobCo Studio on 2026-11-25. Nothing in it is traced, copied or redrawn from a game. -->
+  <title id="wm-t">RobCo Studio</title>
+  <!-- Original lettering for RobCo Studio. Built from lines and arcs only, as if one beam traced it.
+       No font is used. Licence: same as the repository that ships it. Provenance: drawn for Studio, 2026-11-25.
+       Layers: "halo" is the second translucent stroke that stands in for glow. Drop it for the plain version. -->
+  <rect class="asset-ground" width="470" height="64" fill="#07110b"/>
+  <defs>
+    <g id="wm-mark" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 8H38L52 22V56H6Z"/>
+      <path d="M17 24l10 8-10 8M31 42h11"/>
+    </g>
+    <g id="wm-robco" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(79 0) skewX(-10)">
+      <path d="M0 50V10H12A10.5 10.5 0 0 1 12 31H0M11 31L25 50"/>
+      <circle cx="49" cy="37" r="13"/>
+      <path d="M72 10V50"/><circle cx="85" cy="37" r="13"/>
+      <path d="M142.1 15.9A20 20 0 1 0 142.1 44.1"/>
+      <circle cx="165" cy="37" r="13"/>
+    </g>
+    <g id="wm-studio" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(79 0) skewX(-10)">
+      <path d="M223.7 15A10 10 0 1 0 215 30A10 10 0 1 1 206.3 45"/>
+      <path d="M241 13V42A8 8 0 0 0 249 50H251M234 24H250"/>
+      <path d="M260 24V39A11 11 0 0 0 282 39M282 24V50"/>
+      <circle cx="305" cy="37" r="13"/><path d="M318 10V50"/>
+      <path d="M330 24V50M330 13V13.01"/>
+      <circle cx="353" cy="37" r="13"/>
+    </g>
+  </defs>
+  <g class="halo" stroke="currentColor" opacity=".16">
+    <use href="#wm-mark" stroke-width="9"/>
+    <use href="#wm-robco" stroke-width="14"/>
+    <use href="#wm-studio" stroke-width="9"/>
+  </g>
+  <g stroke="currentColor">
+    <use href="#wm-mark" stroke-width="3"/>
+    <use href="#wm-robco" stroke-width="6.5"/>
+    <use href="#wm-studio" stroke-width="3.25"/>
+  </g>
+  <rect x="377" y="24" width="12" height="26" fill="currentColor" transform="translate(79 0) skewX(-10)"/>
+</svg>
