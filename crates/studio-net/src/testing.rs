@@ -75,8 +75,19 @@ pub struct Server {
 }
 
 impl Server {
-    /// Starts the server in a thread.
+    /// Starts the server in a thread. It ends each answer with TLS
+    /// close_notify.
     pub fn start(pki: &Pki, handlers: Vec<Handler>) -> Self {
+        Self::start_with(pki, handlers, true)
+    }
+
+    /// Starts a server that closes each connection without TLS
+    /// close_notify, as a cut connection does.
+    pub fn start_unclean(pki: &Pki, handlers: Vec<Handler>) -> Self {
+        Self::start_with(pki, handlers, false)
+    }
+
+    fn start_with(pki: &Pki, handlers: Vec<Handler>, notify: bool) -> Self {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let config = ServerConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
@@ -107,7 +118,9 @@ impl Server {
                     }
                 };
                 let result = h(&request, &mut s);
-                s.conn.send_close_notify();
+                if notify {
+                    s.conn.send_close_notify();
+                }
                 let _ = s.flush();
                 seen.push(Served { request, result });
             }

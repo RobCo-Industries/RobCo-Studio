@@ -337,3 +337,319 @@ fn a_protocol_switch_fails() {
         "status 101",
     );
 }
+
+#[test]
+fn a_version_other_than_1_1_or_1_0_fails() {
+    refused(
+        b"HTTP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n",
+        "not HTTP/1.1 or HTTP/1.0",
+    );
+    refused(
+        b"HTTP/1.2 200 OK\r\nContent-Length: 0\r\n\r\n",
+        "not HTTP/1.1 or HTTP/1.0",
+    );
+    assert_eq!(
+        answer(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap(),
+        b"ok"
+    );
+}
+
+#[test]
+fn a_status_of_other_than_three_digits_fails() {
+    refused(b"HTTP/1.1 20 OK\r\n\r\n", "not three digits");
+    refused(b"HTTP/1.1 2000 OK\r\n\r\n", "not three digits");
+}
+
+#[test]
+fn only_200_is_a_body() {
+    refused(b"HTTP/1.1 204 No Content\r\n\r\n", "status 204");
+    refused(b"HTTP/1.1 304 Not Modified\r\n\r\n", "status 304");
+    refused(
+        b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-1/9\r\nContent-Length: 2\r\n\r\nok",
+        "status 206",
+    );
+    refused(
+        b"HTTP/1.1 300 Multiple Choices\r\nLocation: /x\r\nContent-Length: 0\r\n\r\n",
+        "status 300",
+    );
+}
+
+#[test]
+fn transfer_encoding_and_content_length_together_fail() {
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n2\r\nok\r\n0\r\n\r\n",
+        "both Transfer-Encoding and Content-Length",
+    );
+}
+
+#[test]
+fn transfer_encoding_in_http_1_0_fails() {
+    refused(
+        b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n",
+        "Transfer-Encoding in an HTTP/1.0 answer",
+    );
+}
+
+#[test]
+fn a_framing_field_twice_fails() {
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nok",
+        "content-length field appears twice",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\ncontent-length: 2\r\n\r\nok",
+        "content-length field appears twice",
+    );
+    refused(
+        b"HTTP/1.1 302 Found\r\nLocation: /a\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n",
+        "location field appears twice",
+    );
+}
+
+#[test]
+fn a_content_length_that_is_not_a_plain_number_fails() {
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length: +2\r\n\r\nok",
+        "Content-Length is not a number",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length: -2\r\n\r\nok",
+        "Content-Length is not a number",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2, 2\r\n\r\nok",
+        "Content-Length is not a number",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551616\r\n\r\nok",
+        "Content-Length overflows",
+    );
+}
+
+#[test]
+fn header_names_match_without_regard_to_case() {
+    assert_eq!(
+        answer(b"HTTP/1.1 200 OK\r\ncOnTeNt-LeNgTh: 2\r\n\r\nok").unwrap(),
+        b"ok"
+    );
+}
+
+#[test]
+fn no_length_reads_to_a_clean_close() {
+    assert_eq!(
+        answer(b"HTTP/1.1 200 OK\r\n\r\nall of it").unwrap(),
+        b"all of it"
+    );
+}
+
+#[test]
+fn no_length_and_a_close_without_close_notify_fails() {
+    let pki = Pki::new();
+    let s = Server::start_unclean(&pki, vec![raw(b"HTTP/1.1 200 OK\r\n\r\npart")]);
+    let e = fetch(&client(&pki), &s.url("/")).unwrap_err();
+    assert!(e.contains("without TLS close_notify"), "{e}");
+    s.finish();
+}
+
+#[test]
+fn a_short_body_without_close_notify_fails() {
+    let pki = Pki::new();
+    let s = Server::start_unclean(
+        &pki,
+        vec![raw(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\npart")],
+    );
+    let e = fetch(&client(&pki), &s.url("/")).unwrap_err();
+    assert!(e.contains("without TLS close_notify"), "{e}");
+    s.finish();
+}
+
+#[test]
+fn a_whole_body_without_close_notify_passes() {
+    let pki = Pki::new();
+    let s = Server::start_unclean(
+        &pki,
+        vec![raw(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nfull")],
+    );
+    assert_eq!(fetch(&client(&pki), &s.url("/")).unwrap(), b"full");
+    s.finish();
+}
+
+#[test]
+fn bytes_after_the_body_fail() {
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokXYZ",
+        "bytes after the end of the body",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\nXYZ",
+        "bytes after the end of the body",
+    );
+}
+
+#[test]
+fn chunk_sizes_are_hex_of_either_case() {
+    let got = answer(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\n\
+          a\r\n0123456789\r\nB ; name=\"v\"\r\nabcdefghijk\r\n0\r\nX-Sum: 1\r\n\r\n",
+    );
+    assert_eq!(got.unwrap(), b"0123456789abcdefghijk");
+}
+
+#[test]
+fn a_bad_chunk_size_fails() {
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n+2\r\nok\r\n0\r\n\r\n",
+        "chunk size is not hex",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2 \r\nok\r\n0\r\n\r\n",
+        "chunk size is not hex",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10000000000000000\r\nok\r\n0\r\n\r\n",
+        "chunk size overflows",
+    );
+}
+
+#[test]
+fn a_broken_chunked_body_fails() {
+    // Cut inside a chunk.
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nok",
+        "after 2 of 9 bytes",
+    );
+    // A chunk longer than its size.
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nokay\r\n0\r\n\r\n",
+        "longer than its size",
+    );
+    // No final CRLF after the last chunk.
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n",
+        "chunk line is cut",
+    );
+    // A bare LF.
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\nok\r\n0\r\n\r\n",
+        "bare LF",
+    );
+}
+
+#[test]
+fn too_many_trailer_fields_fail() {
+    let mut a = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n".to_vec();
+    for _ in 0..=MAX_HEADERS {
+        a.extend_from_slice(b"X: y\r\n");
+    }
+    a.extend_from_slice(b"\r\n");
+    let a: &'static [u8] = a.leak();
+    refused(a, "more than 64 trailer fields");
+}
+
+#[test]
+fn other_codings_fail() {
+    refused(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n",
+        "transfer coding other than chunked",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 2\r\n\r\nok",
+        "content coding other than identity",
+    );
+    assert_eq!(
+        answer(b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 2\r\n\r\nok")
+            .unwrap(),
+        b"ok"
+    );
+}
+
+#[test]
+fn the_header_block_has_a_size_and_a_count_limit() {
+    let mut a = b"HTTP/1.1 200 OK\r\n".to_vec();
+    a.extend_from_slice(b"X: ");
+    a.resize(a.len() + usize::try_from(MAX_HEAD_BYTES).unwrap(), b'a');
+    a.extend_from_slice(b"\r\n\r\n");
+    refused(a.leak(), "longer than 65536 bytes");
+    let mut a = b"HTTP/1.1 200 OK\r\n".to_vec();
+    for _ in 0..=MAX_HEADERS {
+        a.extend_from_slice(b"X: y\r\n");
+    }
+    a.extend_from_slice(b"Content-Length: 0\r\n\r\n");
+    refused(a.leak(), "more than 64 header fields");
+}
+
+#[test]
+fn malformed_header_lines_fail() {
+    refused(
+        b"HTTP/1.1 200 OK\r\nX: a\r\n b\r\nContent-Length: 0\r\n\r\n",
+        "folded",
+    );
+    refused(b"HTTP/1.1 200 OK\nContent-Length: 0\r\n\r\n", "bare LF");
+    refused(
+        b"HTTP/1.1 200 OK\r\nX: a\0b\r\nContent-Length: 0\r\n\r\n",
+        "control character",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nX: a\rb\r\nContent-Length: 0\r\n\r\n",
+        "control character",
+    );
+    refused(
+        b"HTTP/1.1 200 OK\r\nContent-Length : 0\r\n\r\n",
+        "malformed",
+    );
+    refused(b"\r\nHTTP/1.1 200 OK\r\n\r\n", "starts with an empty line");
+}
+
+#[test]
+fn a_redirect_with_no_or_an_empty_location_fails() {
+    refused(
+        b"HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n",
+        "no Location",
+    );
+    refused(
+        b"HTTP/1.1 302 Found\r\nLocation: \r\nContent-Length: 0\r\n\r\n",
+        "empty Location",
+    );
+}
+
+#[test]
+fn every_redirect_status_is_followed_and_a_fragment_is_dropped() {
+    let pki = Pki::new();
+    let mut handlers: Vec<Handler> = [301u16, 302, 303, 307]
+        .iter()
+        .map(|&c| redirect(c, format!("/after{c}#frag")))
+        .collect();
+    handlers.push(redirect(308, "/last".to_owned()));
+    handlers.push(ok(b"done".to_vec()));
+    let s = Server::start(&pki, handlers);
+    assert_eq!(fetch(&client(&pki), &s.url("/")).unwrap(), b"done");
+    let seen = s.finish();
+    assert!(
+        seen[1].request.starts_with("GET /after301 HTTP/1.1"),
+        "{}",
+        seen[1].request
+    );
+}
+
+#[test]
+fn a_redirect_with_user_info_or_a_relative_path_fails_and_names_no_value() {
+    for loc in ["https://u:secret@127.0.0.1:1/x", "../secret.zip"] {
+        let pki = Pki::new();
+        let s = Server::start(&pki, vec![redirect(302, loc.to_owned())]);
+        let e = fetch(&client(&pki), &s.url("/")).unwrap_err();
+        assert!(e.contains("refused") && !e.contains("secret"), "{loc}: {e}");
+        s.finish();
+    }
+}
+
+#[test]
+fn a_redirect_loop_ends() {
+    let pki = Pki::new();
+    let handlers = (0..=MAX_REDIRECTS)
+        .map(|_| redirect(302, "/".to_owned()))
+        .collect();
+    let s = Server::start(&pki, handlers);
+    let e = fetch(&client(&pki), &s.url("/")).unwrap_err();
+    assert!(e.contains("more than 5 redirects"), "{e}");
+    s.finish();
+}

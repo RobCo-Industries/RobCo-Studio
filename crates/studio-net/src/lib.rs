@@ -197,7 +197,7 @@ impl Https {
         let mut r = BufReader::with_capacity(BUF, tls);
         let mut informational = 0;
         let head = loop {
-            let bytes = read_head(&mut r).map_err(|e| io_text(&at, &e, self.stall))?;
+            let bytes = read_head(&mut r, &at, self.stall)?;
             let head = Head::parse(&bytes, &at)?;
             match head.code {
                 // RFC 9110 15.2.2: the client asked for no upgrade.
@@ -225,26 +225,52 @@ impl Https {
                 let loc = head
                     .one("location", &at)?
                     .ok_or_else(|| format!("{at}: a redirect with no Location"))?;
+                if loc.is_empty() {
+                    return Err(format!("{at}: a redirect with an empty Location"));
+                }
                 return Ok(Answer::Redirect(loc));
             }
             c => return Err(format!("{at}: the server answered with status {c}")),
         }
+        // The request asked for `identity`; any other coding is refused.
         if let Some(enc) = head.one("content-encoding", &at)?
             && !enc.eq_ignore_ascii_case("identity")
         {
-            return Err(format!("{at}: the body is encoded, {enc}"));
+            return Err(format!("{at}: a content coding other than identity"));
         }
-        let chunked = match head.one("transfer-encoding", &at)? {
+        let te = head.one("transfer-encoding", &at)?;
+        let cl = head.one("content-length", &at)?;
+        // RFC 9112 6.1: Transfer-Encoding in an HTTP/1.0 answer means the
+        // framing is faulty.
+        if te.is_some() && head.version == 0 {
+            return Err(format!("{at}: Transfer-Encoding in an HTTP/1.0 answer"));
+        }
+        // RFC 9112 6.3 point 3 lets a client either refuse this or read it
+        // as chunked. It is a sign of request smuggling or of a broken
+        // proxy, so it is refused.
+        if te.is_some() && cl.is_some() {
+            return Err(format!(
+                "{at}: both Transfer-Encoding and Content-Length are present"
+            ));
+        }
+        let chunked = match te {
             None => false,
             Some(te) if te.eq_ignore_ascii_case("chunked") => true,
-            Some(te) => return Err(format!("{at}: transfer encoding {te} is not chunked")),
+            Some(_) => return Err(format!("{at}: a transfer coding other than chunked")),
         };
-        let length = match head.one("content-length", &at)? {
+        let length = match cl {
             None => None,
-            Some(v) => Some(
-                v.parse::<u64>()
-                    .map_err(|_| format!("{at}: Content-Length is not a number"))?,
-            ),
+            Some(v) => {
+                // Only digits: Rust's parse takes a leading `+`, and a
+                // list such as `5, 5` is refused too.
+                if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(format!("{at}: Content-Length is not a number"));
+                }
+                Some(
+                    v.parse::<u64>()
+                        .map_err(|_| format!("{at}: Content-Length overflows"))?,
+                )
+            }
         };
         let mut body = Body {
             r,
@@ -258,7 +284,16 @@ impl Https {
         } else if let Some(n) = length {
             body.exact(n)?;
         } else {
+            // RFC 9112 6.3 point 8: no length, the body ends with the
+            // connection. Only TLS close_notify ends it cleanly.
             body.until_closed()?;
+            return Ok(Answer::Done);
+        }
+        // A framed body that the server kept writing past. Only the bytes
+        // already read are looked at: waiting for more would hang on a
+        // server that keeps the connection open.
+        if !body.r.buffer().is_empty() {
+            return Err(format!("{at}: bytes after the end of the body"));
         }
         Ok(Answer::Done)
     }
@@ -310,13 +345,17 @@ fn io_text(at: &str, e: &io::Error, stall: Duration) -> String {
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
             format!("{at}: no byte moved for {} ms", stall.as_millis())
         }
-        io::ErrorKind::UnexpectedEof => format!("{at}: the server closed the connection early"),
+        io::ErrorKind::UnexpectedEof => {
+            format!("{at}: the connection ended without TLS close_notify, so the answer may be cut")
+        }
         _ => format!("{at}: {e}"),
     }
 }
 
 /// A parsed status line and header fields.
 struct Head {
+    /// 0 for HTTP/1.0, 1 for HTTP/1.1.
+    version: u8,
     code: u16,
     fields: Vec<(String, Vec<u8>)>,
 }
@@ -327,9 +366,23 @@ impl Head {
         let mut resp = httparse::Response::new(&mut headers);
         match resp.parse(bytes) {
             Ok(httparse::Status::Complete(_)) => {}
-            _ => return Err(format!("{at}: the answer is not HTTP/1.1")),
+            Err(httparse::Error::Version) => {
+                return Err(format!("{at}: the answer is not HTTP/1.1 or HTTP/1.0"));
+            }
+            Err(httparse::Error::Status) => {
+                return Err(format!("{at}: the status is not three digits"));
+            }
+            Err(httparse::Error::TooManyHeaders) => {
+                return Err(format!("{at}: more than {MAX_HEADERS} header fields"));
+            }
+            _ => {
+                return Err(format!(
+                    "{at}: the status line or a header field is malformed"
+                ));
+            }
         }
         Ok(Self {
+            version: resp.version.unwrap_or(0),
             code: resp.code.unwrap_or(0),
             fields: resp
                 .headers
@@ -339,7 +392,8 @@ impl Head {
         })
     }
 
-    /// The value of a field the client reads, which may appear once.
+    /// The value of a field the client reads, which may appear only once.
+    /// The name is matched without regard to case.
     fn one(&self, name: &str, at: &str) -> Result<Option<String>, String> {
         let mut found: Option<String> = None;
         for (_, value) in self
@@ -351,8 +405,12 @@ impl Head {
                 .map_err(|_| format!("{at}: a {name} header is not text"))?
                 .trim()
                 .to_owned();
-            if found.as_ref().is_some_and(|f| *f != v) {
-                return Err(format!("{at}: two {name} headers differ"));
+            // RFC 9110 5.3 lets a list field repeat, and RFC 9112 6.3
+            // lets a recipient merge equal Content-Length values. The
+            // fields this client reads decide framing or the target, so a
+            // second one is refused, equal or not.
+            if found.is_some() {
+                return Err(format!("{at}: the {name} field appears twice"));
             }
             found = Some(v);
         }
@@ -360,21 +418,51 @@ impl Head {
     }
 }
 
-/// Reads the status line and the headers, up to the empty line.
-fn read_head(r: &mut impl BufRead) -> io::Result<Vec<u8>> {
+/// Reads the status line and the headers, up to the empty line, by RFC
+/// 9112 section 2. Each line ends in CRLF; a bare LF, a bare CR, a NUL or
+/// another control byte but HTAB, and a line folded onto the next are
+/// refused. At most [`MAX_HEAD_BYTES`] and [`MAX_HEADERS`] fields.
+fn read_head(r: &mut impl BufRead, at: &str, stall: Duration) -> Result<Vec<u8>, String> {
     let mut head = Vec::new();
+    let mut lines = 0usize;
     loop {
         let left = MAX_HEAD_BYTES.saturating_sub(head.len() as u64);
-        let n = r.by_ref().take(left).read_until(b'\n', &mut head)?;
-        if n == 0 || !head.ends_with(b"\n") {
-            return Err(if left == 0 || n as u64 == left {
-                io::Error::other("the headers are too long")
+        let start = head.len();
+        let n = r
+            .by_ref()
+            .take(left)
+            .read_until(b'\n', &mut head)
+            .map_err(|e| io_text(at, &e, stall))?;
+        let line = &head[start..];
+        if !line.ends_with(b"\n") {
+            return Err(if n as u64 == left {
+                format!("{at}: the header block is longer than {MAX_HEAD_BYTES} bytes")
             } else {
-                io::Error::from(io::ErrorKind::UnexpectedEof)
+                format!("{at}: the server closed the connection inside the header block")
             });
         }
-        if head.ends_with(b"\r\n\r\n") || head == b"\r\n" {
+        if !line.ends_with(b"\r\n") {
+            return Err(format!("{at}: a header line ends in a bare LF, not CRLF"));
+        }
+        let content = &line[..line.len() - 2];
+        if content.is_empty() {
+            if lines == 0 {
+                return Err(format!("{at}: the answer starts with an empty line"));
+            }
             return Ok(head);
+        }
+        if lines > 0 && matches!(content[0], b' ' | b'\t') {
+            return Err(format!("{at}: a header line is folded onto the next"));
+        }
+        if content
+            .iter()
+            .any(|&c| (c < 0x20 && c != b'\t') || c == 0x7F)
+        {
+            return Err(format!("{at}: a header line holds a control character"));
+        }
+        lines += 1;
+        if lines > MAX_HEADERS + 1 {
+            return Err(format!("{at}: more than {MAX_HEADERS} header fields"));
         }
     }
 }
@@ -450,22 +538,40 @@ impl<R: BufRead> Body<'_, R> {
             .take(MAX_CHUNK_LINE)
             .read_until(b'\n', &mut l)
             .map_err(|e| self.io(&e))?;
-        if n == 0 || !l.ends_with(b"\r\n") {
-            return Err(format!("{}: a chunked body is cut or broken", self.at));
+        if n == 0 || !l.ends_with(b"\n") {
+            return Err(format!(
+                "{}: a chunk line is cut or longer than {MAX_CHUNK_LINE} bytes",
+                self.at
+            ));
+        }
+        if !l.ends_with(b"\r\n") {
+            return Err(format!(
+                "{}: a chunk line ends in a bare LF, not CRLF",
+                self.at
+            ));
         }
         l.truncate(l.len() - 2);
         String::from_utf8(l).map_err(|_| format!("{}: a chunk line is not text", self.at))
     }
 
+    /// RFC 9112 section 7.1.
     fn chunked(&mut self) -> Result<(), String> {
         loop {
             let line = self.line()?;
-            let size = line.split(';').next().unwrap_or("").trim();
-            let n = u64::from_str_radix(size, 16)
-                .map_err(|_| format!("{}: a chunk size is not hex", self.at))?;
+            let n = chunk_size(&line).map_err(|e| format!("{}: {e}", self.at))?;
             if n == 0 {
-                // Trailers, up to the empty line. They are not read.
-                while !self.line()?.is_empty() {}
+                // Trailer fields, up to the empty line. They are skipped,
+                // at most MAX_HEADERS of them.
+                let mut trailers = 0;
+                while !self.line()?.is_empty() {
+                    trailers += 1;
+                    if trailers > MAX_HEADERS {
+                        return Err(format!(
+                            "{}: more than {MAX_HEADERS} trailer fields",
+                            self.at
+                        ));
+                    }
+                }
                 return Ok(());
             }
             self.exact(n)?;
@@ -474,6 +580,22 @@ impl<R: BufRead> Body<'_, R> {
             }
         }
     }
+}
+
+/// The size of a chunk line: hex digits of either case, then nothing or
+/// a chunk extension after optional blanks. The extension is ignored.
+fn chunk_size(line: &str) -> Result<u64, &'static str> {
+    let end = line
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .unwrap_or(line.len());
+    let (digits, rest) = line.split_at(end);
+    if digits.is_empty() {
+        return Err("a chunk size is not hex");
+    }
+    if !rest.is_empty() && !rest.trim_start_matches([' ', '\t']).starts_with(';') {
+        return Err("a chunk size is not hex");
+    }
+    u64::from_str_radix(digits, 16).map_err(|_| "a chunk size overflows")
 }
 
 /// A writer that counts what it passes on.
@@ -600,9 +722,8 @@ impl Target {
             // does not state it, and no release host is known to send it,
             // so it is refused with the other schemes.
             Err(format!(
-                "{}: a redirect to {} is refused, only https:// is fetched",
-                self.shown(),
-                redact(location)
+                "{}: a redirect to a relative path or another scheme is refused, only https:// is fetched",
+                self.shown()
             ))
         }
     }
