@@ -244,6 +244,14 @@ impl Doc {
 
     /// Write the text to the document's own file.
     pub fn save(&mut self) -> Result<(), String> {
+        // The rename would replace a read-only file in a writable folder:
+        // keep the file's own say.
+        if std::fs::metadata(&self.path).is_ok_and(|m| m.permissions().readonly()) {
+            return Err(format!(
+                "{} is read-only. Studio did not save it.",
+                self.shown
+            ));
+        }
         write_safely(&self.path, &encode(&self.text, self.crlf)).map_err(|e| {
             format!(
                 "Studio could not save {}: {e}. The file was left as it was.",
@@ -552,6 +560,23 @@ pub(crate) mod tests {
         let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A read-only file is not replaced by a save.
+    #[test]
+    fn read_only_file_is_not_saved() {
+        let g = Gone(scratch("readonly"));
+        let f = g.0.join("ro.c");
+        std::fs::write(&f, b"old\n").unwrap();
+        let mut doc = Doc::open(1, &f, "ro.c".into()).unwrap();
+        let mut perms = std::fs::metadata(&f).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&f, perms).unwrap();
+        doc.text = "new\n".into();
+        let r = doc.save();
+        assert!(r.is_err_and(|e| e.contains("read-only")));
+        assert_eq!(std::fs::read(&f).unwrap(), b"old\n");
+        assert!(doc.is_dirty());
     }
 
     #[cfg(unix)]
