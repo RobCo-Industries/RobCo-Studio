@@ -23,6 +23,8 @@
 //! [`ManifestError::code`] gives the code as the spec spells it.
 
 use std::fmt;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
@@ -724,6 +726,38 @@ pub fn expand_sources(patterns: &[String], files: &[&str]) -> Result<Vec<String>
         groups.push(group);
     }
     Ok(order_sources(groups))
+}
+
+/// Applies the last path rule of the spec to one manifest path on disk:
+/// "It names a file inside the project root. A symbolic link that leads
+/// outside the root is refused."
+///
+/// `rel` is a manifest path, already checked by [`parse`], or a source
+/// after [`expand_sources`], or a folder a source pattern names. The path
+/// is resolved through every link, a link to a link included, and its
+/// canonical form must lie under the canonical root, compared by
+/// component. A root reached through a link is fine, since both sides are
+/// canonical. A link whose target stays inside the root is allowed.
+///
+/// Returns the path under `root` to read, `None` when nothing is there,
+/// a dangling link included, so the caller gives the error of a missing
+/// file. A path that leads outside the root fails with `path` and `key`.
+pub fn inside_root(root: &Path, key: &str, rel: &str) -> Result<Option<PathBuf>, ManifestError> {
+    let outside = |reason: String| ManifestError::Path {
+        key: key.to_owned(),
+        reason,
+    };
+    let real_root = std::fs::canonicalize(root)
+        .map_err(|e| outside(format!("{rel}: cannot resolve the project root: {e}")))?;
+    let path = root.join(rel);
+    match std::fs::canonicalize(&path) {
+        Ok(real) if real.starts_with(&real_root) => Ok(Some(path)),
+        Ok(_) => Err(outside(format!(
+            "{rel}: a symbolic link leads outside the project root"
+        ))),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => Ok(None),
+        Err(e) => Err(outside(format!("{rel}: cannot resolve: {e}"))),
+    }
 }
 
 /// Checks the icon file and returns its 128 META bytes.

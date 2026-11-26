@@ -562,3 +562,106 @@ fn error_codes_are_spelled_as_the_table() {
     assert_eq!(e.error_code(), "manifest: format");
     assert_eq!(e.exit_code(), 3);
 }
+
+/// A folder of the test's own under the system's temp folder, removed on
+/// drop. On macOS the temp folder is reached through a link, so every test
+/// here also checks a root reached through a link.
+#[cfg(unix)]
+struct LinkDir(std::path::PathBuf);
+
+#[cfg(unix)]
+impl LinkDir {
+    fn new(name: &str) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "studio-manifest-{}-{}-{name}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("root/src")).unwrap();
+        std::fs::write(dir.join("root/src/real.c"), "int x;").unwrap();
+        std::fs::write(dir.join("away.c"), "int y;").unwrap();
+        Self(dir)
+    }
+    fn root(&self) -> std::path::PathBuf {
+        self.0.join("root")
+    }
+    fn link(&self, target: &str, at: &str) {
+        std::os::unix::fs::symlink(target, self.root().join(at)).unwrap();
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LinkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+fn path_reason(r: Result<Option<std::path::PathBuf>, ManifestError>) -> String {
+    match r {
+        Err(e @ ManifestError::Path { .. }) => e.detail(),
+        other => panic!("not a path error: {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_keeps_a_link_inside_the_root() {
+    let d = LinkDir::new("inside");
+    d.link("real.c", "src/main.c");
+    d.link("main.c", "src/twice.c");
+    d.link("src", "lib");
+    let root = d.root();
+    for rel in [
+        "src/real.c",
+        "src/main.c",
+        "src/twice.c",
+        "lib",
+        "lib/real.c",
+    ] {
+        let got = inside_root(&root, "build.sources", rel).unwrap();
+        assert_eq!(got, Some(root.join(rel)), "{rel}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_refuses_a_link_out_of_the_root() {
+    let d = LinkDir::new("outside");
+    d.link("../../away.c", "src/main.c");
+    d.link("main.c", "src/twice.c");
+    d.link("..", "up");
+    let root = d.root();
+    for rel in ["src/main.c", "src/twice.c", "up", "up/away.c"] {
+        let why = path_reason(inside_root(&root, "project.icon", rel));
+        assert!(why.starts_with("project.icon: "), "{why}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_gives_none_for_a_dangling_link() {
+    let d = LinkDir::new("dangling");
+    d.link("gone.c", "src/main.c");
+    d.link("../../gone.c", "src/far.c");
+    let root = d.root();
+    for rel in ["src/main.c", "src/far.c", "src/missing.c", "src/real.c/x"] {
+        assert_eq!(inside_root(&root, "k", rel).unwrap(), None, "{rel}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inside_root_accepts_a_root_reached_through_a_link() {
+    let d = LinkDir::new("rootlink");
+    std::os::unix::fs::symlink("root", d.0.join("alias")).unwrap();
+    let alias = d.0.join("alias");
+    assert_eq!(
+        inside_root(&alias, "k", "src/real.c").unwrap(),
+        Some(alias.join("src/real.c"))
+    );
+}
