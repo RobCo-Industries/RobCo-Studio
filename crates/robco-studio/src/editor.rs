@@ -30,13 +30,20 @@ pub enum Question {
         /// The document.
         doc: u64,
     },
+    /// The file changed on disk since it was read or saved: overwrite it?
+    Overwrite {
+        /// The document.
+        doc: u64,
+    },
 }
 
 impl Question {
     /// The document the question is about.
     pub fn doc(self) -> u64 {
         match self {
-            Question::CloseTab { doc } | Question::Quit { doc } => doc,
+            Question::CloseTab { doc } | Question::Quit { doc } | Question::Overwrite { doc } => {
+                doc
+            }
         }
     }
 }
@@ -49,6 +56,7 @@ pub enum Answer {
     /// "Cancel": nothing happens.
     Cancel,
     /// "Save": save, then go on. If the save fails, nothing else happens.
+    /// For [`Question::Overwrite`] this is "Overwrite".
     Save,
 }
 
@@ -107,9 +115,12 @@ impl Editor {
         self.docs.iter().position(|d| d.id == doc)
     }
 
-    /// Open `path` in a tab, or show its tab if it is open.
+    /// Open `path` in a tab, or show its tab if it is open. Documents are
+    /// told apart by the file's identity, so a link to an open file, or
+    /// another spelling of its path, shows the open tab.
     pub fn open(&mut self, path: &Path, shown: String) {
-        if let Some(i) = self.docs.iter().position(|d| d.path == path) {
+        let key = document::identity(path);
+        if let Some(i) = self.docs.iter().position(|d| d.key == key) {
             self.active = Some(i);
             return;
         }
@@ -124,24 +135,43 @@ impl Editor {
         }
     }
 
-    /// Save the document shown.
+    /// Save the document shown. A document without edits is not written,
+    /// so a change another program made is kept. A file changed on disk
+    /// since it was read or saved asks before it is overwritten.
     pub fn save(&mut self) {
         if self.question.is_some() {
             return;
         }
-        if let Some(d) = self.current_mut() {
+        let Some(d) = self.current_mut() else { return };
+        if !d.is_dirty() {
+            let s = format!("Nothing to save in {}.", d.shown);
+            self.news = Some((crate::kit::Level::Info, s));
+        } else if d.changed_on_disk() {
+            self.question = Some(Question::Overwrite { doc: d.id });
+        } else {
             let r = d.save().map(|()| format!("Saved {}.", d.shown));
             self.report(r);
         }
     }
 
-    /// Save every document with edits.
+    /// Save every document with edits. Stops at the first that fails, or
+    /// whose file changed on disk: that one is shown and asks.
     pub fn save_all(&mut self) {
         if self.question.is_some() {
             return;
         }
         let mut last = None;
-        for d in self.docs.iter_mut().filter(|d| d.is_dirty()) {
+        for i in 0..self.docs.len() {
+            let d = &mut self.docs[i];
+            if !d.is_dirty() {
+                continue;
+            }
+            if d.changed_on_disk() {
+                self.question = Some(Question::Overwrite { doc: d.id });
+                self.active = Some(i);
+                last = None;
+                break;
+            }
             last = Some(d.save().map(|()| format!("Saved {}.", d.shown)));
             if matches!(last, Some(Err(_))) {
                 break;
@@ -213,8 +243,26 @@ impl Editor {
             self.question = None;
             return;
         };
-        if a == Answer::Cancel {
+        if a == Answer::Cancel
+            || (a == Answer::DoNotSave && matches!(q, Question::Overwrite { .. }))
+        {
             self.question = None;
+            return;
+        }
+        if let Question::Overwrite { .. } = q {
+            let r = self.docs[i]
+                .save()
+                .map(|()| format!("Saved {}.", self.docs[i].shown));
+            self.report(r);
+            self.question = None;
+            return;
+        }
+        if a == Answer::Save && self.docs[i].changed_on_disk() {
+            let s = format!(
+                "{} changed on disk since Studio read it. Studio did not save it. Cancel, then Save to choose.",
+                self.docs[i].shown
+            );
+            self.news = Some((crate::kit::Level::Error, s));
             return;
         }
         if a == Answer::Save {
@@ -238,7 +286,10 @@ impl Editor {
     pub fn question_text(&self) -> Option<String> {
         let q = self.question?;
         let d = self.docs.get(self.index_of(q.doc())?)?;
-        Some(format!("Save {} before closing?", d.shown))
+        Some(match q {
+            Question::Overwrite { .. } => format!("{} changed on disk. Overwrite it?", d.shown),
+            _ => format!("Save {} before closing?", d.shown),
+        })
     }
 
     /// Byte ranges of every match of the query in the document shown.
@@ -809,5 +860,105 @@ mod replace_tests {
         let amber = e.layout_job(&t, 1, true, "int x;");
         assert_eq!(amber.sections[0].format.color, t.palette().bright);
         assert_ne!(t.palette().bright, green.sections[0].format.color);
+    }
+
+    /// A test folder, removed when the test ends, pass or fail.
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn folder(tag: &str) -> Gone {
+        let d = std::env::temp_dir().join(format!("robco-ed-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        Gone(d)
+    }
+
+    /// A link to an open file, or another spelling of its path, shows the
+    /// open tab, so Save all never writes one file twice.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_and_a_link_to_it_are_one_document() {
+        use super::Editor;
+        let g = folder("link");
+        let real = g.0.join("real.c");
+        std::fs::write(&real, b"x\n").unwrap();
+        std::os::unix::fs::symlink(&real, g.0.join("link.c")).unwrap();
+        let mut e = Editor::default();
+        e.open(&real, "real.c".into());
+        e.open(&g.0.join("link.c"), "link.c".into());
+        e.open(&g.0.join(".").join("real.c"), "real.c".into());
+        assert_eq!(e.docs.len(), 1);
+        // A folded spelling: one file where the file system folds case.
+        let folds = std::fs::metadata(g.0.join("REAL.C")).is_ok();
+        e.open(&g.0.join("REAL.C"), "REAL.C".into());
+        if folds {
+            assert_eq!(e.docs.len(), 1, "canonicalize keeps the stored spelling");
+            assert_eq!(
+                super::document::identity(&g.0.join("REAL.C")),
+                e.docs[0].key
+            );
+        }
+    }
+
+    /// The identity of a file that does not exist yet is its folder's
+    /// canonical path and its name.
+    #[test]
+    fn a_missing_file_has_its_folders_identity() {
+        let g = folder("missing");
+        let id = super::document::identity(&g.0.join(".").join("new.c"));
+        assert_eq!(id, std::fs::canonicalize(&g.0).unwrap().join("new.c"));
+    }
+
+    /// Save on a clean document does not write, so another program's
+    /// change is kept.
+    #[test]
+    fn save_skips_a_clean_document() {
+        use super::Editor;
+        let g = folder("clean");
+        let f = g.0.join("a.txt");
+        std::fs::write(&f, b"one\n").unwrap();
+        let mut e = Editor::default();
+        e.open(&f, "a.txt".into());
+        std::fs::write(&f, b"theirs\n").unwrap();
+        e.save();
+        assert_eq!(std::fs::read(&f).unwrap(), b"theirs\n");
+        assert!(
+            e.news
+                .as_ref()
+                .is_some_and(|(_, s)| s.contains("Nothing to save"))
+        );
+    }
+
+    /// Save of an edited document whose file changed on disk asks first;
+    /// Cancel keeps the other change, Overwrite writes.
+    #[test]
+    fn save_asks_when_the_file_changed_on_disk() {
+        use super::{Answer, Editor, Question};
+        let g = folder("changed");
+        let f = g.0.join("a.txt");
+        std::fs::write(&f, b"one\n").unwrap();
+        let mut e = Editor::default();
+        e.open(&f, "a.txt".into());
+        let id = e.docs[0].id;
+        e.docs[0].text = "mine\n".into();
+        std::fs::write(&f, b"theirs, longer\n").unwrap();
+        e.save();
+        assert_eq!(e.question, Some(Question::Overwrite { doc: id }));
+        assert_eq!(std::fs::read(&f).unwrap(), b"theirs, longer\n");
+        e.answer(id, Answer::Cancel);
+        assert_eq!(std::fs::read(&f).unwrap(), b"theirs, longer\n");
+        e.save_all();
+        assert_eq!(e.question, Some(Question::Overwrite { doc: id }));
+        e.answer(id, Answer::Save);
+        assert_eq!(std::fs::read(&f).unwrap(), b"mine\n");
+        assert_eq!(e.docs.len(), 1);
+        // Saved: the next save of new edits writes without asking.
+        e.docs[0].text = "again\n".into();
+        e.save();
+        assert_eq!(e.question, None);
+        assert_eq!(std::fs::read(&f).unwrap(), b"again\n");
     }
 }

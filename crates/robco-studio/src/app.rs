@@ -1082,8 +1082,10 @@ impl Studio {
                         .max_rect(row)
                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
                     |ui| {
+                        let overwrite = matches!(q, crate::editor::Question::Overwrite { .. });
+                        let yes = if overwrite { "Overwrite" } else { "Save" };
                         if kit
-                            .button(ui, Button::quiet("Save").kind(ButtonKind::Primary))
+                            .button(ui, Button::quiet(yes).kind(ButtonKind::Primary))
                             .clicked()
                         {
                             answer = Some(Answer::Save);
@@ -1099,7 +1101,7 @@ impl Studio {
                         if !inside {
                             cancel.request_focus();
                         }
-                        if kit.button(ui, Button::quiet("Do not save")).clicked() {
+                        if !overwrite && kit.button(ui, Button::quiet("Do not save")).clicked() {
                             answer = Some(Answer::DoNotSave);
                         }
                     },

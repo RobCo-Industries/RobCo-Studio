@@ -80,6 +80,53 @@ pub const MAX_FILE: u64 = 16 * 1024 * 1024;
 /// so it cannot change between the check and the read. On Unix the open
 /// does not wait for a writer, so a named pipe is refused, not waited on.
 pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, LoadError> {
+    read_stamped(path, limit).map(|(b, _)| b)
+}
+
+/// What Studio knows of a file on disk to tell that another program
+/// changed it: its length and modification time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl Stamp {
+    fn of(m: &std::fs::Metadata) -> Stamp {
+        Stamp {
+            len: m.len(),
+            modified: m.modified().ok(),
+        }
+    }
+}
+
+/// The identity of a file: its canonical path, links followed. A file that
+/// does not exist yet has none: its folder's canonical path joined with its
+/// name stands in, or the path made absolute if the folder is missing too.
+/// On a file system that folds case, as on macOS and Windows, the canonical
+/// path carries the stored spelling, so two spellings of a name are one.
+pub fn identity(path: &Path) -> PathBuf {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return p;
+    }
+    let joined = match (path.parent(), path.file_name()) {
+        (Some(d), Some(n)) => {
+            let d = if d.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                d
+            };
+            std::fs::canonicalize(d).ok().map(|d| d.join(n))
+        }
+        _ => None,
+    };
+    joined
+        .or_else(|| std::path::absolute(path).ok())
+        .unwrap_or_else(|| path.to_owned())
+}
+
+/// [`read_regular`], with the stamp of the handle the bytes came from.
+fn read_stamped(path: &Path, limit: u64) -> Result<(Vec<u8>, Stamp), LoadError> {
     use std::io::Read;
     let read = |e: std::io::Error| LoadError::Read(e.to_string());
     let mut opts = std::fs::OpenOptions::new();
@@ -102,7 +149,7 @@ pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, LoadError> {
     if bytes.len() as u64 > limit {
         return Err(LoadError::TooLarge);
     }
-    Ok(bytes)
+    Ok((bytes, Stamp::of(&meta)))
 }
 
 /// Text for the editor, and whether to write CRLF.
@@ -149,12 +196,15 @@ pub struct Doc {
     pub id: u64,
     /// The file, the only place Save writes.
     pub path: PathBuf,
+    /// The file's identity when it was opened: see [`identity`].
+    pub key: PathBuf,
     /// The path to show, relative to the project.
     pub shown: String,
     /// The text, LF only.
     pub text: String,
     saved: String,
     crlf: bool,
+    stamp: Option<Stamp>,
     /// A selection, in characters, to apply before the next draw.
     pub pending_sel: Option<(usize, usize)>,
     /// The caret's line and column, from 1, after the last draw.
@@ -164,11 +214,13 @@ pub struct Doc {
 impl Doc {
     /// Read `path`.
     pub fn open(id: u64, path: &Path, shown: String) -> Result<Doc, LoadError> {
-        let bytes = read_regular(path, MAX_FILE)?;
+        let (bytes, stamp) = read_stamped(path, MAX_FILE)?;
         let (text, crlf) = decode(&bytes)?;
         Ok(Doc {
             id,
             path: path.to_owned(),
+            key: identity(path),
+            stamp: Some(stamp),
             shown,
             saved: text.clone(),
             text,
@@ -199,7 +251,17 @@ impl Doc {
             )
         })?;
         self.saved = self.text.clone();
+        self.stamp = std::fs::metadata(&self.path).ok().map(|m| Stamp::of(&m));
         Ok(())
+    }
+
+    /// The file on disk is not the one last read or written: another
+    /// program changed it, or removed it.
+    pub fn changed_on_disk(&self) -> bool {
+        match std::fs::metadata(&self.path) {
+            Ok(m) => Some(Stamp::of(&m)) != self.stamp,
+            Err(_) => true,
+        }
     }
 }
 
